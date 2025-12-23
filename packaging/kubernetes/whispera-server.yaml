@@ -1,0 +1,198 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whispera-server
+  namespace: whispera
+  labels:
+    app: whispera-server
+    version: v1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: whispera-server
+  template:
+    metadata:
+      labels:
+        app: whispera-server
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9101"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: whispera-server
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+      - name: whispera-server
+        image: whispera:latest
+        imagePullPolicy: Always
+        ports:
+        - name: udp
+          containerPort: 51820
+          protocol: UDP
+        - name: tcp
+          containerPort: 4443
+          protocol: TCP
+        - name: websocket
+          containerPort: 8443
+          protocol: TCP
+        - name: metrics
+          containerPort: 9101
+          protocol: TCP
+        - name: health
+          containerPort: 8080
+          protocol: TCP
+        env:
+        - name: WHISPERA_STATIC_KEY
+          valueFrom:
+            secretKeyRef:
+              name: whispera-secrets
+              key: server-key
+        - name: WHISPERA_PRODUCTION_MODE
+          value: "true"
+        - name: WHISPERA_MONITORING
+          value: "true"
+        - name: WHISPERA_ML_ENABLED
+          value: "true"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: config
+          mountPath: /etc/whispera
+          readOnly: true
+        - name: logs
+          mountPath: /var/log/whispera
+        - name: data
+          mountPath: /var/lib/whispera
+      volumes:
+      - name: config
+        configMap:
+          name: whispera-config
+      - name: logs
+        emptyDir: {}
+      - name: data
+        persistentVolumeClaim:
+          claimName: whispera-data
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - whispera-server
+              topologyKey: kubernetes.io/hostname
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: whispera-server
+  namespace: whispera
+  labels:
+    app: whispera-server
+spec:
+  type: LoadBalancer
+  ports:
+  - name: udp
+    port: 51820
+    targetPort: 51820
+    protocol: UDP
+  - name: tcp
+    port: 4443
+    targetPort: 4443
+    protocol: TCP
+  - name: websocket
+    port: 8443
+    targetPort: 8443
+    protocol: TCP
+  - name: metrics
+    port: 9101
+    targetPort: 9101
+    protocol: TCP
+  selector:
+    app: whispera-server
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: whispera-config
+  namespace: whispera
+data:
+  server.yaml: |
+    server:
+      listen: ":51820"
+      listen_tcp: ":4443"
+      listen_ws: ":8443"
+      static_key: "${WHISPERA_STATIC_KEY}"
+      metrics: ":9101"
+      auto_profile: true
+      monitoring: true
+    
+    obfuscation:
+      fte_profile: "http2"
+      marionette_profile: "browser"
+      ai_evasion: true
+      hardware_evasion: true
+      behavioral_mimicry: true
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: whispera-secrets
+  namespace: whispera
+type: Opaque
+data:
+  server-key: <base64-encoded-server-key>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: whispera-data
+  namespace: whispera
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: whispera-server
+  namespace: whispera

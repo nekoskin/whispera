@@ -1,0 +1,89 @@
+syntax = "proto3";
+
+package whispera.auth.v1;
+
+option go_package = "whispera/api/gen/auth/v1;authv1";
+
+// AuthService manages session establishment and lifecycle.
+service AuthService {
+  // Initiates a new session for the given client token and connection hints.
+  rpc SessionOpen(SessionOpenRequest) returns (SessionOpenResponse);
+
+  // Refreshes keys/keepalive for an existing session.
+  rpc SessionRefresh(SessionRefreshRequest) returns (SessionRefreshResponse);
+
+  // Terminates a session explicitly.
+  rpc SessionClose(SessionCloseRequest) returns (SessionCloseResponse);
+
+  // Streams session lifecycle events (rekey, suspend, revoke).
+  rpc StreamSessionEvents(StreamSessionEventsRequest)
+      returns (stream SessionEvent);
+}
+
+message SessionOpenRequest {
+  string token = 1;
+  string client_id = 2;
+  ConnectionInfo connection = 3;
+  map<string, string> metadata = 4;
+}
+
+message ConnectionInfo {
+  string protocol = 1;         // udp|tcp|ws|ws2|quic
+  string remote_address = 2;   // client public address
+  string requested_profile = 3;
+  bool p2p_enabled = 4;
+}
+
+message SessionOpenResponse {
+  string session_id = 1;
+  bytes aead_key = 2;          // encrypted transport key
+  bytes seed = 3;              // optional seed material
+  uint32 initial_seq = 4;
+  uint64 expires_at_unix = 5;
+}
+
+message SessionRefreshRequest {
+  string session_id = 1;
+  uint64 acked_seq = 2;
+  bool force_rekey = 3;
+}
+
+message SessionRefreshResponse {
+  bool renewed = 1;
+  uint64 expires_at_unix = 2;
+  bytes new_aead_key = 3;
+  uint32 new_seq = 4;
+}
+
+message SessionCloseRequest {
+  string session_id = 1;
+  string reason = 2;
+}
+
+message SessionCloseResponse {
+  bool closed = 1;
+}
+
+message StreamSessionEventsRequest {
+  string session_id = 1;
+  string client_id = 2;
+}
+
+enum SessionEventType {
+  SESSION_EVENT_TYPE_UNSPECIFIED = 0;
+  SESSION_EVENT_TYPE_REKEY = 1;
+  SESSION_EVENT_TYPE_SUSPEND = 2;
+  SESSION_EVENT_TYPE_RESUME = 3;
+  SESSION_EVENT_TYPE_REVOKE = 4;
+}
+
+message SessionEvent {
+  SessionEventType type = 1;
+  string session_id = 2;
+  uint64 timestamp_unix = 3;
+  bytes aead_key = 4;
+  uint32 seq = 5;
+  string reason = 6;
+}
+
+

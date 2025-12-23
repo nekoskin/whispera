@@ -1,0 +1,12 @@
+{
+  "accuracy": 0.9923076629638672,
+  "last_updated": "2025-10-25T17:33:10.485214",
+  "is_trained": true,
+  "dpi_types": {
+    "0": "no_dpi",
+    "1": "simple_dpi",
+    "2": "deep_packet_inspection",
+    "3": "flow_analysis",
+    "4": "ml_dpi"
+  }
+}

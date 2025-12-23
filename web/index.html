@@ -1,0 +1,1338 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whispera - Панель управления</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/fontawesome/all.min.css">
+</head>
+<body>
+    <!-- Логин форма (показывается сначала) -->
+    <div id="loginScreen" class="login-screen">
+        <div class="login-container">
+            <div class="login-header">
+                <i class="fas fa-shield-alt"></i>
+                <h1>Whispera VPN</h1>
+                <p>Панель управления Whispera протоколом</p>
+            </div>
+            <form id="loginForm" class="login-form">
+                <div class="form-group">
+                    <label for="username">
+                        <i class="fas fa-user"></i>
+                        Имя пользователя
+                    </label>
+                    <input type="text" id="username" name="username" placeholder="admin" required autofocus>
+                </div>
+                <div class="form-group">
+                    <label for="password">
+                        <i class="fas fa-lock"></i>
+                        Пароль
+                    </label>
+                    <input type="password" id="password" name="password" placeholder="••••••••" required>
+                </div>
+                <button type="submit" class="btn btn-primary btn-block">
+                    <i class="fas fa-sign-in-alt"></i>
+                    Войти
+                </button>
+                <div id="loginError" class="error-message" style="display: none;"></div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Главная панель (скрыта до авторизации) -->
+    <div id="mainPanel" class="main-panel" style="display: none;">
+        <!-- Боковое меню -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <i class="fas fa-shield-alt"></i>
+                <span>Whispera VPN</span>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="#dashboard" class="nav-item active" data-page="dashboard">
+                    <i class="fas fa-home"></i>
+                    <span>Главная</span>
+                </a>
+                <a href="#users" class="nav-item" data-page="users">
+                    <i class="fas fa-users"></i>
+                    <span>Пользователи</span>
+                </a>
+                <a href="#sessions" class="nav-item" data-page="sessions">
+                    <i class="fas fa-network-wired"></i>
+                    <span>Подключения</span>
+                </a>
+                <a href="#stats" class="nav-item" data-page="stats">
+                    <i class="fas fa-chart-line"></i>
+                    <span>Статистика</span>
+                </a>
+                <a href="#settings" class="nav-item" data-page="settings">
+                    <i class="fas fa-cog"></i>
+                    <span>Настройки</span>
+                </a>
+                <a href="#routing" class="nav-item" data-page="routing">
+                    <i class="fas fa-route"></i>
+                    <span>Маршрутизация</span>
+                </a>
+                <a href="#subscriptions" class="nav-item" data-page="subscriptions">
+                    <i class="fas fa-rss"></i>
+                    <span>Подписки</span>
+                </a>
+                <a href="#outbounds" class="nav-item" data-page="outbounds">
+                    <i class="fas fa-server"></i>
+                    <span>Серверы</span>
+                </a>
+                <a href="#geo" class="nav-item" data-page="geo">
+                    <i class="fas fa-globe"></i>
+                    <span>Geo базы</span>
+                </a>
+                <a href="#adblock" class="nav-item" data-page="adblock">
+                    <i class="fas fa-ban"></i>
+                    <span>Блокировщик рекламы</span>
+                </a>
+                <a href="#logs" class="nav-item" data-page="logs">
+                    <i class="fas fa-file-alt"></i>
+                    <span>Логи</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <button id="logoutBtn" class="btn btn-secondary btn-block">
+                    <i class="fas fa-sign-out-alt"></i>
+                    Выход
+                </button>
+            </div>
+        </aside>
+
+        <!-- Основной контент -->
+        <main class="main-content">
+            <!-- Заголовок -->
+            <header class="content-header">
+                <h1 id="pageTitle">Главная</h1>
+                <div class="header-actions">
+                    <div class="server-status" id="serverStatus">
+                        <i class="fas fa-circle status-online"></i>
+                        <span>Сервер работает</span>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Контент страниц -->
+            <div class="content-body">
+                <!-- Страница Dashboard -->
+                <div id="page-dashboard" class="page active">
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-icon bg-blue">
+                                <i class="fas fa-users"></i>
+                            </div>
+                            <div class="stat-info">
+                                <h3 id="totalUsers">0</h3>
+                                <p>Пользователей</p>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon bg-green">
+                                <i class="fas fa-network-wired"></i>
+                            </div>
+                            <div class="stat-info">
+                                <h3 id="activeSessions">0</h3>
+                                <p>Активных подключений</p>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon bg-orange">
+                                <i class="fas fa-arrow-up"></i>
+                            </div>
+                            <div class="stat-info">
+                                <h3 id="totalUpload">0 B</h3>
+                                <p>Отправлено</p>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon bg-purple">
+                                <i class="fas fa-arrow-down"></i>
+                            </div>
+                            <div class="stat-info">
+                                <h3 id="totalDownload">0 B</h3>
+                                <p>Получено</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="dashboard-grid">
+                        <div class="dashboard-card">
+                            <h2><i class="fas fa-clock"></i> Последняя активность</h2>
+                            <div id="recentActivity" class="activity-list">
+                                <!-- Будет заполнено через API -->
+                            </div>
+                        </div>
+                        <div class="dashboard-card">
+                            <h2><i class="fas fa-info-circle"></i> Информация о сервере</h2>
+                            <div id="serverInfo" class="info-list">
+                                <!-- Будет заполнено через API -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Страница Users -->
+                <div id="page-users" class="page">
+                    <div class="page-header">
+                        <h2>Управление пользователями (Whispera)</h2>
+                        <button id="addUserBtn" class="btn btn-primary">
+                            <i class="fas fa-plus"></i>
+                            Добавить пользователя
+                        </button>
+                    </div>
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Имя</th>
+                                    <th>Ключ подключения</th>
+                                    <th>Трафик (↑/↓)</th>
+                                    <th>Лимит трафика</th>
+                                    <th>Срок действия</th>
+                                    <th>Статус</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="usersTableBody">
+                                <!-- Будет заполнено через API -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Страница Sessions -->
+                <div id="page-sessions" class="page">
+                    <div class="page-header">
+                        <h2>Активные подключения</h2>
+                        <button id="refreshSessionsBtn" class="btn btn-secondary">
+                            <i class="fas fa-sync-alt"></i>
+                            Обновить
+                        </button>
+                    </div>
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Пользователь</th>
+                                    <th>IP адрес</th>
+                                    <th>Время подключения</th>
+                                    <th>Трафик</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="sessionsTableBody">
+                                <!-- Будет заполнено через API -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Страница Stats -->
+                <div id="page-stats" class="page">
+                    <div class="page-header">
+                        <h2>Статистика и трафик</h2>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <select id="statsPeriod" class="form-control" style="width: auto;" onchange="app.loadTrafficStats()">
+                                <option value="1h">Последний час</option>
+                                <option value="24h" selected>Последние 24 часа</option>
+                                <option value="7d">Последние 7 дней</option>
+                                <option value="30d">Последние 30 дней</option>
+                            </select>
+                            <button id="refreshStatsBtn" class="btn btn-secondary" onclick="app.loadTrafficStats()">
+                                <i class="fas fa-sync-alt"></i>
+                                Обновить
+                            </button>
+                        </div>
+                    </div>
+                    <div class="stats-container">
+                        <!-- Общая статистика -->
+                        <div class="stats-summary">
+                            <div class="stat-summary-card">
+                                <div class="stat-summary-icon bg-blue">
+                                    <i class="fas fa-arrow-up"></i>
+                                </div>
+                                <div class="stat-summary-info">
+                                    <h3 id="totalUploadStats">0 B</h3>
+                                    <p>Всего отправлено</p>
+                                </div>
+                            </div>
+                            <div class="stat-summary-card">
+                                <div class="stat-summary-icon bg-green">
+                                    <i class="fas fa-arrow-down"></i>
+                                </div>
+                                <div class="stat-summary-info">
+                                    <h3 id="totalDownloadStats">0 B</h3>
+                                    <p>Всего получено</p>
+                                </div>
+                            </div>
+                            <div class="stat-summary-card">
+                                <div class="stat-summary-icon bg-orange">
+                                    <i class="fas fa-exchange-alt"></i>
+                                </div>
+                                <div class="stat-summary-info">
+                                    <h3 id="totalTrafficStats">0 B</h3>
+                                    <p>Общий трафик</p>
+                                </div>
+                            </div>
+                            <div class="stat-summary-card">
+                                <div class="stat-summary-icon bg-purple">
+                                    <i class="fas fa-users"></i>
+                                </div>
+                                <div class="stat-summary-info">
+                                    <h3 id="activeUsersStats">0</h3>
+                                    <p>Активных пользователей</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- График трафика -->
+                        <div class="dashboard-card">
+                            <h2><i class="fas fa-chart-line"></i> График трафика</h2>
+                            <div id="trafficChart" class="chart-container">
+                                <canvas id="trafficChartCanvas"></canvas>
+                            </div>
+                        </div>
+
+                        <!-- Статистика по пользователям -->
+                        <div class="dashboard-card">
+                            <h2><i class="fas fa-users"></i> Трафик по пользователям</h2>
+                            <div class="table-container">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Пользователь</th>
+                                            <th>Отправлено</th>
+                                            <th>Получено</th>
+                                            <th>Всего</th>
+                                            <th>Лимит</th>
+                                            <th>Использовано</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="userTrafficTableBody">
+                                        <tr>
+                                            <td colspan="6" style="text-align: center; padding: 2rem;">
+                                                Загрузка данных...
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Страница Settings -->
+                <div id="page-settings" class="page">
+                    <div class="page-header">
+                        <h2>Настройки сервера</h2>
+                        <button id="saveSettingsBtn" class="btn btn-primary">
+                            <i class="fas fa-save"></i>
+                            Сохранить настройки
+                        </button>
+                    </div>
+                    <div class="settings-container">
+                        <div class="settings-section">
+                            <h3><i class="fas fa-server"></i> Параметры сервера</h3>
+                            <div class="settings-grid">
+                                <div class="form-group">
+                                    <label>
+                                        <i class="fas fa-network-wired"></i>
+                                        IP адрес сервера
+                                        <span class="tooltip" title="Автоматически определяется из текущего подключения">
+                                            <i class="fas fa-info-circle"></i>
+                                        </span>
+                                    </label>
+                                    <input type="text" id="settingsServerIP" class="form-control" 
+                                           placeholder="Автоматически определяется...">
+                                    <small class="form-help">Оставьте пустым для автоматического определения</small>
+                                </div>
+                                <div class="form-group">
+                                    <label><i class="fas fa-key"></i> Публичный ключ сервера</label>
+                                    <input type="text" id="settingsServerPub" class="form-control" 
+                                           readonly style="font-family: monospace;">
+                                    <small class="form-help">Генерируется автоматически при запуске сервера</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="settings-section">
+                            <h3><i class="fas fa-network-wired"></i> Управление портами</h3>
+                            <div class="settings-grid">
+                                <div class="form-group">
+                                    <label>
+                                        <i class="fas fa-ethernet"></i>
+                                        UDP порт (основной)
+                                    </label>
+                                    <div style="position: relative;">
+                                        <input type="number" id="settingsUdpPort" class="form-control" 
+                                               value="51820" min="1024" max="65535"
+                                               onblur="app.checkPortAvailability('settingsUdpPort', 'udp')">
+                                        <span id="udpPortStatus" class="port-status"></span>
+                                    </div>
+                                    <small class="form-help" id="udpPortHelp">Основной порт для UDP соединений</small>
+                                </div>
+                                <div class="form-group">
+                                    <label>
+                                        <i class="fas fa-plug"></i>
+                                        TCP порт (fallback)
+                                    </label>
+                                    <div style="position: relative;">
+                                        <input type="number" id="settingsTcpPort" class="form-control" 
+                                               value="4443" min="1024" max="65535"
+                                               onblur="app.checkPortAvailability('settingsTcpPort', 'tcp')">
+                                        <span id="tcpPortStatus" class="port-status"></span>
+                                    </div>
+                                    <small class="form-help" id="tcpPortHelp">Резервный порт для TCP соединений</small>
+                                </div>
+                                <div class="form-group">
+                                    <label>
+                                        <i class="fas fa-globe"></i>
+                                        WebSocket порт
+                                    </label>
+                                    <div style="position: relative;">
+                                        <input type="number" id="settingsWsPort" class="form-control" 
+                                               value="8080" min="1024" max="65535"
+                                               onblur="app.checkPortAvailability('settingsWsPort', 'tcp')">
+                                        <span id="wsPortStatus" class="port-status"></span>
+                                    </div>
+                                    <small class="form-help" id="wsPortHelp">Порт для WebSocket соединений</small>
+                                </div>
+                                <div class="form-group">
+                                    <label>
+                                        <i class="fas fa-lock"></i>
+                                        WebSocket Secure порт
+                                    </label>
+                                    <div style="position: relative;">
+                                        <input type="number" id="settingsWs2Port" class="form-control" 
+                                               value="8443" min="1024" max="65535"
+                                               onblur="app.checkPortAvailability('settingsWs2Port', 'tcp')">
+                                        <span id="ws2PortStatus" class="port-status"></span>
+                                    </div>
+                                    <small class="form-help" id="ws2PortHelp">Порт для безопасных WebSocket соединений (WSS)</small>
+                                </div>
+                                <button type="button" class="btn btn-secondary" onclick="app.checkAllPorts()" style="margin-top: 0.5rem;">
+                                    <i class="fas fa-search"></i>
+                                    Проверить все порты
+                                </button>
+                            </div>
+                            <div class="form-group" style="margin-top: 1rem;">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="settingsAutoFirewall" checked>
+                                    <span><strong>Автоматически настраивать firewall</strong></span>
+                                </label>
+                                <small class="form-help">
+                                    <i class="fas fa-shield-alt"></i>
+                                    При сохранении настроек автоматически добавить порты в firewall (UFW/iptables)
+                                </small>
+                            </div>
+                            <button type="button" class="btn btn-secondary" onclick="app.configureFirewallNow()" style="margin-top: 0.5rem;">
+                                <i class="fas fa-fire"></i>
+                                Настроить firewall сейчас
+                            </button>
+                        </div>
+
+                        <div class="settings-section">
+                            <h3><i class="fas fa-certificate"></i> SSL/TLS Сертификаты (Let's Encrypt)</h3>
+                            <div class="settings-grid">
+                                <div class="form-group" style="grid-column: 1 / -1;">
+                                    <label>
+                                        <i class="fas fa-info-circle"></i>
+                                        Статус сертификата
+                                    </label>
+                                    <div id="certificateStatus" class="info-box" style="margin-top: 0.5rem;">
+                                        <i class="fas fa-spinner fa-spin"></i> Загрузка статуса...
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label>
+                                        <i class="fas fa-globe"></i>
+                                        Домен для Let's Encrypt
+                                    </label>
+                                    <input type="text" id="letsencryptDomain" class="form-control" 
+                                           placeholder="example.com">
+                                    <small class="form-help">Домен должен указывать на IP этого сервера</small>
+                                </div>
+                                <div class="form-group">
+                                    <label>
+                                        <i class="fas fa-envelope"></i>
+                                        Email для уведомлений
+                                    </label>
+                                    <input type="email" id="letsencryptEmail" class="form-control" 
+                                           placeholder="admin@example.com">
+                                    <small class="form-help">Email для уведомлений от Let's Encrypt</small>
+                                </div>
+                                <div class="form-group" style="grid-column: 1 / -1; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                                    <button type="button" class="btn btn-primary" onclick="window.app.obtainLetsEncryptCert()">
+                                        <i class="fas fa-certificate"></i>
+                                        Получить Let's Encrypt сертификат
+                                    </button>
+                                    <button type="button" class="btn btn-secondary" onclick="window.app.renewLetsEncryptCert()">
+                                        <i class="fas fa-sync"></i>
+                                        Обновить сертификат
+                                    </button>
+                                    <button type="button" class="btn btn-secondary" onclick="window.app.checkCertificateStatus()">
+                                        <i class="fas fa-refresh"></i>
+                                        Обновить статус
+                                    </button>
+                                </div>
+                                <div class="form-group" style="grid-column: 1 / -1;">
+                                    <div class="info-box info-warning">
+                                        <i class="fas fa-exclamation-triangle"></i>
+                                        <strong>Требования:</strong>
+                                        <ul style="margin: 0.5rem 0 0 1.5rem; padding: 0;">
+                                            <li>DNS A запись должна указывать на IP этого сервера</li>
+                                            <li>Порты 80 и 443 должны быть открыты</li>
+                                            <li>Сервер должен быть доступен из интернета</li>
+                                            <li>Certbot должен быть установлен (устанавливается автоматически через install.sh)</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="settings-section">
+                            <h3><i class="fas fa-shield-alt"></i> Обфускация по умолчанию</h3>
+                            <div class="settings-grid">
+                                <div class="form-group">
+                                    <label>
+                                        <i class="fas fa-code"></i>
+                                        Профиль обфускации
+                                    </label>
+                                    <select id="settingsObfsProfile" class="form-control">
+                                        <option value="quic">QUIC (Быстрый, рекомендуемый)</option>
+                                        <option value="http2" selected>HTTP/2 (Стабильный)</option>
+                                        <option value="websocket">WebSocket (Универсальный)</option>
+                                    </select>
+                                    <small class="form-help">Используется для новых пользователей</small>
+                                </div>
+                                <div class="form-group">
+                                    <label>
+                                        <i class="fas fa-user-secret"></i>
+                                        Marionette профиль
+                                    </label>
+                                    <select id="settingsMarionetteProfile" class="form-control">
+                                        <option value="browser" selected>Browser (Универсальный)</option>
+                                        <option value="vk">VKontakte</option>
+                                        <option value="yandex">Yandex</option>
+                                        <option value="mailru">Mail.ru</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="settingsAutoProfile" checked>
+                                        <span>Автоматический выбор профиля</span>
+                                    </label>
+                                    <small class="form-help">Система автоматически выберет лучший профиль</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="settings-section">
+                            <h3><i class="fas fa-cogs"></i> Дополнительные функции</h3>
+                            <div class="settings-grid">
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="settingsAiEvasion" checked>
+                                        <span>AI Evasion (Обход ИИ-детекции)</span>
+                                    </label>
+                                </div>
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="settingsHardwareEvasion" checked>
+                                        <span>Hardware Evasion (Обход аппаратной детекции)</span>
+                                    </label>
+                                </div>
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="settingsBehavioralMimicry" checked>
+                                        <span>Behavioral Mimicry (Имитация поведения)</span>
+                                    </label>
+                                </div>
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="settingsRussianMimicry" checked>
+                                        <span>Russian Mimicry (Имитация российских сервисов)</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="info-box">
+                            <i class="fas fa-info-circle"></i>
+                            <div>
+                                <strong>Совет:</strong> Все настройки автоматически применяются к новым пользователям. 
+                                Для существующих пользователей изменения не применяются автоматически.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Страница Блокировщик рекламы -->
+                <div id="page-adblock" class="page">
+                    <div class="page-header">
+                        <h2><i class="fas fa-ban"></i> Блокировщик рекламы</h2>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <button id="refreshAdblockBtn" class="btn btn-secondary" onclick="app.loadAdblockStats()">
+                                <i class="fas fa-sync-alt"></i>
+                                Обновить
+                            </button>
+                            <button id="saveAdblockBtn" class="btn btn-primary" onclick="app.saveAdblockSettings()">
+                                <i class="fas fa-save"></i>
+                                Сохранить настройки
+                            </button>
+                        </div>
+                    </div>
+                    <div class="settings-container">
+                        <!-- Общая статистика -->
+                        <div class="stats-summary">
+                            <div class="stat-summary-card">
+                                <div class="stat-summary-icon bg-red">
+                                    <i class="fas fa-ban"></i>
+                                </div>
+                                <div class="stat-summary-info">
+                                    <h3 id="adblockTotalBlocked">0</h3>
+                                    <p>Всего заблокировано</p>
+                                </div>
+                            </div>
+                            <div class="stat-summary-card">
+                                <div class="stat-summary-icon bg-orange">
+                                    <i class="fas fa-globe"></i>
+                                </div>
+                                <div class="stat-summary-info">
+                                    <h3 id="adblockDNSBlocked">0</h3>
+                                    <p>DNS запросов</p>
+                                </div>
+                            </div>
+                            <div class="stat-summary-card">
+                                <div class="stat-summary-icon bg-purple">
+                                    <i class="fas fa-lock"></i>
+                                </div>
+                                <div class="stat-summary-info">
+                                    <h3 id="adblockHTTPSBlocked">0</h3>
+                                    <p>HTTPS запросов</p>
+                                </div>
+                            </div>
+                            <div class="stat-summary-card">
+                                <div class="stat-summary-icon bg-blue">
+                                    <i class="fas fa-brain"></i>
+                                </div>
+                                <div class="stat-summary-info">
+                                    <h3 id="adblockMLBlocked">0</h3>
+                                    <p>ML обнаружено</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Настройки блокировщика -->
+                        <div class="settings-section">
+                            <h3><i class="fas fa-toggle-on"></i> Общие настройки</h3>
+                            <div class="settings-grid">
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="adblockEnabled" checked>
+                                        <span><strong>Включить блокировщик рекламы</strong></span>
+                                    </label>
+                                    <small class="form-help">Глобальное включение/выключение блокировщика</small>
+                                </div>
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="adblockDNSEnabled" checked>
+                                        <span><strong>DNS блокировка</strong></span>
+                                    </label>
+                                    <small class="form-help">Блокировка рекламы на уровне DNS запросов</small>
+                                </div>
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="adblockHTTPSEnabled" checked>
+                                        <span><strong>HTTPS блокировка</strong></span>
+                                    </label>
+                                    <small class="form-help">Блокировка рекламы на уровне HTTPS запросов</small>
+                                </div>
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="adblockMLEnabled" checked>
+                                        <span><strong>ML обнаружение рекламы</strong></span>
+                                    </label>
+                                    <small class="form-help">Использование машинного обучения для обнаружения рекламы</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Кастомные правила -->
+                        <div class="settings-section">
+                            <h3><i class="fas fa-list"></i> Кастомные правила</h3>
+                            <div class="form-group">
+                                <button type="button" class="btn btn-secondary" onclick="app.showAddRuleModal()">
+                                    <i class="fas fa-plus"></i>
+                                    Добавить правило
+                                </button>
+                            </div>
+                            <div class="table-container">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Домен/URL</th>
+                                            <th>Тип</th>
+                                            <th>Статус</th>
+                                            <th>Действия</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="adblockRulesTableBody">
+                                        <tr>
+                                            <td colspan="4" style="text-align: center; padding: 2rem;">
+                                                Загрузка правил...
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Статистика по доменам -->
+                        <div class="settings-section">
+                            <h3><i class="fas fa-chart-bar"></i> Статистика по доменам</h3>
+                            <div class="table-container">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Домен</th>
+                                            <th>Количество блокировок</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="adblockDomainsTableBody">
+                                        <tr>
+                                            <td colspan="2" style="text-align: center; padding: 2rem;">
+                                                Загрузка данных...
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Страница Routing -->
+                <div id="page-routing" class="page">
+                    <div class="page-header">
+                        <h2><i class="fas fa-route"></i> Правила маршрутизации</h2>
+                        <button id="addRoutingRuleBtn" class="btn btn-primary" onclick="app.showAddRoutingRuleModal()">
+                            <i class="fas fa-plus"></i>
+                            Добавить правило
+                        </button>
+                    </div>
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Тип</th>
+                                    <th>Условие</th>
+                                    <th>Outbound</th>
+                                    <th>Приоритет</th>
+                                    <th>Статус</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="routingRulesTableBody">
+                                <tr>
+                                    <td colspan="6" style="text-align: center; padding: 2rem;">
+                                        Загрузка правил...
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Страница Subscriptions -->
+                <div id="page-subscriptions" class="page">
+                    <div class="page-header">
+                        <h2><i class="fas fa-rss"></i> Подписки на серверы</h2>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <button id="updateAllSubscriptionsBtn" class="btn btn-primary" onclick="app.updateAllSubscriptions()">
+                                <i class="fas fa-sync"></i>
+                                Обновить все
+                            </button>
+                            <button id="addSubscriptionBtn" class="btn btn-secondary" onclick="app.showAddSubscriptionModal()">
+                                <i class="fas fa-plus"></i>
+                                Добавить подписку
+                            </button>
+                        </div>
+                    </div>
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Название</th>
+                                    <th>URL</th>
+                                    <th>Интервал</th>
+                                    <th>Последнее обновление</th>
+                                    <th>Серверов</th>
+                                    <th>Статус</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="subscriptionsTableBody">
+                                <tr>
+                                    <td colspan="7" style="text-align: center; padding: 2rem;">
+                                        Загрузка подписок...
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Страница Outbounds -->
+                <div id="page-outbounds" class="page">
+                    <div class="page-header">
+                        <h2><i class="fas fa-server"></i> Управление серверами</h2>
+                        <button id="addOutboundBtn" class="btn btn-primary" onclick="app.showAddOutboundModal()">
+                            <i class="fas fa-plus"></i>
+                            Добавить сервер
+                        </button>
+                    </div>
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Тег</th>
+                                    <th>Адрес</th>
+                                    <th>Протокол</th>
+                                    <th>Задержка</th>
+                                    <th>Доступность</th>
+                                    <th>Статус</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="outboundsTableBody">
+                                <tr>
+                                    <td colspan="7" style="text-align: center; padding: 2rem;">
+                                        Загрузка серверов...
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Страница Geo -->
+                <div id="page-geo" class="page">
+                    <div class="page-header">
+                        <h2><i class="fas fa-globe"></i> Geo базы данных (GeoIP/GeoSite)</h2>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <button id="updateGeoBtn" class="btn btn-primary" onclick="app.updateGeoDatabases()">
+                                <i class="fas fa-sync"></i>
+                                Обновить базы
+                            </button>
+                            <button id="reloadGeoBtn" class="btn btn-secondary" onclick="app.reloadGeoDatabases()">
+                                <i class="fas fa-redo"></i>
+                                Перезагрузить
+                            </button>
+                        </div>
+                    </div>
+                    <div class="settings-container">
+                        <!-- Статус баз -->
+                        <div class="settings-section">
+                            <h3><i class="fas fa-info-circle"></i> Статус баз данных</h3>
+                            <div class="stats-summary">
+                                <div class="stat-summary-card">
+                                    <div class="stat-summary-icon bg-blue">
+                                        <i class="fas fa-database"></i>
+                                    </div>
+                                    <div class="stat-summary-info">
+                                        <h3 id="geoIPStatus">Загрузка...</h3>
+                                        <p>GeoIP база</p>
+                                    </div>
+                                </div>
+                                <div class="stat-summary-card">
+                                    <div class="stat-summary-icon bg-green">
+                                        <i class="fas fa-globe"></i>
+                                    </div>
+                                    <div class="stat-summary-info">
+                                        <h3 id="geoSiteStatus">Загрузка...</h3>
+                                        <p>GeoSite база</p>
+                                    </div>
+                                </div>
+                                <div class="stat-summary-card">
+                                    <div class="stat-summary-icon bg-orange">
+                                        <i class="fas fa-clock"></i>
+                                    </div>
+                                    <div class="stat-summary-info">
+                                        <h3 id="geoLastUpdate">-</h3>
+                                        <p>Последнее обновление</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="settings-grid" style="margin-top: 1rem;">
+                                <div class="form-group">
+                                    <label><i class="fas fa-file"></i> Путь к GeoIP</label>
+                                    <input type="text" id="geoIPPath" class="form-control" readonly>
+                                </div>
+                                <div class="form-group">
+                                    <label><i class="fas fa-file"></i> Путь к GeoSite</label>
+                                    <input type="text" id="geoSitePath" class="form-control" readonly>
+                                </div>
+                                <div class="form-group">
+                                    <label><i class="fas fa-hdd"></i> Размер GeoIP</label>
+                                    <input type="text" id="geoIPSize" class="form-control" readonly>
+                                </div>
+                                <div class="form-group">
+                                    <label><i class="fas fa-hdd"></i> Размер GeoSite</label>
+                                    <input type="text" id="geoSiteSize" class="form-control" readonly>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Настройки автообновления -->
+                        <div class="settings-section">
+                            <h3><i class="fas fa-cog"></i> Настройки автообновления</h3>
+                            <div class="settings-grid">
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="geoAutoUpdateEnabled" onchange="app.updateGeoSettings()">
+                                        <span><strong>Автоматическое обновление</strong></span>
+                                    </label>
+                                    <small class="form-help">
+                                        Автоматически обновлять Geo базы данных через заданный интервал
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Информация -->
+                        <div class="info-box">
+                            <i class="fas fa-info-circle"></i>
+                            <div>
+                                <strong>Geo базы данных:</strong>
+                                <ul style="margin: 0.5rem 0 0 1.5rem; padding: 0;">
+                                    <li><strong>GeoIP:</strong> База данных для определения страны по IP адресу</li>
+                                    <li><strong>GeoSite:</strong> База данных для определения страны по домену</li>
+                                    <li>Базы обновляются автоматически из репозитория v2fly</li>
+                                    <li>Используются для правил маршрутизации по стране</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Страница Logs -->
+                <div id="page-logs" class="page">
+                    <div class="page-header">
+                        <h2>Логи сервера</h2>
+                        <button id="clearLogsBtn" class="btn btn-secondary">
+                            <i class="fas fa-trash"></i>
+                            Очистить
+                        </button>
+                    </div>
+                    <div class="logs-container">
+                        <pre id="logsContent" class="logs-content"></pre>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Модальные окна -->
+    <div id="addUserModal" class="modal">
+        <div class="modal-content" style="max-width: 700px;">
+            <div class="modal-header">
+                <h2><i class="fas fa-user-plus"></i> Создать нового пользователя</h2>
+                <button class="modal-close">&times;</button>
+            </div>
+            <form id="addUserForm" class="modal-body">
+                <!-- Основная информация -->
+                <div class="form-section">
+                    <h3><i class="fas fa-info-circle"></i> Основная информация</h3>
+                    <div class="form-group">
+                        <label>
+                            <i class="fas fa-user"></i>
+                            Имя пользователя
+                            <span class="tooltip" title="Уникальное имя для идентификации пользователя. Используйте латинские буквы, цифры и подчеркивания">
+                                <i class="fas fa-question-circle"></i>
+                            </span>
+                        </label>
+                        <input type="text" name="username" id="addUserUsername" required 
+                               placeholder="user1" pattern="[a-zA-Z0-9_]+" 
+                               title="Только латинские буквы, цифры и подчеркивание">
+                        <small class="form-help">
+                            <i class="fas fa-info-circle"></i>
+                            Только латинские буквы, цифры и подчеркивание. Пример: user1, client_123
+                        </small>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <i class="fas fa-envelope"></i>
+                            Email (опционально)
+                            <span class="tooltip" title="Email для связи с пользователем и уведомлений">
+                                <i class="fas fa-question-circle"></i>
+                            </span>
+                        </label>
+                        <input type="email" name="email" id="addUserEmail" 
+                               placeholder="user@example.com">
+                        <small class="form-help">Используется для уведомлений и восстановления доступа</small>
+                    </div>
+                </div>
+
+                <!-- Настройки обфускации -->
+                <div class="form-section">
+                    <h3><i class="fas fa-shield-alt"></i> Настройки обфускации</h3>
+                    <div class="form-group">
+                        <label>
+                            <i class="fas fa-code"></i>
+                            Профиль обфускации
+                            <span class="tooltip" title="Метод обфускации трафика для обхода блокировок">
+                                <i class="fas fa-question-circle"></i>
+                            </span>
+                        </label>
+                        <select name="obfsProfile" id="addUserObfsProfile" class="form-control">
+                            <option value="quic">QUIC - Быстрый протокол, рекомендуемый для большинства случаев</option>
+                            <option value="http2" selected>HTTP/2 - Стабильный протокол, хорош для проблемных сетей</option>
+                            <option value="websocket">WebSocket - Универсальный протокол, работает через большинство прокси</option>
+                        </select>
+                        <small class="form-help">
+                            <strong>QUIC:</strong> Быстрый и эффективный, рекомендуется для большинства случаев<br>
+                            <strong>HTTP/2:</strong> Стабильный и надежный, хорош для проблемных сетей<br>
+                            <strong>WebSocket:</strong> Универсальный, работает через большинство прокси и файрволов
+                        </small>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <i class="fas fa-user-secret"></i>
+                            Marionette профиль
+                            <span class="tooltip" title="Имитация популярных сервисов для обхода блокировок">
+                                <i class="fas fa-question-circle"></i>
+                            </span>
+                        </label>
+                        <select name="marionetteProfile" id="addUserMarionetteProfile" class="form-control">
+                            <option value="browser" selected>Browser - Универсальный, подходит для всех случаев</option>
+                            <option value="vk">VKontakte - Имитация трафика ВКонтакте</option>
+                            <option value="yandex">Yandex - Имитация трафика Яндекса</option>
+                            <option value="mailru">Mail.ru - Имитация трафика Mail.ru</option>
+                        </select>
+                        <small class="form-help">
+                            <strong>Browser:</strong> Универсальный профиль, подходит для всех случаев<br>
+                            <strong>VK/Yandex/Mail.ru:</strong> Специализированные профили для обхода блокировок в России
+                        </small>
+                    </div>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="autoProfile" id="addUserAutoProfile" checked>
+                            <span><strong>Автоматический выбор профиля</strong></span>
+                        </label>
+                        <small class="form-help">
+                            <i class="fas fa-check-circle"></i>
+                            Система автоматически выберет оптимальный профиль для каждого подключения на основе сетевых условий и типа блокировки
+                        </small>
+                    </div>
+                </div>
+
+                <!-- Ограничения -->
+                <div class="form-section">
+                    <h3><i class="fas fa-sliders-h"></i> Ограничения</h3>
+                    <div class="form-group">
+                        <label>
+                            <i class="fas fa-tachometer-alt"></i>
+                            Лимит трафика (GB)
+                            <span class="tooltip" title="Максимальный объем трафика, который может использовать пользователь">
+                                <i class="fas fa-question-circle"></i>
+                            </span>
+                        </label>
+                        <input type="number" name="trafficLimit" id="addUserTrafficLimit" 
+                               min="0" step="0.1" value="0" class="form-control">
+                        <small class="form-help">
+                            <i class="fas fa-infinity"></i>
+                            <strong>0 = безлимит</strong>. Укажите число в GB (например: 10, 50, 100). 
+                            После достижения лимита доступ будет заблокирован.
+                        </small>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <i class="fas fa-calendar"></i>
+                            Срок действия (опционально)
+                            <span class="tooltip" title="Дата, после которой доступ пользователя будет заблокирован">
+                                <i class="fas fa-question-circle"></i>
+                            </span>
+                        </label>
+                        <input type="date" name="expiryDate" id="addUserExpiryDate" class="form-control">
+                        <small class="form-help">
+                            Оставьте пустым для бессрочного доступа. После указанной даты пользователь не сможет подключиться.
+                        </small>
+                    </div>
+                </div>
+
+                <!-- Превью ключей -->
+                <div class="form-section" id="keyPreviewSection" style="display: none;">
+                    <h3><i class="fas fa-key"></i> Сгенерированные ключи</h3>
+                    <div class="key-preview">
+                        <div class="form-group">
+                            <label>Приватный ключ клиента (x25519)</label>
+                            <div class="key-display">
+                                <code id="previewPrivateKey" class="key-code">Будет сгенерирован при создании</code>
+                                <button type="button" class="btn btn-sm btn-secondary" onclick="copyPreviewKey('private')">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Публичный ключ клиента (x25519)</label>
+                            <div class="key-display">
+                                <code id="previewPublicKey" class="key-code">Будет вычислен автоматически</code>
+                                <button type="button" class="btn btn-sm btn-secondary" onclick="copyPreviewKey('public')">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="info-box info-success">
+                            <i class="fas fa-shield-alt"></i>
+                            <div>
+                                <strong>Безопасность:</strong> Ключи шифрования будут сгенерированы автоматически при создании пользователя. 
+                                Приватный ключ хранится только на сервере и у клиента. Публичный ключ можно передавать открыто.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary modal-cancel">Отмена</button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-plus"></i>
+                        Создать пользователя
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Модальное окно Quick Connect -->
+    <div id="quickConnectModal" class="modal">
+        <div class="modal-content" style="max-width: 800px;">
+            <div class="modal-header">
+                <h2><i class="fas fa-bolt"></i> Ключ для Quick Connect</h2>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="info-box info-success" style="margin-bottom: 1.5rem;">
+                    <i class="fas fa-info-circle"></i>
+                    <div>
+                        <strong>Быстрое подключение:</strong> Скопируйте ключ ниже и используйте его в клиенте Whispera для автоматической настройки подключения.
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label><i class="fas fa-key"></i> Приватный ключ (x25519)</label>
+                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <input type="text" id="quickConnectPrivateKey" readonly 
+                               style="flex: 1; font-family: 'Courier New', monospace; font-size: 0.9rem; padding: 0.75rem; background: #f9fafb; border: 2px solid #e5e7eb; border-radius: 8px; word-break: break-all;">
+                        <button type="button" class="btn btn-primary" onclick="app.copyQuickConnectKeyFromModal()">
+                            <i class="fas fa-copy"></i> Копировать
+                        </button>
+                    </div>
+                    <small class="form-help">Этот ключ используется для аутентификации на сервере</small>
+                </div>
+
+                <div class="form-group">
+                    <label><i class="fas fa-server"></i> URL сервера</label>
+                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <input type="text" id="quickConnectServerUrl" readonly 
+                               style="flex: 1; font-family: 'Courier New', monospace; font-size: 0.9rem; padding: 0.75rem; background: #f9fafb; border: 2px solid #e5e7eb; border-radius: 8px;">
+                        <button type="button" class="btn btn-secondary" onclick="app.copyServerUrl()">
+                            <i class="fas fa-copy"></i> Копировать
+                        </button>
+                    </div>
+                    <small class="form-help">Адрес сервера для подключения</small>
+                </div>
+
+                <div class="form-group">
+                    <label><i class="fas fa-link"></i> Полная строка подключения (Quick Connect)</label>
+                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <input type="text" id="quickConnectFullUrl" readonly 
+                               style="flex: 1; font-family: 'Courier New', monospace; font-size: 0.85rem; padding: 0.75rem; background: #eff6ff; border: 2px solid #3b82f6; border-radius: 8px; word-break: break-all; color: #1e40af;">
+                        <button type="button" class="btn btn-primary" onclick="app.copyQuickConnectFullUrl()">
+                            <i class="fas fa-copy"></i> Копировать всё
+                        </button>
+                    </div>
+                    <small class="form-help">Скопируйте эту строку целиком и вставьте в поле Quick Connect в клиенте</small>
+                </div>
+
+                <div class="info-box" style="margin-top: 1.5rem; background: #fef3c7; border-color: #f59e0b;">
+                    <i class="fas fa-lightbulb"></i>
+                    <div>
+                        <strong>Инструкция:</strong>
+                        <ol style="margin: 0.5rem 0 0 1.5rem; padding-left: 0.5rem;">
+                            <li>Откройте Whispera Client (Tauri)</li>
+                            <li>Перейдите на главную страницу</li>
+                            <li>Найдите поле "Быстрое подключение"</li>
+                            <li>Вставьте скопированную строку в формате <code>whispera://server:port?pub=...&key=...</code></li>
+                            <li>Нажмите "Подключиться по ключу"</li>
+                            <li>Все настройки загрузятся автоматически через API!</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary modal-close">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно генерации конфигурации клиента -->
+    <div id="clientConfigModal" class="modal">
+        <div class="modal-content" style="max-width: 800px;">
+            <div class="modal-header">
+                <h2>Конфигурация Whispera клиента</h2>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Имя пользователя</label>
+                    <input type="text" id="configUsername" readonly>
+                </div>
+                
+                <div class="form-group">
+                    <label>Формат конфигурации</label>
+                    <div class="config-format-selector">
+                        <button type="button" class="btn btn-sm format-btn active" data-format="yaml" onclick="app.switchConfigFormat('yaml')">
+                            <i class="fas fa-file-code"></i> YAML (Go клиент)
+                        </button>
+                        <button type="button" class="btn btn-sm format-btn" data-format="json" onclick="app.switchConfigFormat('json')">
+                            <i class="fas fa-file-code"></i> JSON (C# клиент)
+                        </button>
+                    </div>
+                    <small class="form-help">Выберите формат для вашего клиента</small>
+                </div>
+
+                <div class="form-group">
+                    <label>Приватный ключ клиента (x25519)</label>
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <input type="text" id="clientPrivateKey" readonly style="flex: 1; min-width: 200px; font-family: monospace; font-size: 11px; word-break: break-all;" maxlength="128">
+                        <button type="button" class="btn btn-secondary" onclick="copyToClipboard('clientPrivateKey')" title="Копировать">
+                            <i class="fas fa-copy"></i>
+                        </button>
+                        <button type="button" class="btn btn-primary" onclick="app.generateClientKeys()" title="Сгенерировать новый ключ">
+                            <i class="fas fa-key"></i>
+                            Генерировать
+                        </button>
+                    </div>
+                    <small class="form-help">Нажмите "Генерировать" для создания нового ключа клиента</small>
+                </div>
+                <div class="form-group" id="clientPublicKeyGroup" style="display: none;">
+                    <label>Публичный ключ клиента (x25519)</label>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <input type="text" id="clientPublicKey" readonly style="flex: 1; font-family: monospace;">
+                        <button type="button" class="btn btn-secondary" onclick="copyToClipboard('clientPublicKey')" title="Копировать">
+                            <i class="fas fa-copy"></i>
+                        </button>
+                    </div>
+                    <small class="form-help">Публичный ключ вычисляется автоматически из приватного</small>
+                </div>
+                
+                <div class="form-group" style="background: #f0f9ff; border: 1px solid #2196F3; border-radius: 8px; padding: 1rem; margin: 1rem 0;">
+                    <h4 style="margin: 0 0 0.5rem 0; color: #1976D2;">
+                        <i class="fas fa-bolt"></i> Быстрое подключение (Quick Connect)
+                    </h4>
+                    <p style="margin: 0 0 0.75rem 0; color: #666;">
+                        Скопируйте приватный ключ и используйте его в клиенте для автоматической настройки
+                    </p>
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <button type="button" class="btn btn-primary" onclick="app.copyQuickConnectKey()" title="Копировать ключ для быстрого подключения">
+                            <i class="fas fa-copy"></i>
+                            Копировать ключ для Quick Connect
+                        </button>
+                        <button type="button" class="btn btn-secondary" onclick="app.showQuickConnectInstructions()" title="Инструкции">
+                            <i class="fas fa-info-circle"></i>
+                            Инструкции
+                        </button>
+                    </div>
+                    <div id="quickConnectInfo" style="margin-top: 0.5rem; padding: 0.5rem; background: #e3f2fd; border-radius: 4px; display: none;">
+                        <small style="color: #1976D2;">
+                            <strong>Сервер URL:</strong> <span id="quickConnectServerUrl"></span><br>
+                            <strong>Приватный ключ:</strong> Скопирован в буфер обмена
+                        </small>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Публичный ключ сервера (x25519)</label>
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <input type="text" id="serverPublicKey" readonly style="flex: 1; min-width: 200px; font-family: monospace;">
+                        <button type="button" class="btn btn-secondary" onclick="copyToClipboard('serverPublicKey')" title="Копировать">
+                            <i class="fas fa-copy"></i>
+                        </button>
+                        <button type="button" class="btn btn-primary" onclick="app.generateServerKeys()" title="Сгенерировать новый ключ сервера">
+                            <i class="fas fa-key"></i>
+                            Генерировать
+                        </button>
+                    </div>
+                    <small class="form-help">Нажмите "Генерировать" для создания нового ключа сервера</small>
+                </div>
+                <div class="form-group">
+                    <label>IP адрес сервера</label>
+                    <input type="text" id="serverIP" placeholder="YOUR_SERVER_IP">
+                </div>
+                
+                <div class="form-group" id="configFormatGroup">
+                    <label id="configFormatLabel">YAML конфигурация</label>
+                    <textarea id="clientConfigYAML" readonly rows="20" style="width: 100%; font-family: monospace; font-size: 0.9rem;"></textarea>
+                    <div class="config-actions" style="margin-top: 0.5rem; display: flex; gap: 0.5rem;">
+                        <button type="button" class="btn btn-primary" onclick="app.downloadConfig()">
+                            <i class="fas fa-download"></i>
+                            <span id="downloadBtnText">Скачать YAML</span>
+                        </button>
+                        <button type="button" class="btn btn-secondary" onclick="app.copyConfigToClipboard()">
+                            <i class="fas fa-copy"></i>
+                            Копировать
+                        </button>
+                    </div>
+                </div>
+
+                <div class="info-box" id="clientInfoBox">
+                    <i class="fas fa-info-circle"></i>
+                    <div id="clientInfoText">
+                        <strong>Go клиент:</strong> Используйте YAML конфигурацию. Скопируйте содержимое в файл <code>client_config.yaml</code>
+                    </div>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary modal-close">Закрыть</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/config-manager.js"></script>
+    <script src="js/config-wizard.js"></script>
+    <script src="js/app.js"></script>
+    <script>
+        // Функция для копирования ключей из превью
+        function copyPreviewKey(type) {
+            const keyElement = type === 'private' 
+                ? document.getElementById('previewPrivateKey')
+                : document.getElementById('previewPublicKey');
+            
+            if (keyElement && keyElement.textContent) {
+                navigator.clipboard.writeText(keyElement.textContent).then(() => {
+                    // Визуальная обратная связь
+                    const btn = event.target.closest('button');
+                    const originalHTML = btn.innerHTML;
+                    btn.innerHTML = '<i class="fas fa-check"></i>';
+                    btn.classList.add('btn-success');
+                    setTimeout(() => {
+                        btn.innerHTML = originalHTML;
+                        btn.classList.remove('btn-success');
+                    }, 2000);
+                }).catch(err => {
+                    console.error('Ошибка копирования:', err);
+                    alert('Не удалось скопировать ключ');
+                });
+            }
+        }
+    </script>
+</body>
+</html>
+

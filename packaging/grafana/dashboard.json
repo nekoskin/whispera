@@ -1,0 +1,466 @@
+{
+  "dashboard": {
+    "title": "Whispera Production Dashboard",
+    "tags": ["whispera", "vpn", "dpi", "ml"],
+    "timezone": "browser",
+    "schemaVersion": 27,
+    "version": 1,
+    "refresh": "10s",
+    "time": {
+      "from": "now-6h",
+      "to": "now"
+    },
+  "panels": [
+      {
+        "id": 1,
+        "title": "Traffic Overview",
+        "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+        "type": "graph",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "rate(whispera_bytes_tx_total[5m])",
+            "legendFormat": "TX {{instance}}",
+            "refId": "A",
+            "datasource": {"type": "prometheus", "uid": "prometheus"}
+          },
+          {
+            "expr": "rate(whispera_bytes_rx_total[5m])",
+            "legendFormat": "RX {{instance}}",
+            "refId": "B",
+            "datasource": {"type": "prometheus", "uid": "prometheus"}
+          }
+        ],
+        "yaxes": [
+          {"format": "Bps", "label": "Throughput"},
+          {"format": "short"}
+        ],
+        "xaxis": {"show": true},
+        "legend": {"show": true, "values": true, "current": true}
+      },
+      {
+        "id": 2,
+        "title": "Packets Tx/Rx",
+        "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(whispera_packets_tx_total[5m])",
+            "legendFormat": "TX",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(whispera_packets_rx_total[5m])",
+            "legendFormat": "RX",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {"format": "pps", "label": "Packets/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 3,
+        "title": "RTT Latency & Stability",
+        "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "whispera_rtt_mean_ms",
+            "legendFormat": "Mean RTT",
+            "refId": "A"
+          },
+          {
+            "expr": "whispera_rtt_stddev_ms",
+            "legendFormat": "StdDev RTT",
+            "refId": "B"
+          },
+          {
+            "expr": "histogram_quantile(0.5, sum(rate(whispera_latency_ms_bucket[5m])) by (le))",
+            "legendFormat": "P50 Latency",
+            "refId": "C"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(whispera_latency_ms_bucket[5m])) by (le))",
+            "legendFormat": "P95 Latency",
+            "refId": "D"
+          }
+        ],
+        "yaxes": [
+          {"format": "ms", "label": "Latency"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 4,
+        "title": "RTT Stability Ratio (lower is better)",
+        "gridPos": {"x": 0, "y": 16, "w": 6, "h": 6},
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "whispera_rtt_stability_ratio",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {"options": {"from": 0, "to": 0.15, "result": {"text": "Excellent", "color": "green"}}},
+              {"options": {"from": 0.15, "to": 0.3, "result": {"text": "Good", "color": "yellow"}}},
+              {"options": {"from": 0.3, "to": 999, "result": {"text": "Poor", "color": "red"}}}
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "green"},
+                {"value": 0.15, "color": "yellow"},
+                {"value": 0.3, "color": "red"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "graphMode": "area",
+          "colorMode": "value"
+        }
+      },
+      {
+        "id": 5,
+        "title": "ML Prediction Success Rate",
+        "gridPos": {"x": 6, "y": 16, "w": 6, "h": 6},
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "rate(whispera_ml_predictions_success_total[5m]) / (rate(whispera_ml_predictions_total[5m]) + rate(whispera_ml_predictions_failed_total[5m]))",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percentunit",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "red"},
+                {"value": 0.8, "color": "yellow"},
+                {"value": 0.95, "color": "green"}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 6,
+        "title": "ML Predictions Total",
+        "gridPos": {"x": 12, "y": 16, "w": 6, "h": 6},
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(whispera_ml_predictions_total[5m])",
+            "legendFormat": "Total",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(whispera_ml_predictions_success_total[5m])",
+            "legendFormat": "Success",
+            "refId": "B"
+          },
+          {
+            "expr": "rate(whispera_ml_predictions_failed_total[5m])",
+            "legendFormat": "Failed",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {"format": "reqps", "label": "Predictions/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 7,
+        "title": "ML Prediction Latency",
+        "gridPos": {"x": 18, "y": 16, "w": 6, "h": 6},
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.5, sum(rate(whispera_ml_prediction_latency_ms_bucket[5m])) by (le))",
+            "legendFormat": "P50",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(whispera_ml_prediction_latency_ms_bucket[5m])) by (le))",
+            "legendFormat": "P95",
+            "refId": "B"
+          },
+          {
+            "expr": "histogram_quantile(0.99, sum(rate(whispera_ml_prediction_latency_ms_bucket[5m])) by (le))",
+            "legendFormat": "P99",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {"format": "ms"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 8,
+        "title": "DPI Detection & Anomalies",
+        "gridPos": {"x": 0, "y": 22, "w": 12, "h": 8},
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(whispera_ml_dpi_detected_total[5m])",
+            "legendFormat": "DPI Detected",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(whispera_ml_anomalies_detected_total[5m])",
+            "legendFormat": "Anomalies",
+            "refId": "B"
+          },
+          {
+            "expr": "rate(whispera_traffic_blocked_total[5m])",
+            "legendFormat": "Traffic Blocked",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {"format": "short"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Evasion Success Rate by Method",
+        "gridPos": {"x": 12, "y": 22, "w": 12, "h": 8},
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(whispera_evasion_success_total[5m]) / (rate(whispera_evasion_success_total[5m]) + rate(whispera_evasion_failure_total[5m]))",
+            "legendFormat": "{{method}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "percentunit", "label": "Success Rate"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 10,
+        "title": "Transport Protocol Switches",
+        "gridPos": {"x": 0, "y": 30, "w": 12, "h": 8},
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(whispera_transport_switches_total[5m])",
+            "legendFormat": "{{from}} → {{to}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Switches/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 11,
+        "title": "Evasion Attempts (Success vs Failure)",
+        "gridPos": {"x": 12, "y": 30, "w": 12, "h": 8},
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(whispera_evasion_success_total[5m])",
+            "legendFormat": "Success {{method}}",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(whispera_evasion_failure_total[5m])",
+            "legendFormat": "Failure {{method}}",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {"format": "short"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 12,
+        "title": "Handshake Metrics",
+        "gridPos": {"x": 0, "y": 38, "w": 12, "h": 8},
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(whispera_handshake_attempts_total[5m])",
+            "legendFormat": "Attempts",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(whispera_handshake_success_total[5m])",
+            "legendFormat": "Success",
+            "refId": "B"
+          },
+          {
+            "expr": "rate(whispera_handshake_failed_total[5m])",
+            "legendFormat": "Failed",
+            "refId": "C"
+          },
+          {
+            "expr": "rate(whispera_handshake_rate_limited_total[5m])",
+            "legendFormat": "Rate Limited",
+            "refId": "D"
+          }
+        ],
+        "yaxes": [
+          {"format": "short"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 13,
+        "title": "Errors & Drops",
+        "gridPos": {"x": 12, "y": 38, "w": 12, "h": 8},
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(whispera_drops_total[5m])",
+            "legendFormat": "Drops",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(whispera_decrypt_failures_total[5m])",
+            "legendFormat": "Decrypt Failures",
+            "refId": "B"
+          },
+          {
+            "expr": "rate(whispera_watchdog_timeouts_total[5m])",
+            "legendFormat": "Watchdog Timeouts",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {"format": "short"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 14,
+        "title": "Fragmentation",
+        "gridPos": {"x": 0, "y": 46, "w": 12, "h": 8},
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(whispera_fragments_tx_total[5m])",
+            "legendFormat": "TX Fragments",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(whispera_fragments_rx_total[5m])",
+            "legendFormat": "RX Fragments",
+            "refId": "B"
+          },
+          {
+            "expr": "rate(whispera_fragments_reassembled_total[5m])",
+            "legendFormat": "Reassembled",
+            "refId": "C"
+          },
+          {
+            "expr": "rate(whispera_fragments_expired_total[5m])",
+            "legendFormat": "Expired",
+            "refId": "D"
+          }
+        ],
+        "yaxes": [
+          {"format": "short"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 15,
+        "title": "Rekeys & Keepalives",
+        "gridPos": {"x": 12, "y": 46, "w": 12, "h": 8},
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(whispera_rekey_total[15m])",
+            "legendFormat": "Rekeys",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(whispera_rekey_trigger_bytes_total[15m])",
+            "legendFormat": "Rekey (Bytes)",
+            "refId": "B"
+          },
+          {
+            "expr": "rate(whispera_rekey_trigger_packets_total[15m])",
+            "legendFormat": "Rekey (Packets)",
+            "refId": "C"
+          },
+          {
+            "expr": "rate(whispera_rekey_trigger_time_total[15m])",
+            "legendFormat": "Rekey (Time)",
+            "refId": "D"
+          },
+          {
+            "expr": "rate(whispera_keepalive_sent_total[5m])",
+            "legendFormat": "Keepalive Sent",
+            "refId": "E"
+          },
+          {
+            "expr": "rate(whispera_keepalive_recv_total[5m])",
+            "legendFormat": "Keepalive Recv",
+            "refId": "F"
+          }
+        ],
+        "yaxes": [
+          {"format": "short"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 16,
+        "title": "Evasion Effectiveness Summary",
+        "gridPos": {"x": 0, "y": 54, "w": 24, "h": 6},
+        "type": "table",
+        "targets": [
+          {
+            "expr": "sum(rate(whispera_evasion_success_total[5m])) by (method)",
+            "format": "table",
+            "instant": true,
+            "refId": "A"
+          },
+          {
+            "expr": "sum(rate(whispera_evasion_failure_total[5m])) by (method)",
+            "format": "table",
+            "instant": true,
+            "refId": "B"
+          }
+        ],
+        "transformations": [
+          {
+            "id": "merge",
+            "options": {}
+          },
+          {
+            "id": "calculateField",
+            "options": {
+              "alias": "Success Rate",
+              "binary": {
+                "left": "Value #A",
+                "operator": "/",
+                "reducer": "sum",
+                "right": "Value #A + Value #B"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

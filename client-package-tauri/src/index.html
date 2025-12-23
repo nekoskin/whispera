@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whispera Client</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <h1>🌐 Whispera</h1>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <button class="nav-item active" data-page="home">
+                    <span class="icon">🏠</span>
+                    <span>Главная</span>
+                </button>
+                <button class="nav-item" data-page="settings">
+                    <span class="icon">⚙️</span>
+                    <span>Настройки</span>
+                </button>
+                <button class="nav-item" data-page="profiles">
+                    <span class="icon">📄</span>
+                    <span>Профили</span>
+                </button>
+                <button class="nav-item" data-page="stats">
+                    <span class="icon">📊</span>
+                    <span>Статистика</span>
+                </button>
+                <button class="nav-item" data-page="logs">
+                    <span class="icon">📋</span>
+                    <span>Логи</span>
+                </button>
+            </nav>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="header">
+                <h2 id="page-title">Главная</h2>
+                <div class="header-actions">
+                    <button id="connect-btn" class="btn btn-primary">Подключиться</button>
+                    <button id="disconnect-btn" class="btn btn-secondary" style="display: none;">Отключиться</button>
+                </div>
+            </header>
+
+            <!-- Home Page -->
+            <div id="page-home" class="page active">
+                <div class="status-card">
+                    <div class="status-indicator" id="status-indicator"></div>
+                    <div class="status-info">
+                        <h3 id="status-text">Отключено</h3>
+                        <p id="status-details">Готов к подключению</p>
+                    </div>
+                </div>
+
+                <div class="connection-form">
+                    <h3>Параметры подключения</h3>
+                    <div class="form-group">
+                        <label>IP сервера</label>
+                        <input type="text" id="server-ip" placeholder="192.168.1.1" value="">
+                    </div>
+                    <div class="form-group">
+                        <label>Порт (UDP)</label>
+                        <input type="number" id="server-port" placeholder="51820" value="51820">
+                    </div>
+                    <div class="form-group">
+                        <label>Публичный ключ сервера</label>
+                        <div class="input-with-button">
+                            <input type="text" id="server-pub-key" placeholder="Автоматически получится через API">
+                            <button id="fetch-key-btn" class="btn btn-small">Получить</button>
+                        </div>
+                    </div>
+                    
+                    <!-- XHTTP параметры (для VLESS протокола с Marionette обфускацией) -->
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="use-xhttp" onchange="toggleXHTTPFields()"> Использовать XHTTP+VLESS
+                        </label>
+                        <small>XHTTP обеспечивает лучшую обфускацию через HTTP/2 транспорт с Marionette</small>
+                    </div>
+                    <div id="xhttp-fields" style="display: none; margin-left: 20px; border-left: 2px solid #3B82F6; padding-left: 15px;">
+                        <div class="form-group">
+                            <label>XHTTP Public Key (ed25519, hex64)</label>
+                            <input type="text" id="xhttp-public-key" placeholder="64 символа hex (ed25519 публичный ключ)">
+                            <small>Публичный ключ сервера для XHTTP (ed25519, 32 байта = 64 hex символа)</small>
+                        </div>
+                        <div class="form-group">
+                            <label>XHTTP Short ID (hex16)</label>
+                            <input type="text" id="xhttp-short-id" placeholder="16 символов hex">
+                            <small>Короткий ID для XHTTP (8 байт = 16 hex символов)</small>
+                        </div>
+                        <div class="form-group">
+                            <label>XHTTP Server Name</label>
+                            <input type="text" id="xhttp-server-name" placeholder="example.com">
+                            <small>Имя сервера для TLS SNI (например: example.com, cloudflare.com)</small>
+                        </div>
+                        <div class="form-group">
+                            <label>XHTTP Fingerprint</label>
+                            <select id="xhttp-fingerprint">
+                                <option value="chrome">Chrome</option>
+                                <option value="firefox">Firefox</option>
+                                <option value="safari">Safari</option>
+                                <option value="edge">Edge</option>
+                            </select>
+                            <small>TLS fingerprint для мимикрии браузера</small>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="proxy-mode"> Режим прокси (SOCKS5)
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label>STUN сервер (для NAT discovery)</label>
+                        <input type="text" id="stun-server" placeholder="stun.l.google.com:19302" value="stun.l.google.com:19302">
+                        <small>Отправляет IP в интернет для проверки публичного IP адреса</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Outbound Tag</label>
+                        <input type="text" id="outbound-tag" placeholder="default" value="">
+                        <small>Тег для маршрутизации исходящего трафика (например: default, proxy1, proxy2)</small>
+                    </div>
+                </div>
+
+                <div class="quick-connect">
+                    <h3>Быстрое подключение</h3>
+                    <div class="form-group">
+                        <label>Ключ подключения</label>
+                        <input type="text" id="quick-connect-key" placeholder="whispera://...">
+                    </div>
+                    <button id="quick-connect-btn" class="btn btn-primary">Подключиться по ключу</button>
+                </div>
+            </div>
+
+            <!-- Settings Page -->
+            <div id="page-settings" class="page">
+                <h3>Настройки приложения</h3>
+                
+                <!-- Автозапуск -->
+                <div class="settings-section">
+                    <h4>Автозапуск</h4>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="autostart-enabled"> Автозапуск при входе в систему (с правами администратора)
+                        </label>
+                        <small id="autostart-status" class="text-secondary">Проверка статуса...</small>
+                        <small class="text-info" style="display: block; margin-top: 5px;">
+                            ⚠️ Для работы VPN требуется запуск от имени администратора. Автозапуск создаст задачу в Task Scheduler с правами администратора.
+                        </small>
+                    </div>
+                    <div id="admin-status" class="admin-status" style="margin-top: 10px; padding: 10px; border-radius: 5px; display: none;">
+                        <span id="admin-status-text"></span>
+                    </div>
+                </div>
+                
+                <div class="settings-section">
+                    <h4>Обфускация</h4>
+                <div class="form-group">
+                    <label>Профиль обфускации</label>
+                    <select id="obfuscation-profile">
+                        <option value="http2">HTTP/2</option>
+                        <option value="websocket">WebSocket</option>
+                        <option value="quic">QUIC</option>
+                        <option value="tls">TLS</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Marionette профиль</label>
+                    <select id="marionette-profile">
+                        <option value="browser">Browser</option>
+                        <option value="mobile">Mobile</option>
+                        <option value="desktop">Desktop</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="auto-profile"> Автоматический выбор профиля
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="ai-evasion"> AI Evasion
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="hardware-evasion"> Hardware Evasion
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="behavioral-mimicry"> Behavioral Mimicry
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="russian-mimicry"> Russian Mimicry
+                    </label>
+                </div>
+                </div>
+                
+                <button id="save-settings-btn" class="btn btn-primary">Сохранить настройки</button>
+            </div>
+
+            <!-- Profiles Page -->
+            <div id="page-profiles" class="page">
+                <h3>Профили подключений</h3>
+                <div class="profiles-container">
+                    <div id="profiles-list" class="profiles-list">
+                        <div class="profile-item empty">
+                            <p>Нет сохраненных профилей</p>
+                            <p class="text-secondary">Создайте профиль для быстрого подключения</p>
+                        </div>
+                    </div>
+                    <div class="profiles-actions">
+                        <button id="add-profile-btn" class="btn btn-primary">➕ Добавить профиль</button>
+                        <button id="import-profile-btn" class="btn btn-secondary">📥 Импорт</button>
+                        <button id="export-profile-btn" class="btn btn-secondary">📤 Экспорт</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Stats Page -->
+            <div id="page-stats" class="page">
+                <h3>Статистика трафика</h3>
+                <div class="stats-container">
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-icon">⬆️</div>
+                            <div class="stat-info">
+                                <h4>Отправлено (Outbound)</h4>
+                                <p id="outbound-bytes" class="stat-value">0 B</p>
+                                <p id="outbound-packets" class="stat-detail">0 пакетов</p>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon">⬇️</div>
+                            <div class="stat-info">
+                                <h4>Получено (Inbound)</h4>
+                                <p id="inbound-bytes" class="stat-value">0 B</p>
+                                <p id="inbound-packets" class="stat-detail">0 пакетов</p>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon">📈</div>
+                            <div class="stat-info">
+                                <h4>Всего трафика</h4>
+                                <p id="total-bytes" class="stat-value">0 B</p>
+                                <p id="total-packets" class="stat-detail">0 пакетов</p>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon">⚡</div>
+                            <div class="stat-info">
+                                <h4>Скорость</h4>
+                                <p id="speed-up" class="stat-value">0 B/s</p>
+                                <p id="speed-down" class="stat-detail">0 B/s</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="stats-chart-container">
+                        <h4>График трафика (последние 60 секунд)</h4>
+                        <canvas id="traffic-chart" width="800" height="200"></canvas>
+                    </div>
+                    <div class="stats-actions">
+                        <button id="reset-stats-btn" class="btn btn-secondary">Сбросить статистику</button>
+                        <button id="refresh-stats-btn" class="btn btn-primary">Обновить</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Logs Page -->
+            <div id="page-logs" class="page">
+                <h3>Логи подключения</h3>
+                <div class="logs-container">
+                    <div id="logs-content" class="logs-content"></div>
+                    <button id="clear-logs-btn" class="btn btn-secondary">Очистить</button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script type="module" src="app.js"></script>
+    <script>
+        // Функция для переключения видимости полей XHTTP
+        function toggleXHTTPFields() {
+            const useXHTTP = document.getElementById('use-xhttp').checked;
+            const xhttpFields = document.getElementById('xhttp-fields');
+            if (useXHTTP) {
+                xhttpFields.style.display = 'block';
+            } else {
+                xhttpFields.style.display = 'none';
+            }
+        }
+        // Делаем функцию глобальной
+        window.toggleXHTTPFields = toggleXHTTPFields;
+    </script>
+</body>
+</html>
+

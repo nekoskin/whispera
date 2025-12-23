@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package whispera.transport.v1;
+
+option go_package = "whispera/api/gen/transport/v1;transportv1";
+
+// StreamTransportService - сервис для передачи данных через gRPC
+service StreamTransportService {
+  // BidirectionalStream - двунаправленный поток для передачи данных
+  rpc BidirectionalStream(stream DataPacket) returns (stream DataPacket);
+}
+
+// DataPacket - пакет данных для передачи
+message DataPacket {
+  bytes data = 1;
+  uint32 sequence = 2; // Порядковый номер пакета
+}
+

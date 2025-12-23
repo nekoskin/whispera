@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package whispera.dataplane.v1;
+
+option go_package = "whispera/api/gen/dataplane/v1;dataplanev1";
+
+// DataPlaneService attaches encrypted transports to session contexts.
+service DataPlaneService {
+  // Attaches a new transport stream to an existing session.
+  rpc AttachStream(AttachStreamRequest) returns (AttachStreamResponse);
+
+  // Detaches an existing transport stream.
+  rpc DetachStream(DetachStreamRequest) returns (DetachStreamResponse);
+
+  // Returns runtime stats for observability.
+  rpc GetSessionStats(GetSessionStatsRequest)
+      returns (GetSessionStatsResponse);
+
+  // Streams dataplane health events (loss, congestion, reorders).
+  rpc StreamDataplaneEvents(StreamDataplaneEventsRequest)
+      returns (stream DataplaneEvent);
+}
+
+message AttachStreamRequest {
+  string session_id = 1;
+  string transport = 2;      // udp|tcp|ws|ws2|p2p
+  string stream_id = 3;
+  bytes parameters = 4;      // serialized transport-specific params
+  uint32 mtu = 5;
+  bool enable_split_tunnel = 6;
+}
+
+message AttachStreamResponse {
+  bool attached = 1;
+  string stream_id = 2;
+  bytes tunnel_endpoint = 3; // e.g., QUIC address info
+}
+
+message DetachStreamRequest {
+  string session_id = 1;
+  string stream_id = 2;
+  string reason = 3;
+}
+
+message DetachStreamResponse {
+  bool detached = 1;
+}
+
+message GetSessionStatsRequest {
+  string session_id = 1;
+}
+
+message GetSessionStatsResponse {
+  string session_id = 1;
+  uint64 bytes_in = 2;
+  uint64 bytes_out = 3;
+  uint32 packets_in = 4;
+  uint32 packets_out = 5;
+  uint32 retransmits = 6;
+  uint32 rtt_ms = 7;
+  float loss_percent = 8;
+}
+
+message StreamDataplaneEventsRequest {
+  string session_id = 1;
+  string stream_id = 2;
+}
+
+enum DataplaneEventType {
+  DATAPLANE_EVENT_TYPE_UNSPECIFIED = 0;
+  DATAPLANE_EVENT_TYPE_LOSS_SPIKE = 1;
+  DATAPLANE_EVENT_TYPE_CONGESTION = 2;
+  DATAPLANE_EVENT_TYPE_STREAM_ERROR = 3;
+  DATAPLANE_EVENT_TYPE_TUN_ERROR = 4;
+}
+
+message DataplaneEvent {
+  DataplaneEventType type = 1;
+  string session_id = 2;
+  string stream_id = 3;
+  uint64 timestamp_unix = 4;
+  string description = 5;
+}
+
+
