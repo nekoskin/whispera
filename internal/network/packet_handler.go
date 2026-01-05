@@ -37,36 +37,36 @@ func NewPacketBuffer(maxSize int, maxDelay time.Duration) *PacketBuffer {
 func (pb *PacketBuffer) Insert(seq uint32, data []byte) []byte {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
-	
+
 	// ОПТИМИЗАЦИЯ: Используем кэшированное время для уменьшения системных вызовов
 	timeCache := util.GetGlobalTimeCache()
 	now := timeCache.Now()
-	
+
 	// Очистка устаревших пакетов перед добавлением нового
 	if pb.maxDelay > 0 {
 		pb.cleanupExpired(now)
 	}
-	
+
 	// Если пакет старый, игнорируем
 	if pb.maxSeq > 0 && seq < pb.maxSeq-100 {
 		return nil
 	}
-	
+
 	// Обновляем maxSeq
 	if seq > pb.maxSeq {
 		pb.maxSeq = seq
 	}
-	
+
 	// Добавляем пакет с временной меткой
 	pb.buf[seq] = &bufferedPacket{
 		data:      append([]byte(nil), data...), // Копируем данные для безопасности
 		timestamp: now,
 	}
-	
+
 	// Проверяем, есть ли последовательные пакеты начиная с ожидаемого
 	var ready [][]byte
 	expected := pb.maxSeq - uint32(len(pb.buf)) + 1
-	
+
 	// ОПТИМИЗАЦИЯ: Находим минимальный seq более эффективно
 	// Используем текущий seq как начальное значение для быстрого пути
 	if len(pb.buf) > 0 {
@@ -84,7 +84,7 @@ func (pb *PacketBuffer) Insert(seq uint32, data []byte) []byte {
 		}
 		expected = minSeq
 	}
-	
+
 	// Собираем последовательные пакеты
 	for {
 		if pkt, ok := pb.buf[expected]; ok {
@@ -95,17 +95,17 @@ func (pb *PacketBuffer) Insert(seq uint32, data []byte) []byte {
 			break
 		}
 	}
-	
+
 	// Очищаем старые пакеты если буфер переполнен
 	if len(pb.buf) > pb.maxSize {
 		pb.cleanupOldest()
 	}
-	
+
 	// Возвращаем первый готовый пакет (если есть)
 	if len(ready) > 0 {
 		return ready[0]
 	}
-	
+
 	return nil
 }
 
@@ -114,7 +114,7 @@ func (pb *PacketBuffer) cleanupExpired(now time.Time) {
 	if pb.maxDelay <= 0 {
 		return
 	}
-	
+
 	for seq, pkt := range pb.buf {
 		if now.Sub(pkt.timestamp) > pb.maxDelay {
 			delete(pb.buf, seq)
@@ -127,23 +127,23 @@ func (pb *PacketBuffer) cleanupOldest() {
 	if len(pb.buf) <= pb.maxSize {
 		return
 	}
-	
+
 	// ОПТИМИЗАЦИЯ: Используем более эффективный алгоритм - находим N самых старых без полной сортировки
 	toRemove := len(pb.buf) - pb.maxSize + 10
 	if toRemove <= 0 {
 		return
 	}
-	
+
 	// ОПТИМИЗАЦИЯ: Находим самые старые пакеты за один проход
 	// Используем частичную сортировку - находим только нужное количество
 	type seqTime struct {
 		seq       uint32
 		timestamp time.Time
 	}
-	
+
 	// ОПТИМИЗАЦИЯ: Собираем только первые toRemove самых старых
 	oldest := make([]seqTime, 0, toRemove)
-	
+
 	for seq, pkt := range pb.buf {
 		if len(oldest) < toRemove {
 			oldest = append(oldest, seqTime{seq: seq, timestamp: pkt.timestamp})
@@ -161,7 +161,7 @@ func (pb *PacketBuffer) cleanupOldest() {
 			}
 		}
 	}
-	
+
 	// Удаляем найденные самые старые пакеты
 	for _, st := range oldest {
 		delete(pb.buf, st.seq)
@@ -170,23 +170,23 @@ func (pb *PacketBuffer) cleanupOldest() {
 
 // RetransmissionManager - менеджер повторной передачи пакетов
 type RetransmissionManager struct {
-	pending     map[uint32]*PendingPacket
-	mu          sync.RWMutex
+	pending      map[uint32]*PendingPacket
+	mu           sync.RWMutex
 	onRetransmit func(seq uint32, data []byte) error
-	timeout     time.Duration
-	maxRetries  int
-	ctx         context.Context
-	cancel      context.CancelFunc
-	stopDone    chan struct{}
+	timeout      time.Duration
+	maxRetries   int
+	ctx          context.Context
+	cancel       context.CancelFunc
+	stopDone     chan struct{}
 }
 
 // PendingPacket - ожидающий подтверждения пакет
 type PendingPacket struct {
-	Seq       uint32
-	Data      []byte
-	SentAt    time.Time
-	Retries   int
-	LastSent  time.Time
+	Seq      uint32
+	Data     []byte
+	SentAt   time.Time
+	Retries  int
+	LastSent time.Time
 }
 
 // NewRetransmissionManager создает менеджер повторной передачи
@@ -201,10 +201,10 @@ func NewRetransmissionManager(timeout time.Duration, maxRetries int, onRetransmi
 		cancel:       cancel,
 		stopDone:     make(chan struct{}),
 	}
-	
+
 	// Запускаем обработку таймаутов
 	go rm.processTimeouts()
-	
+
 	return rm
 }
 
@@ -215,7 +215,7 @@ func (rm *RetransmissionManager) Send(seq uint32, data []byte) error {
 	// ОПТИМИЗАЦИЯ: Используем кэшированное время
 	timeCache := util.GetGlobalTimeCache()
 	now := timeCache.Now()
-	
+
 	rm.pending[seq] = &PendingPacket{
 		Seq:      seq,
 		Data:     data,
@@ -224,7 +224,7 @@ func (rm *RetransmissionManager) Send(seq uint32, data []byte) error {
 		LastSent: now,
 	}
 	rm.mu.Unlock()
-	
+
 	return rm.onRetransmit(seq, data)
 }
 
@@ -232,7 +232,7 @@ func (rm *RetransmissionManager) Send(seq uint32, data []byte) error {
 func (rm *RetransmissionManager) Ack(seq uint32) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
-	
+
 	delete(rm.pending, seq)
 }
 
@@ -243,10 +243,10 @@ func (rm *RetransmissionManager) processTimeouts() {
 	// ОПТИМИЗАЦИЯ: Увеличиваем интервал тикера до 50ms для снижения нагрузки
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
-	
+
 	// ОПТИМИЗАЦИЯ: Получаем timeCache один раз
 	timeCache := util.GetGlobalTimeCache()
-	
+
 	for {
 		select {
 		case <-rm.ctx.Done():
@@ -260,12 +260,12 @@ func (rm *RetransmissionManager) processTimeouts() {
 			// ОПТИМИЗАЦИЯ: Используем кэшированное время
 			now := timeCache.Now()
 			var toRetransmit []*PendingPacket
-			
+
 			// ОПТИМИЗАЦИЯ: Предварительно выделяем слайс для уменьшения аллокаций
 			if len(rm.pending) > 0 {
 				toRetransmit = make([]*PendingPacket, 0, len(rm.pending)/4) // Предполагаем ~25% ретрансмиссий
 			}
-			
+
 			for seq, pkt := range rm.pending {
 				if now.Sub(pkt.LastSent) > rm.timeout {
 					if pkt.Retries < rm.maxRetries {
@@ -277,7 +277,7 @@ func (rm *RetransmissionManager) processTimeouts() {
 				}
 			}
 			rm.mu.Unlock()
-			
+
 			// ОПТИМИЗАЦИЯ: Обрабатываем ретрансмиссии без блокировки мьютекса
 			for _, pkt := range toRetransmit {
 				rm.mu.Lock()
@@ -285,7 +285,7 @@ func (rm *RetransmissionManager) processTimeouts() {
 				// ОПТИМИЗАЦИЯ: Используем кэшированное время
 				pkt.LastSent = timeCache.Now()
 				rm.mu.Unlock()
-				
+
 				if rm.onRetransmit != nil {
 					_ = rm.onRetransmit(pkt.Seq, pkt.Data)
 				}
@@ -337,7 +337,7 @@ func (md *MTUDiscovery) GetCurrentMTU() int {
 func (md *MTUDiscovery) ProbeMTU(size int) {
 	md.mu.Lock()
 	defer md.mu.Unlock()
-	
+
 	if size >= md.minMTU && size <= md.maxMTU {
 		md.probeSize = size
 	}
@@ -347,7 +347,7 @@ func (md *MTUDiscovery) ProbeMTU(size int) {
 func (md *MTUDiscovery) MTUConfirmed(size int) {
 	md.mu.Lock()
 	defer md.mu.Unlock()
-	
+
 	if size >= md.currentMTU {
 		md.currentMTU = size
 	}
@@ -357,7 +357,7 @@ func (md *MTUDiscovery) MTUConfirmed(size int) {
 func (md *MTUDiscovery) MTUFailed(size int) {
 	md.mu.Lock()
 	defer md.mu.Unlock()
-	
+
 	if size <= md.currentMTU {
 		// Уменьшаем MTU
 		md.currentMTU = size - 100 // Консервативное уменьшение
@@ -369,12 +369,12 @@ func (md *MTUDiscovery) MTUFailed(size int) {
 
 // CongestionController - контроль перегрузки сети
 type CongestionController struct {
-	cwnd         int // Congestion window
-	ssthresh     int // Slow start threshold
-	state        string // "slow_start", "congestion_avoidance", "recovery"
-	mu           sync.RWMutex
-	minCwnd      int
-	maxCwnd      int
+	cwnd     int    // Congestion window
+	ssthresh int    // Slow start threshold
+	state    string // "slow_start", "congestion_avoidance", "recovery"
+	mu       sync.RWMutex
+	minCwnd  int
+	maxCwnd  int
 }
 
 // NewCongestionController создает контроллер перегрузки
@@ -399,7 +399,7 @@ func (cc *CongestionController) GetWindowSize() int {
 func (cc *CongestionController) OnAck() {
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
-	
+
 	switch cc.state {
 	case "slow_start":
 		cc.cwnd++
@@ -410,7 +410,7 @@ func (cc *CongestionController) OnAck() {
 		// Linear growth
 		cc.cwnd++
 	}
-	
+
 	if cc.cwnd > cc.maxCwnd {
 		cc.cwnd = cc.maxCwnd
 	}
@@ -420,7 +420,7 @@ func (cc *CongestionController) OnAck() {
 func (cc *CongestionController) OnLoss() {
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
-	
+
 	cc.ssthresh = cc.cwnd / 2
 	if cc.ssthresh < cc.minCwnd {
 		cc.ssthresh = cc.minCwnd
@@ -433,7 +433,7 @@ func (cc *CongestionController) OnLoss() {
 func (cc *CongestionController) OnTimeout() {
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
-	
+
 	cc.ssthresh = cc.cwnd / 2
 	if cc.ssthresh < cc.minCwnd {
 		cc.ssthresh = cc.minCwnd
@@ -465,23 +465,23 @@ func NewRateLimiter(rate float64, burst int) *RateLimiter {
 func (rl *RateLimiter) Allow(size int) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	
+
 	now := time.Now()
 	elapsed := now.Sub(rl.lastUpdate).Seconds()
 	rl.lastUpdate = now
-	
+
 	// Пополняем токены
 	rl.tokens += elapsed * rl.rate
 	if rl.tokens > float64(rl.burst) {
 		rl.tokens = float64(rl.burst)
 	}
-	
+
 	// Проверяем, достаточно ли токенов
 	if rl.tokens >= float64(size) {
 		rl.tokens -= float64(size)
 		return true
 	}
-	
+
 	return false
 }
 
@@ -489,25 +489,25 @@ func (rl *RateLimiter) Allow(size int) bool {
 func (rl *RateLimiter) WaitForTokens(size int) time.Duration {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	
+
 	now := time.Now()
 	elapsed := now.Sub(rl.lastUpdate).Seconds()
 	rl.lastUpdate = now
-	
+
 	// Пополняем токены
 	rl.tokens += elapsed * rl.rate
 	if rl.tokens > float64(rl.burst) {
 		rl.tokens = float64(rl.burst)
 	}
-	
+
 	// Вычисляем время ожидания
 	if rl.tokens >= float64(size) {
 		return 0
 	}
-	
+
 	needed := float64(size) - rl.tokens
 	waitTime := needed / rl.rate
-	
+
 	return time.Duration(waitTime * float64(time.Second))
 }
 
@@ -532,16 +532,16 @@ func NewConnectionState(remoteAddr *net.UDPAddr, sessionID uint32) *ConnectionSt
 		LastActivity: time.Now(),
 		PacketBuffer: NewPacketBuffer(100, 5*time.Second),
 		MTU:          NewMTUDiscovery(1200, 576, 1500),
-		Congestion:   NewCongestionController(10, 100, 2, 1000),
-		RateLimit:    NewRateLimiter(10*1024*1024, 100*1024), // 10 MB/s, burst 100 KB
+		Congestion:   NewCongestionController(100, 500, 10, 10000),   // ОПТИМИЗИРОВАНО: cwnd=100, ssthresh=500, minCwnd=10, maxCwnd=10000
+		RateLimit:    NewRateLimiter(1*1024*1024*1024, 10*1024*1024), // ОПТИМИЗИРОВАНО: 1 GB/s, burst 10 MB
 	}
-	
-	// Инициализируем retransmission manager
-	cs.Retransmit = NewRetransmissionManager(500*time.Millisecond, 3, func(seq uint32, data []byte) error {
+
+	// Инициализируем retransmission manager с увеличенным timeout
+	cs.Retransmit = NewRetransmissionManager(1000*time.Millisecond, 5, func(seq uint32, data []byte) error {
 		// Callback для повторной передачи (должен быть установлен извне)
 		return nil
 	})
-	
+
 	return cs
 }
 
@@ -558,4 +558,3 @@ func (cs *ConnectionState) IsStale(timeout time.Duration) bool {
 	defer cs.mu.RUnlock()
 	return time.Since(cs.LastActivity) > timeout
 }
-

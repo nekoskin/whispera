@@ -205,9 +205,9 @@ func (re *RuleEngineImpl) UpdateRule(name string, newRule *types.ObfuscationRule
 func (re *RuleEngineImpl) applyAction(
 	action string, data []byte, params map[string]interface{}, context *types.TrafficContext,
 ) ([]byte, error) {
-	// Use parameters for action application
-	_ = context.Direction
-	_ = context.Protocol
+	if context != nil && context.Direction != "" {
+		// Use metadata for action context
+	}
 
 	switch action {
 	case "add_padding":

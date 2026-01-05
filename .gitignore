@@ -12,6 +12,14 @@
 /client
 !/internal/server/
 
+# Tauri / Frontend
+/client-package-tauri/
+client-package-tauri/target/
+**/node_modules/
+**/dist/
+*.nupkg
+*.blockmap
+
 # Logs
 *.log
 logs/
@@ -76,5 +84,6 @@ venv/
 # Data directories
 data/
 metrics/
+!internal/metrics/
 reports/
 

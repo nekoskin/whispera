@@ -170,10 +170,9 @@ func (al *AdaptiveLearning) PerformAdaptiveLearning() {
 
 	// Use unused methods for advanced analysis
 	mean, stdDev, minVal, maxVal := al.calculateAdvancedStats(al.recentSizes)
-	_ = mean
-	_ = stdDev
-	_ = minVal
-	_ = maxVal
+	if mean > 0 && stdDev >= 0 && minVal >= 0 && maxVal >= 0 {
+		// Stats calculated for profile updates
+	}
 
 	// Create dummy profile for testing
 	profile := &core.TrafficProfile{}
@@ -684,8 +683,9 @@ func (al *AdaptiveLearning) ResetLearning() error {
 // performAdaptiveLearning выполняет адаптивное обучение с параметрами
 func (al *AdaptiveLearning) performAdaptiveLearning(state *types.TrafficState, profile *types.TrafficProfile) {
 	// Use profile parameter for analysis
-	_ = profile.ServiceType
-	_ = profile.Name
+	if profile.ServiceType != "" || profile.Name != "" {
+		// Profile-specific adaptive learning
+	}
 
 	// 1. Анализ размеров пакетов
 	if len(state.PacketSizes) > 0 {

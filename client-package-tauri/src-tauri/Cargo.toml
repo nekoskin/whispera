@@ -21,7 +21,7 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["winbase", "winuser", "shellapi", "processthreadsapi"] }
+winapi = { version = "0.3", features = ["winbase", "winuser", "shellapi", "processthreadsapi", "handleapi", "securitybaseapi", "psapi"] }
 whoami = "1.4"
 
 [features]

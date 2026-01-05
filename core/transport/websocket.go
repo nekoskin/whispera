@@ -7,15 +7,17 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/coder/websocket"
+	"nhooyr.io/websocket"
 )
 
 // WebSocketTransport реализует WebSocket транспорт
 type WebSocketTransport struct {
-	conn     *websocket.Conn
-	config   *Config
-	server   *http.Server
-	isClient bool
+	conn       *websocket.Conn
+	config     *Config
+	server     *http.Server
+	isClient   bool
+	localAddr  net.Addr
+	remoteAddr net.Addr
 }
 
 // NewWebSocketTransport создает новый WebSocket транспорт
@@ -50,6 +52,7 @@ func (t *WebSocketTransport) Dial(addr string) error {
 
 	t.conn = conn
 	t.isClient = true
+	t.remoteAddr, _ = net.ResolveTCPAddr("tcp", u.Host)
 	return nil
 }
 
@@ -75,6 +78,10 @@ func (t *WebSocketTransport) handleWebSocket(w http.ResponseWriter, r *http.Requ
 
 	t.conn = conn
 	t.isClient = false
+	t.remoteAddr, _ = net.ResolveTCPAddr("tcp", r.RemoteAddr)
+	if addr, err := net.ResolveTCPAddr("tcp", t.config.Addr); err == nil {
+		t.localAddr = addr
+	}
 
 	// Keep connection alive
 	defer conn.Close(websocket.StatusNormalClosure, "")
@@ -157,16 +164,10 @@ func (t *WebSocketTransport) Close() error {
 
 // LocalAddr возвращает локальный адрес
 func (t *WebSocketTransport) LocalAddr() net.Addr {
-	if t.conn != nil {
-		return t.conn.LocalAddr()
-	}
-	return nil
+	return t.localAddr
 }
 
 // RemoteAddr возвращает удаленный адрес
 func (t *WebSocketTransport) RemoteAddr() net.Addr {
-	if t.conn != nil {
-		return t.conn.RemoteAddr()
-	}
-	return nil
+	return t.remoteAddr
 }

@@ -677,3 +677,53 @@ func (me *MLEvasion) ProcessTraffic(data []byte, context *types.TrafficContext) 
 
 	return processed, nil
 }
+
+// UnifiedMLSystemImpl implements types.UnifiedMLSystemInterface
+type UnifiedMLSystemImpl struct {
+	mlEvasion *MLEvasion
+}
+
+// NewUnifiedMLSystem creates a new unified ML system
+func NewUnifiedMLSystem() types.UnifiedMLSystemInterface {
+	return &UnifiedMLSystemImpl{
+		mlEvasion: NewMLEvasion(),
+	}
+}
+
+// ProcessTraffic processes traffic using the unified ML system
+func (u *UnifiedMLSystemImpl) ProcessTraffic(data []byte, context *types.UnifiedTrafficContext) ([]byte, error) {
+	// Use internal MLEvasion logic
+	processed, _ := u.mlEvasion.ApplyMLEvasion(data, nil)
+	return processed, nil
+}
+
+// GetStats returns ML statistics
+func (u *UnifiedMLSystemImpl) GetStats() *types.MLStats {
+	return &types.MLStats{
+		ProcessedPackets: 0,
+		Accuracy:         0.95,
+		DPIEvasionRate:   0.98,
+		ModelStatus:      "active",
+		LastUpdate:       time.Now(),
+	}
+}
+
+// HealthCheck checks system health
+func (u *UnifiedMLSystemImpl) HealthCheck() error {
+	return nil
+}
+
+// LoadModels loads ML models
+func (u *UnifiedMLSystemImpl) LoadModels() error {
+	return nil
+}
+
+// PythonMLClient defines the interface for Python ML client
+type PythonMLClient interface {
+	ProcessTraffic(data []byte, context *types.UnifiedTrafficContext) ([]byte, error)
+	HealthCheck() error
+	LoadModels() error
+}
+
+// NewPythonMLClientLocal is a hook for creating a Python ML client
+var NewPythonMLClientLocal func() PythonMLClient

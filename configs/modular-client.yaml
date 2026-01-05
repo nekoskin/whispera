@@ -1,0 +1,59 @@
+# Whispera Modular Client Configuration
+version: "2.0"
+
+# Main client settings
+client:
+  mode: "vpn" # vpn, proxy
+  log_level: "info"
+
+# Connection to server
+connection:
+  server_address: "vpn.example.com:443"
+  transport: "udp" # udp, tcp, xhttp, ws
+  keepalive_interval: 30s
+  reconnect_interval: 5s
+  max_reconnect_attempts: 10
+  timeout: 30s
+
+# TUN Interface settings
+tun:
+  enabled: true
+  name: "whispera0"
+  ip: "10.8.0.2"
+  gateway: "10.8.0.1"
+  netmask: "255.255.255.0"
+  mtu: 1420
+  buffer_size: 65535
+  metric: 100
+
+# DNS settings
+dns:
+  enabled: true
+  upstream: "1.1.1.1:53"
+  fake_ip: true
+  fake_ip_range: "198.18.0.0/15"
+  cache_size: 10000
+  block_ads: true
+
+# NAT / Routing
+nat:
+  enabled: true
+  port_range_start: 10000
+  port_range_end: 20000
+
+# Security
+crypto:
+  cipher: "chacha20-poly1305"
+  enable_key_pool: true
+
+# Obfuscation
+obfuscator:
+  enabled: true
+  profile: "randomized"
+  threat_level: 5
+
+# Metrics
+metrics:
+  enabled: true
+  address: ":9091"
+  path: "/metrics"

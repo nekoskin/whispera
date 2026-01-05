@@ -1,0 +1,79 @@
+# Whispera Server Configuration
+# Protocol: Whispera v1 (WLESS)
+
+listen:
+  udp: ":51820"
+  tcp: ":443"
+  websocket: ":443"
+  quic: ":443"
+
+# TLS Configuration
+tls:
+  cert: "/etc/whispera/cert.pem"
+  key: "/etc/whispera/key.pem"
+  acme_domain: ""  # Optional: auto HTTPS
+  min_version: "1.2"
+  
+# Whispera Protocol
+protocol:
+  version: 1
+  enable_vless_compat: true  # Accept VLESS v0 clients
+  
+# Authentication
+auth:
+  # List of authorized UUIDs
+  uuids:
+    - "00000000-0000-0000-0000-000000000000"
+  psk: "0000000000000000000000000000000000000000000000000000000000000000"
+
+# Transport Settings
+transport:
+  selector_mode: "auto"
+  
+  udp:
+    max_packet_size: 65535
+    buffer_size: 1024
+  tcp:
+    max_conns: 10000
+    timeout: 30
+  websocket:
+    path: "/ws"
+    max_conns: 10000
+  quic:
+    max_streams: 100
+    max_idle_timeout: 30
+
+# Obfuscation
+obfuscation:
+  enabled: true
+  ml_enabled: true
+  default_profile: "ml"
+  
+# Network
+network:
+  tun_name: "Whispera"
+  tun_ip: "198.18.0.1"
+  tun_mtu: 1420
+  dns: "1.1.1.1"
+  
+# Session Management
+session:
+  max_sessions: 10000
+  idle_timeout: 300
+  cleanup_interval: 60
+  
+# Rate Limiting
+rate_limit:
+  handshake: 100  # per second
+  packets: 1000000
+  
+# Logging
+logging:
+  level: "info"  # debug, info, warn, error
+  format: "json"
+  
+# Monitoring
+monitoring:
+  enabled: true
+  metrics_port: 9090
+  health_port: 8080

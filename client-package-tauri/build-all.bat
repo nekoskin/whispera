@@ -95,7 +95,8 @@ if not defined SKIP_GO_BUILD (
     echo [INFO] Сборка Go клиента для Windows...
     set GOOS=windows
     set GOARCH=amd64
-    go build -o client-package-tauri\src-tauri\resources\whispera-go-client.exe .\cmd\client
+    set VERSION=0.1.0-release
+    go build -ldflags="-s -w -X main.Version=%VERSION%" -o client-package-tauri\src-tauri\resources\whispera-go-client.exe .\cmd\client
     if %ERRORLEVEL% NEQ 0 (
         echo [ERROR] Ошибка сборки Go клиента для Windows
         pause

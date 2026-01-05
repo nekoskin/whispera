@@ -35,21 +35,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 
 set GO_BIN_NAME=whispera-go-client-x86_64-pc-windows-msvc.exe
 
-:: Проверяем наличие wintun.dll в resources
-if not exist "src-tauri\resources\wintun.dll" (
-    echo [INFO] Загрузка wintun.dll...
-    powershell -ExecutionPolicy Bypass -File "download-wintun.ps1" >nul 2>&1
-    if !ERRORLEVEL! NEQ 0 (
-        echo [ERROR] Не удалось загрузить wintun.dll
-        pause
-        exit /b 1
-    )
-    if not exist "src-tauri\resources\wintun.dll" (
-        echo [ERROR] wintun.dll не найден после загрузки
-        pause
-        exit /b 1
-    )
-)
+:: wintun.dll уже есть в resources (скопирован из binaries)
 
 :: Проверяем наличие Go
 where go >nul 2>&1

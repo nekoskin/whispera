@@ -282,6 +282,27 @@ type UnifiedMLSystemInterface interface {
 	LoadModels() error
 }
 
+// DynamicProfileManagerInterface defines the interface for dynamic profile management
+type DynamicProfileManagerInterface interface {
+	CheckProfileSwitch()
+	SwitchProfile(targetProfile, reason string) error
+	GetProfileSwitchHistory() []ProfileSwitch
+	GetCurrentProfile() string
+}
+
+// RealAPIIntegrationInterface defines the interface for real API integration
+type RealAPIIntegrationInterface interface {
+	GenerateRealisticTraffic(service string, data []byte) ([]byte, error)
+	HealthCheck() error
+	IsEnabled() bool
+}
+
+// EvasionWorkerPoolInterface defines the interface for evasion worker pool
+type EvasionWorkerPoolInterface interface {
+	SubmitJob(data []byte, params map[string]interface{}, timeout time.Duration) ([]byte, error)
+	Stop()
+}
+
 // MLStats represents ML system statistics
 type MLStats struct {
 	ProcessedPackets int64     `json:"processed_packets"`
@@ -289,6 +310,13 @@ type MLStats struct {
 	DPIEvasionRate   float64   `json:"dpi_evasion_rate"`
 	ModelStatus      string    `json:"model_status"`
 	LastUpdate       time.Time `json:"last_update"`
+}
+
+// MLTrainingData represents training data for ML models
+type MLTrainingData struct {
+	Features [][]float64              `json:"features"` // Feature vectors
+	Labels   []int                    `json:"labels"`   // Class labels
+	Metadata []map[string]interface{} `json:"metadata"` // Sample metadata
 }
 
 // UnifiedTrafficContext - унифицированный контекст трафика
@@ -506,6 +534,13 @@ type TrafficState struct {
 	LastCleanup         time.Time
 	CleanupInterval     time.Duration
 
+	// ОПТИМИЗАЦИЯ: Поля для O(1) обновления статистики
+	IntervalsSum         time.Duration
+	RecentPacketSizesSum int
+	PacketHistoryIdx     int
+	IntervalsIdx         int
+	RecentPacketSizesIdx int
+
 	// Additional fields for enhanced traffic tracking
 	PacketHistory       []PacketInfo
 	TotalPackets        int64
@@ -594,10 +629,10 @@ type EffectivenessStats struct {
 	TotalAttempts  int64         `json:"total_attempts"`
 	LastUpdated    time.Time     `json:"last_updated"`
 	// Additional fields for detailed metrics
-	TotalBytes     int64 `json:"total_bytes"`
-	TotalPackets   int64 `json:"total_packets"`
-	SuccessCount   int64 `json:"success_count"`
-	FailureCount   int64 `json:"failure_count"`
+	TotalBytes   int64 `json:"total_bytes"`
+	TotalPackets int64 `json:"total_packets"`
+	SuccessCount int64 `json:"success_count"`
+	FailureCount int64 `json:"failure_count"`
 }
 
 // ProfileConfig - конфигурация профиля
@@ -638,17 +673,60 @@ type FTE struct {
 
 // TrafficProfiler - профилировщик трафика
 type TrafficProfiler struct {
-	profiles map[string]*TrafficProfile //nolint:unused // Reserved for future use
-	active   string                     //nolint:unused // Reserved for future use
-	mu       sync.RWMutex               //nolint:unused // Reserved for future use
+	profiles map[string]*TrafficProfile
+	active   string
+	mu       sync.RWMutex
+}
+
+func NewTrafficProfiler() *TrafficProfiler {
+	return &TrafficProfiler{
+		profiles: make(map[string]*TrafficProfile),
+	}
+}
+
+func (p *TrafficProfiler) RegisterProfile(name string, profile *TrafficProfile) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.profiles[name] = profile
+}
+
+func (p *TrafficProfiler) SuggestProfile(data []byte) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if len(data) > 1024 {
+		return "http2"
+	}
+	return p.active
 }
 
 // ProtocolStateMachine - машина состояний протокола
 type ProtocolStateMachine struct {
-	states   map[string]*ProtocolState //nolint:unused // Reserved for future use
-	current  string                    //nolint:unused // Reserved for future use
-	protocol string                    //nolint:unused // Reserved for future use
-	mu       sync.RWMutex              //nolint:unused // Reserved for future use
+	states  map[string]*ProtocolState
+	current string
+	mu      sync.RWMutex
+}
+
+func NewProtocolStateMachine() *ProtocolStateMachine {
+	return &ProtocolStateMachine{
+		states:  make(map[string]*ProtocolState),
+		current: "INIT",
+	}
+}
+
+func (s *ProtocolStateMachine) Transition(event string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if state, ok := s.states[s.current]; ok {
+		if next, ok := state.Transitions[event]; ok {
+			s.current = next
+		}
+	}
+}
+
+func (s *ProtocolStateMachine) GetCurrentState() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.current
 }
 
 // ProtocolState - состояние протокола
@@ -791,4 +869,22 @@ type TrafficRecordFTE struct {
 	DPIType      string
 	IsAnomaly    bool
 	Features     []float64
+}
+
+// BehavioralProfile represents behavioral characteristics
+type BehavioralProfile struct {
+	UserBehavior    string  `json:"user_behavior"`
+	SessionPattern  string  `json:"session_pattern"`
+	TimingPattern   string  `json:"timing_pattern"`
+	BurstPattern    string  `json:"burst_pattern"`
+	AdaptationLevel float64 `json:"adaptation_level"`
+}
+
+// TimingProfile represents timing characteristics
+type TimingProfile struct {
+	MinInterval time.Duration `json:"min_interval"`
+	MaxInterval time.Duration `json:"max_interval"`
+	AverageRTT  time.Duration `json:"average_rtt"`
+	Jitter      time.Duration `json:"jitter"`
+	BurstFreq   float64       `json:"burst_frequency"`
 }

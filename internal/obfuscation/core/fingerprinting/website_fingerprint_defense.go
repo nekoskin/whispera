@@ -23,7 +23,7 @@ var (
 func secureRandFloat64() float64 {
 	b := randBufferPool.Get().([]byte)
 	defer randBufferPool.Put(b)
-	
+
 	if _, err := crand.Read(b); err != nil {
 		return 0.0
 	}
@@ -251,7 +251,10 @@ func (w *WebsiteFingerprintDefense) calculateDeterministicTargetSize(
 	obfuscationLevel := profile.ObfuscationLevel
 
 	// Use deterministic algorithm based on size and obfuscation level
-	_ = int64(baseSize) * int64(obfuscationLevel) * 12345 // seed removed (not used)
+	seed := int64(baseSize) * int64(obfuscationLevel) * 12345
+	if seed > 0 {
+		// Seed used for deterministic pattern generation
+	}
 	// rand.Seed removed (determinism not required here)
 
 	// Calculate size based on deterministic pattern

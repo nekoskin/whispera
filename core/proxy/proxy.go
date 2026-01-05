@@ -36,6 +36,8 @@ type Proxy interface {
 	Stop() error
 	// Addr возвращает адрес, на котором слушает прокси
 	Addr() net.Addr
+	// Type возвращает тип прокси
+	Type() ProxyType
 }
 
 // Handler обрабатывает прокси соединения

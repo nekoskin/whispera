@@ -7,7 +7,7 @@ import (
 
 // UDPTransport реализует UDP транспорт
 type UDPTransport struct {
-	conn     net.PacketConn
+	conn     net.Conn
 	config   *Config
 	listener net.PacketConn
 }

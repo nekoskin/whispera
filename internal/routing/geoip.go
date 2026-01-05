@@ -1,322 +1,424 @@
+// Package routing provides advanced routing with GeoIP and domain matching
 package routing
 
 import (
-	"encoding/binary"
-	"fmt"
+	"bufio"
 	"net"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
-
-	geoip "whispera/internal/geoip"
 )
 
-// GeoIPDatabase представляет базу данных GeoIP
+// RuleType defines the type of routing rule
+type RuleType string
+
+const (
+	RuleTypeDomain        RuleType = "domain"         // Exact domain match
+	RuleTypeDomainSuffix  RuleType = "domain-suffix"  // Domain suffix match
+	RuleTypeDomainKeyword RuleType = "domain-keyword" // Domain keyword match
+	RuleTypeDomainRegex   RuleType = "domain-regex"   // Domain regex match
+	RuleTypeIP            RuleType = "ip"             // IP or CIDR match
+	RuleTypeGeoIP         RuleType = "geoip"          // GeoIP country code
+	RuleTypeGeoSite       RuleType = "geosite"        // GeoSite category
+	RuleTypePort          RuleType = "port"           // Port match
+	RuleTypeFinal         RuleType = "final"          // Default rule
+)
+
+// Action defines what to do with matched traffic
+type Action string
+
+const (
+	ActionDirect Action = "direct" // Direct connection (bypass VPN)
+	ActionProxy  Action = "proxy"  // Through VPN
+	ActionReject Action = "reject" // Block connection
+)
+
+// Rule represents a routing rule
+type Rule struct {
+	Type   RuleType
+	Value  string
+	Action Action
+	Tag    string         // Optional tag for identification
+	regex  *regexp.Regexp // Compiled regex for regex rules
+}
+
+// GeoIPDatabase holds GeoIP data
 type GeoIPDatabase struct {
-	ipv4Ranges map[string][]*IPRange // country -> IP ranges
-	ipv6Ranges map[string][]*IPRange6
-	mu         sync.RWMutex
-	loaded     bool
+	mu       sync.RWMutex
+	ipRanges map[string][]*net.IPNet // country code -> IP ranges
+	loaded   bool
 }
 
-// IPRange представляет диапазон IPv4 адресов
-type IPRange struct {
-	Start uint32
-	End   uint32
+// GeoSiteDatabase holds domain lists by category
+type GeoSiteDatabase struct {
+	mu       sync.RWMutex
+	domains  map[string][]string         // category -> domains
+	suffixes map[string][]string         // category -> domain suffixes
+	keywords map[string][]string         // category -> keywords
+	regexps  map[string][]*regexp.Regexp // category -> compiled regexps
+	loaded   bool
 }
 
-// IPRange6 представляет диапазон IPv6 адресов
-type IPRange6 struct {
-	Start [16]byte
-	End   [16]byte
+// Router handles routing decisions
+type Router struct {
+	rules   []Rule
+	geoIP   *GeoIPDatabase
+	geoSite *GeoSiteDatabase
+	mu      sync.RWMutex
+
+	// Stats
+	matches uint64
+	misses  uint64
 }
 
-// NewGeoIPDatabase создает новую базу данных GeoIP
-func NewGeoIPDatabase() *GeoIPDatabase {
-	return &GeoIPDatabase{
-		ipv4Ranges: make(map[string][]*IPRange),
-		ipv6Ranges: make(map[string][]*IPRange6),
+// NewRouter creates a new router
+func NewRouter() *Router {
+	return &Router{
+		rules: make([]Rule, 0),
+		geoIP: &GeoIPDatabase{ipRanges: make(map[string][]*net.IPNet)},
+		geoSite: &GeoSiteDatabase{
+			domains:  make(map[string][]string),
+			suffixes: make(map[string][]string),
+			keywords: make(map[string][]string),
+			regexps:  make(map[string][]*regexp.Regexp),
+		},
 	}
 }
 
-// LoadFromFile загружает GeoIP базу из файла (формат v2ray/sing-box)
-// Поддерживает как бинарный формат v2ray (magic "v2rg"), так и текстовый формат
-func (g *GeoIPDatabase) LoadFromFile(filename string) error {
-	if filename == "" {
-		return nil // Опциональная база
+// AddRule adds a routing rule
+func (r *Router) AddRule(rule Rule) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Compile regex if needed
+	if rule.Type == RuleTypeDomainRegex {
+		re, err := regexp.Compile(rule.Value)
+		if err != nil {
+			return err
+		}
+		rule.regex = re
 	}
 
-	data, err := os.ReadFile(filename) //nolint:gosec // Filename validated by caller
-	if err != nil {
-		return fmt.Errorf("failed to read GeoIP file: %w", err)
-	}
-
-	// Проверяем, является ли файл бинарным форматом v2ray
-	if len(data) >= 4 {
-		magic := string(data[:4])
-		if magic == "v2rg" {
-			// Используем бинарный парсер из internal/geoip
-			geoipDB := geoip.NewGeoIPDatabase()
-			if err := geoipDB.LoadFromFile(filename); err != nil {
-				return fmt.Errorf("failed to load binary v2ray GeoIP: %w", err)
-			}
-			// Конвертируем в формат routing engine
-			return g.loadFromGeoIPDatabase(geoipDB)
-		}
-	}
-
-	// Используем текстовый формат
-	return g.LoadFromBytes(data)
-}
-
-// loadFromGeoIPDatabase загружает данные из geoip.GeoIPDatabase
-// Конвертирует CIDR -> Country mapping в Country -> IP ranges mapping
-// Использует метод GetCountryCIDRs для получения всех CIDR по стране
-func (g *GeoIPDatabase) loadFromGeoIPDatabase(source *geoip.GeoIPDatabase) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	// Получаем все страны из source через GetAllCountries()
-	allCountries := source.GetAllCountries()
-	if len(allCountries) == 0 {
-		// Fallback на известные страны если метод не работает
-		allCountries = []string{"CN", "RU", "US", "GB", "DE", "FR", "JP", "KR", "IN", "BR", "CA", "AU", "NL", "IT", "ES", "PL", "TR", "MX", "AR", "CL"}
-	}
-	
-	// Конвертируем CIDR в IP ranges для каждой страны
-	for _, country := range allCountries {
-		cidrs := source.GetCountryCIDRs(country)
-		if len(cidrs) == 0 {
-			continue
-		}
-		
-		if g.ipv4Ranges[country] == nil {
-			g.ipv4Ranges[country] = make([]*IPRange, 0)
-		}
-		if g.ipv6Ranges[country] == nil {
-			g.ipv6Ranges[country] = make([]*IPRange6, 0)
-		}
-		
-		for _, cidrStr := range cidrs {
-			_, ipNet, err := net.ParseCIDR(cidrStr)
-			if err != nil {
-				continue
-			}
-			
-			if ipNet.IP.To4() != nil {
-				start, end := cidrToRange(ipNet)
-				g.ipv4Ranges[country] = append(g.ipv4Ranges[country], &IPRange{
-					Start: start,
-					End:   end,
-				})
-			} else {
-				start, end := cidrToRange6(ipNet)
-				g.ipv6Ranges[country] = append(g.ipv6Ranges[country], &IPRange6{
-					Start: start,
-					End:   end,
-				})
-			}
-		}
-	}
-	
-	g.loaded = true
+	r.rules = append(r.rules, rule)
 	return nil
 }
 
-// LoadFromBytes загружает GeoIP базу из байтов
-func (g *GeoIPDatabase) LoadFromBytes(data []byte) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
+// LoadGeoIPFile loads GeoIP data from a file
+// Format: country_code,cidr (one per line)
+func (r *Router) LoadGeoIPFile(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
 
-	// Простой парсер для формата v2ray GeoIP
-	// Формат: "country_code:ip_range1,ip_range2,..."
-	lines := strings.Split(string(data), "\n")
+	r.geoIP.mu.Lock()
+	defer r.geoIP.mu.Unlock()
 
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 
-		parts := strings.SplitN(line, ":", 2)
+		parts := strings.SplitN(line, ",", 2)
 		if len(parts) != 2 {
 			continue
 		}
 
-		country := strings.ToUpper(strings.TrimSpace(parts[0]))
-		rangesStr := strings.TrimSpace(parts[1])
+		code := strings.ToUpper(strings.TrimSpace(parts[0]))
+		cidr := strings.TrimSpace(parts[1])
 
-		ranges := strings.Split(rangesStr, ",")
-		for _, rangeStr := range ranges {
-			rangeStr = strings.TrimSpace(rangeStr)
-			if rangeStr == "" {
-				continue
-			}
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
 
-			// Парсим CIDR или IP range
-			if strings.Contains(rangeStr, "/") {
-				// CIDR notation
-				_, ipNet, err := net.ParseCIDR(rangeStr)
-				if err != nil {
-					continue
-				}
+		r.geoIP.ipRanges[code] = append(r.geoIP.ipRanges[code], ipNet)
+	}
 
-				if ipNet.IP.To4() != nil {
-					// IPv4
-					start, end := cidrToRange(ipNet)
-					if g.ipv4Ranges[country] == nil {
-						g.ipv4Ranges[country] = make([]*IPRange, 0)
-					}
-					g.ipv4Ranges[country] = append(g.ipv4Ranges[country], &IPRange{
-						Start: start,
-						End:   end,
-					})
-				} else {
-					// IPv6
-					start, end := cidrToRange6(ipNet)
-					if g.ipv6Ranges[country] == nil {
-						g.ipv6Ranges[country] = make([]*IPRange6, 0)
-					}
-					g.ipv6Ranges[country] = append(g.ipv6Ranges[country], &IPRange6{
-						Start: start,
-						End:   end,
-					})
-				}
+	r.geoIP.loaded = true
+	return scanner.Err()
+}
+
+// LoadGeoSiteFile loads GeoSite data from a file
+// Format: category:type:value (one per line)
+// Types: domain, suffix, keyword, regexp
+func (r *Router) LoadGeoSiteFile(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	r.geoSite.mu.Lock()
+	defer r.geoSite.mu.Unlock()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) < 2 {
+			continue
+		}
+
+		category := strings.ToLower(parts[0])
+		ruleType := "domain"
+		value := parts[1]
+
+		if len(parts) == 3 {
+			ruleType = parts[1]
+			value = parts[2]
+		}
+
+		switch ruleType {
+		case "domain":
+			r.geoSite.domains[category] = append(r.geoSite.domains[category], strings.ToLower(value))
+		case "suffix":
+			r.geoSite.suffixes[category] = append(r.geoSite.suffixes[category], strings.ToLower(value))
+		case "keyword":
+			r.geoSite.keywords[category] = append(r.geoSite.keywords[category], strings.ToLower(value))
+		case "regexp":
+			if re, err := regexp.Compile(value); err == nil {
+				r.geoSite.regexps[category] = append(r.geoSite.regexps[category], re)
 			}
 		}
 	}
 
-	g.loaded = true
+	r.geoSite.loaded = true
+	return scanner.Err()
+}
+
+// LoadGeoData loads GeoIP and GeoSite from a directory
+func (r *Router) LoadGeoData(dir string) error {
+	geoIPPath := filepath.Join(dir, "geoip.txt")
+	geoSitePath := filepath.Join(dir, "geosite.txt")
+
+	if _, err := os.Stat(geoIPPath); err == nil {
+		if err := r.LoadGeoIPFile(geoIPPath); err != nil {
+			return err
+		}
+	}
+
+	if _, err := os.Stat(geoSitePath); err == nil {
+		if err := r.LoadGeoSiteFile(geoSitePath); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
-// cidrToRange конвертирует CIDR в диапазон IPv4
-func cidrToRange(ipNet *net.IPNet) (start, end uint32) {
-	ip := ipNet.IP.To4()
-	if ip == nil {
-		return 0, 0
-	}
+// Match finds the action for a given destination
+func (r *Router) Match(destIP net.IP, destDomain string, destPort int) Action {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
-	ones, bits := ipNet.Mask.Size()
-	mask := uint32((1 << (bits - ones)) - 1)
+	domain := strings.ToLower(destDomain)
 
-	start = binary.BigEndian.Uint32(ip)
-	end = start | mask
+	for _, rule := range r.rules {
+		matched := false
 
-	return start, end
-}
+		switch rule.Type {
+		case RuleTypeDomain:
+			matched = domain == strings.ToLower(rule.Value)
 
-// cidrToRange6 конвертирует CIDR в диапазон IPv6
-func cidrToRange6(ipNet *net.IPNet) (start, end [16]byte) {
-	ip := ipNet.IP.To16()
-	if ip == nil {
-		return
-	}
+		case RuleTypeDomainSuffix:
+			suffix := strings.ToLower(rule.Value)
+			matched = domain == suffix || strings.HasSuffix(domain, "."+suffix)
 
-	copy(start[:], ip)
+		case RuleTypeDomainKeyword:
+			matched = strings.Contains(domain, strings.ToLower(rule.Value))
 
-	// Правильная обработка CIDR маски для IPv6
-	ones, bits := ipNet.Mask.Size()
-	if bits != 128 {
-		// Неверная маска для IPv6
-		copy(end[:], ip)
-		return
-	}
+		case RuleTypeDomainRegex:
+			if rule.regex != nil {
+				matched = rule.regex.MatchString(domain)
+			}
 
-	// Вычисляем количество бит хоста
-	hostBits := 128 - ones
-	
-	// Если все биты используются для сети (ones == 128), то start == end
-	if ones == 128 {
-		copy(end[:], ip)
-		return
-	}
-
-	// Копируем начальный IP
-	copy(end[:], ip)
-
-	// Вычисляем маску хоста (все биты хоста установлены в 1)
-	// Для IPv6 это сложнее, так как нужно работать с 128 битами
-	// Используем побайтовую обработку
-	bytesToSet := hostBits / 8
-	bitsToSet := hostBits % 8
-
-	// Устанавливаем байты хоста в 0xFF
-	for i := 15; i >= 16-bytesToSet; i-- {
-		end[i] = 0xFF
-	}
-
-	// Устанавливаем оставшиеся биты в последнем байте
-	if bitsToSet > 0 {
-		byteIndex := 16 - bytesToSet - 1
-		if byteIndex >= 0 {
-			mask := byte((1 << bitsToSet) - 1)
-			end[byteIndex] |= mask
-		}
-	}
-
-	// Применяем OR операцию для получения конечного адреса
-	for i := 0; i < 16; i++ {
-		end[i] = start[i] | end[i]
-	}
-
-	return start, end
-}
-
-// LookupCountry определяет страну по IP адресу
-func (g *GeoIPDatabase) LookupCountry(ip net.IP) string {
-	if !g.loaded {
-		return ""
-	}
-
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-
-	if ip.To4() != nil {
-		// IPv4
-		ipUint := binary.BigEndian.Uint32(ip.To4())
-		for country, ranges := range g.ipv4Ranges {
-			for _, r := range ranges {
-				if ipUint >= r.Start && ipUint <= r.End {
-					return country
+		case RuleTypeIP:
+			if destIP != nil {
+				_, ipNet, err := net.ParseCIDR(rule.Value)
+				if err == nil {
+					matched = ipNet.Contains(destIP)
+				} else {
+					// Try as single IP
+					ruleIP := net.ParseIP(rule.Value)
+					matched = ruleIP != nil && ruleIP.Equal(destIP)
 				}
 			}
+
+		case RuleTypeGeoIP:
+			if destIP != nil {
+				matched = r.matchGeoIP(destIP, rule.Value)
+			}
+
+		case RuleTypeGeoSite:
+			matched = r.matchGeoSite(domain, rule.Value)
+
+		case RuleTypePort:
+			// Parse port or port range
+			matched = r.matchPort(destPort, rule.Value)
+
+		case RuleTypeFinal:
+			matched = true
 		}
-	} else {
-		// IPv6
-		ipBytes := ip.To16()
-		if ipBytes == nil {
-			return ""
+
+		if matched {
+			r.matches++
+			return rule.Action
 		}
-		for country, ranges := range g.ipv6Ranges {
-			for _, r := range ranges {
-				if compareIPv6(ipBytes, r.Start[:]) >= 0 && compareIPv6(ipBytes, r.End[:]) <= 0 {
-					return country
-				}
+	}
+
+	r.misses++
+	return ActionProxy // Default to proxy
+}
+
+// matchGeoIP checks if IP matches a country code
+func (r *Router) matchGeoIP(ip net.IP, code string) bool {
+	r.geoIP.mu.RLock()
+	defer r.geoIP.mu.RUnlock()
+
+	code = strings.ToUpper(code)
+	ranges, ok := r.geoIP.ipRanges[code]
+	if !ok {
+		return false
+	}
+
+	for _, ipNet := range ranges {
+		if ipNet.Contains(ip) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// matchGeoSite checks if domain matches a category
+func (r *Router) matchGeoSite(domain string, category string) bool {
+	r.geoSite.mu.RLock()
+	defer r.geoSite.mu.RUnlock()
+
+	category = strings.ToLower(category)
+
+	// Check exact domains
+	if domains, ok := r.geoSite.domains[category]; ok {
+		for _, d := range domains {
+			if domain == d {
+				return true
 			}
 		}
 	}
 
-	return ""
-}
-
-// compareIPv6 сравнивает два IPv6 адреса
-func compareIPv6(a, b []byte) int {
-	for i := 0; i < 16; i++ {
-		if a[i] < b[i] {
-			return -1
-		}
-		if a[i] > b[i] {
-			return 1
+	// Check suffixes
+	if suffixes, ok := r.geoSite.suffixes[category]; ok {
+		for _, s := range suffixes {
+			if domain == s || strings.HasSuffix(domain, "."+s) {
+				return true
+			}
 		}
 	}
-	return 0
+
+	// Check keywords
+	if keywords, ok := r.geoSite.keywords[category]; ok {
+		for _, k := range keywords {
+			if strings.Contains(domain, k) {
+				return true
+			}
+		}
+	}
+
+	// Check regexps
+	if regexps, ok := r.geoSite.regexps[category]; ok {
+		for _, re := range regexps {
+			if re.MatchString(domain) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
-// IsLoaded возвращает, загружена ли база
-func (g *GeoIPDatabase) IsLoaded() bool {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.loaded
+// matchPort checks if port matches value (single or range)
+func (r *Router) matchPort(port int, value string) bool {
+	if strings.Contains(value, "-") {
+		// Port range
+		parts := strings.SplitN(value, "-", 2)
+		if len(parts) == 2 {
+			var start, end int
+			if _, err := parseIntFromString(parts[0], &start); err != nil {
+				return false
+			}
+			if _, err := parseIntFromString(parts[1], &end); err != nil {
+				return false
+			}
+			return port >= start && port <= end
+		}
+	}
+
+	// Single port
+	var rulePort int
+	if _, err := parseIntFromString(value, &rulePort); err != nil {
+		return false
+	}
+	return port == rulePort
 }
 
+func parseIntFromString(s string, result *int) (bool, error) {
+	s = strings.TrimSpace(s)
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false, nil
+		}
+		n = n*10 + int(c-'0')
+	}
+	*result = n
+	return true, nil
+}
+
+// Stats returns routing statistics
+func (r *Router) Stats() (matches, misses uint64) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.matches, r.misses
+}
+
+// GetCategories returns available GeoSite categories
+func (r *Router) GetCategories() []string {
+	r.geoSite.mu.RLock()
+	defer r.geoSite.mu.RUnlock()
+
+	categories := make(map[string]bool)
+	for k := range r.geoSite.domains {
+		categories[k] = true
+	}
+	for k := range r.geoSite.suffixes {
+		categories[k] = true
+	}
+
+	result := make([]string, 0, len(categories))
+	for k := range categories {
+		result = append(result, k)
+	}
+	return result
+}
+
+// GetCountries returns available GeoIP country codes
+func (r *Router) GetCountries() []string {
+	r.geoIP.mu.RLock()
+	defer r.geoIP.mu.RUnlock()
+
+	result := make([]string, 0, len(r.geoIP.ipRanges))
+	for k := range r.geoIP.ipRanges {
+		result = append(result, k)
+	}
+	return result
+}

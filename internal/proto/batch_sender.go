@@ -3,92 +3,93 @@ package proto
 import (
 	"sync"
 	"time"
+
+	"whispera/internal/proto/multi"
 )
 
 // BatchSender - собирает пакеты в batch для уменьшения overhead
 type BatchSender struct {
-	maxPackets   int
-	maxWait      time.Duration
-	batch        []StreamPacket
-	mu           sync.Mutex
-	notify       chan struct{}
-	flushTimer   *time.Timer
+	maxPackets  int
+	maxWait     time.Duration
+	maxSize     int
+	currentSize int
+	batch       []multi.StreamPacket
+	mu          sync.Mutex
+	flushTimer  *time.Timer
+	onFlush     func([]multi.StreamPacket)
+	closed      chan struct{}
+	wg          sync.WaitGroup
 }
 
 // NewBatchSender создает новый batch sender
-func NewBatchSender(maxPackets int, maxWait time.Duration) *BatchSender {
+func NewBatchSender(maxPackets int, maxSize int, maxWait time.Duration, onFlush func([]multi.StreamPacket)) *BatchSender {
 	bs := &BatchSender{
 		maxPackets: maxPackets,
+		maxSize:    maxSize,
 		maxWait:    maxWait,
-		batch:      make([]StreamPacket, 0, maxPackets),
-		notify:     make(chan struct{}, 1),
+		batch:      make([]multi.StreamPacket, 0, maxPackets),
+		onFlush:    onFlush,
+		closed:     make(chan struct{}),
 	}
-	
-	bs.flushTimer = time.NewTimer(maxWait)
-	go bs.flushLoop()
-	
+
+	bs.flushTimer = time.AfterFunc(maxWait, bs.timerFlush)
 	return bs
 }
 
 // AddPacket добавляет пакет в batch
-func (bs *BatchSender) AddPacket(pkt StreamPacket) []StreamPacket {
+func (bs *BatchSender) AddPacket(pkt multi.StreamPacket) {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
-	
+
 	bs.batch = append(bs.batch, pkt)
-	
-	// Если batch заполнен, возвращаем его
-	if len(bs.batch) >= bs.maxPackets {
-		batch := bs.batch
-		bs.batch = make([]StreamPacket, 0, bs.maxPackets)
-		bs.resetTimer()
-		return batch
+	bs.currentSize += len(pkt.Payload)
+
+	// Если batch заполнен по количеству или размеру, отправляем его
+	if len(bs.batch) >= bs.maxPackets || (bs.maxSize > 0 && bs.currentSize >= bs.maxSize) {
+		bs.flushLocked()
+	} else if len(bs.batch) == 1 {
+		// Первый пакет в новом батче - сбрасываем таймер
+		bs.flushTimer.Reset(bs.maxWait)
 	}
-	
-	// Уведомляем о новом пакете
-	select {
-	case bs.notify <- struct{}{}:
-	default:
-	}
-	
-	return nil
 }
 
-// Flush принудительно отправляет batch
-func (bs *BatchSender) Flush() []StreamPacket {
+// timerFlush вызывается таймером
+func (bs *BatchSender) timerFlush() {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
-	
+
+	if len(bs.batch) > 0 {
+		bs.flushLocked()
+	}
+}
+
+// flushLocked выполняет сброс батча (должен вызываться под mu)
+func (bs *BatchSender) flushLocked() {
 	if len(bs.batch) == 0 {
-		return nil
+		return
 	}
-	
+
 	batch := bs.batch
-	bs.batch = make([]StreamPacket, 0, bs.maxPackets)
-	bs.resetTimer()
-	return batch
-}
-
-func (bs *BatchSender) resetTimer() {
+	bs.batch = make([]multi.StreamPacket, 0, bs.maxPackets)
+	bs.currentSize = 0
 	bs.flushTimer.Stop()
-	bs.flushTimer.Reset(bs.maxWait)
-}
 
-func (bs *BatchSender) flushLoop() {
-	for {
-		select {
-		case <-bs.flushTimer.C:
-			// Таймаут - отправляем batch
-			if batch := bs.Flush(); batch != nil {
-				// Отправляем batch (callback будет установлен извне)
-				_ = batch
-			}
-		case <-bs.notify:
-			// Новый пакет добавлен, сбрасываем таймер
-			bs.mu.Lock()
-			bs.resetTimer()
-			bs.mu.Unlock()
-		}
+	if bs.onFlush != nil {
+		go bs.onFlush(batch)
 	}
 }
 
+// Flush принудительно отправляет текущий batch
+func (bs *BatchSender) Flush() {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	bs.flushLocked()
+}
+
+// Stop останавливает batch sender
+func (bs *BatchSender) Stop() {
+	bs.mu.Lock()
+	bs.flushLocked()
+	bs.flushTimer.Stop()
+	bs.mu.Unlock()
+}

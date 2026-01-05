@@ -1,33 +1,55 @@
 # Whispera Client Configuration
-client:
-  server: "YOUR_SERVER_IP:51820"
-  server_tcp: "YOUR_SERVER_IP:4443"
-  server_ws: "YOUR_SERVER_IP:8443"
-  server_pub: "YOUR_SERVER_PUBLIC_KEY"
-  tun: "Ethernet 5"  # Windows TUN interface
-  metrics: ":9102"
-  auto_switch: true
-  dual_mode: true
-  obfs_preset: "quic"
-  handshake_timeout: "5s"
-  udp_upgrade_sec: 10
+# Protocol: Whispera v1 (WLESS)
 
-# Speedtest configuration
-speedtest:
-  enabled: true
-  server: "http://YOUR_SERVER_IP:8080"
-  interval: "5m"
+server: "127.0.0.1:51820"
+tun: "Whispera"
+tun_ip: "198.18.0.10"
+psk: "0000000000000000000000000000000000000000000000000000000000000000"
 
-# Obfuscation settings
+# Whispera Protocol Settings
+protocol:
+  version: 1
+  uuid: "00000000-0000-0000-0000-000000000000"  # Generate unique UUID
+  
+# Transport Configuration
+transport:
+  mode: "auto"           # "auto" (ML), "manual"
+  preferred: "udp"       # Fallback: udp, tcp, websocket, quic
+  
+  # Transport-specific settings
+  udp:
+    port: 51820
+  tcp:
+    port: 443
+  websocket:
+    path: "/ws"
+    port: 443
+  quic:
+    port: 443
+
+# Obfuscation Settings
 obfuscation:
-  fte_profile: "http2"
-  marionette_profile: "browser"
-  ai_evasion: true
-  hardware_evasion: true
-  behavioral_mimicry: true
+  enabled: true
+  profile: "ml"          # ml, vk, yandex, mailru, telegram, youtube
+  compression: "lz4"     # none, lz4, zstd
+  padding: true
+  max_padding: 64
+  timing_mask: true
 
+# Connection Settings
+connection:
+  keepalive: 25          # seconds
+  rekey: 10              # minutes
+  mtu: 1300
+  timeout: 30            # seconds
+  max_retries: 5
+
+# Security
+security:
+  strict_mode: true
+  verify_server: true
+  
 # Monitoring
 monitoring:
   enabled: true
-  metrics_port: 9102
-  pprof_port: 6061
+  metrics_port: 9100

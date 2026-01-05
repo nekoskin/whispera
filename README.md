@@ -1,86 +1,117 @@
 # 🌐 Whispera
 
+**Whispera** — высокопроизводительный VPN-туннель с собственным протоколом WLESS, интеллектуальным выбором транспорта и продвинутой обфускацией трафика.
+
+## ✨ Возможности
+
+- **Whispera Protocol (WLESS)** — собственный лёгкий протокол с минимальным overhead
+- **Мультитранспорт** — UDP, TCP, WebSocket, QUIC с автоматическим выбором
+- **ML-обфускация** — адаптивная маскировка под VK, Yandex, YouTube и другие сервисы
+- **DPI-устойчивость** — обход глубокой инспекции пакетов
+- **ChaCha20-Poly1305** — современное шифрование
+
 ## 📦 Быстрый старт
 
-### Установка сервера
+### Windows (PowerShell)
+
+```powershell
+# Сборка
+.\run.ps1 build
+
+# Запуск сервера
+.\run.ps1 server
+
+# Запуск клиента
+.\run.ps1 client
+
+# Справка
+.\run.ps1 help
+```
+
+### Linux/macOS
 
 ```bash
-# Автоматическая установка (рекомендуется)
-sudo bash <(curl -Ls https://raw.githubusercontent.com/your-repo/whispera/main/install.sh)
-
-# Или если репозиторий уже на сервере
-cd whispera
+# Автоматическая установка сервера
 sudo bash install.sh
+
+# Или сборка вручную
+make build
 ```
 
-После установки вы получите:
-- IP адрес сервера
-- Публичный ключ сервера
-- Приватный ключ клиента
-- **Quick Connect Key** — готовый ключ для подключения
+## 🔧 Конфигурация
 
-### Подключение клиента
+### Клиент (`client_config.yaml`)
 
-1. **Соберите Tauri клиент:**
-   ```bash
-   cd client-package-tauri
-   npm install
-   npm run tauri build
-   ```
-
-2. **Запустите клиент:**
-   - Windows: Установите из `src-tauri/target/release/bundle/`
-   - Linux: Запустите `.AppImage` или `.deb`
-   - macOS: Откройте `.app` или `.dmg`
-
-3. **Quick Connect:**
-   - Вставьте ключ подключения в поле "Quick Connect"
-   - Нажмите "Подключиться"
-   - Система автоматически определит сервер и подключится
-
-## 🔧 Управление сервером
-
-```bash
-# Статус
-sudo systemctl status whispera-server
-
-# Логи
-sudo journalctl -u whispera-server -f
-
-# Перезапуск
-sudo systemctl restart whispera-server
-
-# Обновление
-sudo bash update.sh
+```yaml
+server: "your-server.com:443"
+protocol:
+  version: 1  # Whispera v1
+transport:
+  mode: "auto"  # ML автовыбор
+obfuscation:
+  enabled: true
+  profile: "ml"
 ```
 
-## 📋 Режимы работы клиента
+### Сервер (`config.yaml`)
 
-- **TUN Mode** — весь трафик через VPN (требует права администратора)
-- **Proxy Mode** — SOCKS5 прокси на `localhost:1080` (не требует прав администратора)
-
-## 🛠️ Разработка
-
-### Требования
-- **Go** 1.23+ (для сервера)
-- **Rust** 1.70+ и **Node.js** 18+ (для Tauri клиента)
-
-### Сборка
-
-```bash
-# Сервер
-go build -o whispera-server ./cmd/server
-
-# Клиент (для Tauri)
-go build -o client-package-tauri/src-tauri/resources/whispera-client.exe ./cmd/client
+```yaml
+listen:
+  udp: ":51820"
+  tcp: ":443"
+protocol:
+  version: 1
+  enable_vless_compat: true  # Совместимость с VLESS
 ```
 
-## 📄 Дополнительная информация
+## 🚀 Архитектура
 
-- **Сервер:** Собирается автоматически при установке
-- **Клиент:** Собирается как часть Tauri приложения
-- **Ключи:** Генерируются автоматически при установке
-- **TLS:** Автоматически настраивается (Let's Encrypt или self-signed)
+```
+┌─────────┐    ┌──────────────────┐    ┌─────────────┐
+│ Client  │───▶│ TransportSelector│───▶│   Server    │
+└─────────┘    │ (ML/Manual)      │    └─────────────┘
+               └──────────────────┘
+                       │
+         ┌─────────────┼─────────────┐
+         ▼             ▼             ▼
+      [UDP]         [TCP]       [WebSocket]
+         │             │             │
+         └─────────────┴─────────────┘
+                       │
+              [Whispera Protocol]
+              [Obfuscation + LZ4]
+```
+
+## 📁 Структура проекта
+
+```
+whispera/
+├── run.ps1              # Главный скрипт
+├── scripts/             # Вспомогательные скрипты
+│   ├── build-platforms.ps1
+│   ├── deploy.ps1
+│   └── docker.ps1
+├── cmd/
+│   ├── client/          # Клиент
+│   └── server/          # Сервер
+├── internal/
+│   ├── whispera/        # Протокол WLESS
+│   ├── modules/transport/  # Транспорты
+│   └── obfuscation/     # Обфускация
+└── client-package-tauri/  # GUI клиент
+```
+
+## 🛡️ Безопасность
+
+- **ChaCha20-Poly1305** / AES-256-GCM шифрование
+- **X25519** handshake (Whispera protocol)
+- **Whispera v1** — 64-байтный padding (vs 900 в VLESS)
+- **Anti-replay** защита
+- **Автоматический rekeying**
+
+## 📄 Лицензия
+
+MIT
 
 ---
 

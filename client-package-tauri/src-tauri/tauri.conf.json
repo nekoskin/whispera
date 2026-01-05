@@ -37,9 +37,7 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
-    "resources": [
-      "resources/wintun.dll"
-    ],
+    "resources": [],
     "externalBin": [
       "whispera-go-client"
     ],
@@ -66,4 +64,3 @@
     }
   }
 }
-

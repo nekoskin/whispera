@@ -2,9 +2,10 @@ package obfuscation
 
 import (
 	"time"
-	"whispera/internal/obfuscation/core/evasion"
 	"whispera/internal/obfuscation/core/types"
 	ftepkg "whispera/internal/obfuscation/fte"
+	marionettepkg "whispera/internal/obfuscation/marionette"
+	mlpkg "whispera/internal/obfuscation/ml"
 )
 
 const (
@@ -14,20 +15,20 @@ const (
 
 // IntegrationManager manages integration between modules
 type IntegrationManager struct {
-	marionette      *evasion.Marionette
-	adapter         *MarionetteAdapter
-	mlSystem        *UnifiedMLSystem
-	fte             *ftepkg.FTE
-	mlEnabled       bool
-	fteEnabled      bool
+	marionette *marionettepkg.Marionette
+	adapter    *marionettepkg.MarionetteAdapter
+	mlSystem   *mlpkg.UnifiedMLSystem
+	fte        *ftepkg.FTE
+	mlEnabled  bool
+	fteEnabled bool
 }
 
 // NewIntegrationManager creates a new integration manager
 func NewIntegrationManager() *IntegrationManager {
-	adapter := NewMarionetteAdapter()
-	mlSystem := NewUnifiedMLSystem()
+	adapter := marionettepkg.NewMarionetteAdapter()
+	mlSystem := mlpkg.NewUnifiedMLSystem()
 	fte := ftepkg.NewFTE()
-	
+
 	return &IntegrationManager{
 		marionette: adapter.GetCore(),
 		adapter:    adapter,
@@ -40,21 +41,21 @@ func NewIntegrationManager() *IntegrationManager {
 
 // NewIntegrationManagerWithOptions creates a new integration manager with options
 func NewIntegrationManagerWithOptions(enableML, enableFTE bool) *IntegrationManager {
-	adapter := NewMarionetteAdapter()
+	adapter := marionettepkg.NewMarionetteAdapter()
 	im := &IntegrationManager{
 		marionette: adapter.GetCore(),
 		adapter:    adapter,
 		mlEnabled:  enableML,
 		fteEnabled: enableFTE,
 	}
-	
+
 	if enableML {
-		im.mlSystem = NewUnifiedMLSystem()
+		im.mlSystem = mlpkg.NewUnifiedMLSystem()
 	}
 	if enableFTE {
 		im.fte = ftepkg.NewFTE()
 	}
-	
+
 	return im
 }
 
@@ -62,7 +63,7 @@ func NewIntegrationManagerWithOptions(enableML, enableFTE bool) *IntegrationMana
 // Order: FTE -> Marionette -> ML (if enabled)
 func (im *IntegrationManager) ProcessTraffic(data []byte, direction string) ([]byte, time.Duration, error) {
 	processed := data
-	
+
 	// Step 1: FTE transformation (if enabled)
 	if im.fteEnabled && im.fte != nil {
 		transformed, err := im.fte.Transform(processed)
@@ -70,13 +71,13 @@ func (im *IntegrationManager) ProcessTraffic(data []byte, direction string) ([]b
 			processed = transformed
 		}
 	}
-	
+
 	// Step 2: Marionette obfuscation
 	processed, delay, err := im.adapter.ProcessPacket(processed, direction)
 	if err != nil {
 		return data, 0, err
 	}
-	
+
 	// Step 3: ML processing (if enabled and packet is large enough)
 	if im.mlEnabled && im.mlSystem != nil && len(processed) > 2048 {
 		context := &types.UnifiedTrafficContext{
@@ -85,20 +86,20 @@ func (im *IntegrationManager) ProcessTraffic(data []byte, direction string) ([]b
 			Size:      len(processed),
 			Timestamp: time.Now(),
 		}
-		
+
 		mlProcessed, mlErr := im.mlSystem.ProcessTraffic(processed, context)
 		if mlErr == nil && mlProcessed != nil && len(mlProcessed) > 0 {
 			processed = mlProcessed
 		}
 	}
-	
+
 	return processed, delay, err
 }
 
 // ProcessTrafficWithML processes traffic with explicit ML context
 func (im *IntegrationManager) ProcessTrafficWithML(data []byte, direction string, protocol string) ([]byte, time.Duration, error) {
 	processed := data
-	
+
 	// Step 1: FTE transformation (if enabled)
 	if im.fteEnabled && im.fte != nil {
 		transformed, err := im.fte.Transform(processed)
@@ -106,33 +107,34 @@ func (im *IntegrationManager) ProcessTrafficWithML(data []byte, direction string
 			processed = transformed
 		}
 	}
-	
+
 	// Step 2: Marionette obfuscation
 	processed, delay, err := im.adapter.ProcessPacket(processed, direction)
 	if err != nil {
 		return data, 0, err
 	}
-	
+
 	// Step 3: ML processing (if enabled and packet is large enough)
 	if im.mlEnabled && im.mlSystem != nil && len(processed) > 2048 {
+		// log.Printf("[ML] Processing %d bytes (%s, %s)", len(processed), direction, protocol)
 		context := &types.UnifiedTrafficContext{
 			Direction: direction,
 			Protocol:  protocol,
 			Size:      len(processed),
 			Timestamp: time.Now(),
 		}
-		
+
 		mlProcessed, mlErr := im.mlSystem.ProcessTraffic(processed, context)
 		if mlErr == nil && mlProcessed != nil && len(mlProcessed) > 0 {
 			processed = mlProcessed
 		}
 	}
-	
+
 	return processed, delay, err
 }
 
 // GetMLSystem returns the ML system instance
-func (im *IntegrationManager) GetMLSystem() *UnifiedMLSystem {
+func (im *IntegrationManager) GetMLSystem() *mlpkg.UnifiedMLSystem {
 	return im.mlSystem
 }
 
@@ -142,13 +144,18 @@ func (im *IntegrationManager) GetFTE() *ftepkg.FTE {
 }
 
 // GetMarionetteAdapter returns the Marionette adapter
-func (im *IntegrationManager) GetMarionetteAdapter() *MarionetteAdapter {
+func (im *IntegrationManager) GetMarionetteAdapter() *marionettepkg.MarionetteAdapter {
 	return im.adapter
 }
 
 // SetProfile sets the active traffic profile
 func (im *IntegrationManager) SetProfile(name string) error {
 	return im.adapter.SetActiveProfile(name)
+}
+
+// SetStrict enables or disables strict obfuscation mode
+func (im *IntegrationManager) SetStrict(strict bool) {
+	im.adapter.SetStrict(strict)
 }
 
 // GetHealthStatus returns the health status of all modules
@@ -237,8 +244,8 @@ func (im *IntegrationManager) GetPerformanceMetrics() map[string]interface{} {
 // ResetSystem resets the system to initial state
 func (im *IntegrationManager) ResetSystem() error {
 	// Reset Marionette state
-	im.marionette = evasion.NewMarionette()
-	im.adapter = NewMarionetteAdapter()
+	im.adapter = marionettepkg.NewMarionetteAdapter()
+	im.marionette = im.adapter.GetCore()
 
 	return nil
 }

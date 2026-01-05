@@ -10,11 +10,13 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
+// DirectionalKeys holds encryption keys and salts for one direction
 type DirectionalKeys struct {
 	Key   []byte // 32 bytes
 	Salt4 [4]byte
 }
 
+// AEADState holds AEAD encryption state for bidirectional communication
 type AEADState struct {
 	sendAEAD cipher.AEAD
 	recvAEAD cipher.AEAD

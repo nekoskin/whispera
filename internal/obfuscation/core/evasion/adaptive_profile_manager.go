@@ -8,69 +8,24 @@ import (
 	"whispera/internal/obfuscation/core/types"
 )
 
-const (
-	directionOutbound   = "outbound"
-	networkTypeMobile   = "mobile"
-	profileTypeProtocol = "protocol"
-)
-
-// AdaptiveProfile - адаптивный профиль
-type AdaptiveProfile struct {
-	Name            string
-	Type            string
-	Parameters      map[string]interface{}
-	Effectiveness   float64
-	LastUpdate      time.Time
-	UsageCount      int64
-	LastUsed        time.Time
-	SuccessRate     float64
-	AverageLatency  time.Duration
-	AdaptationCount int64
-	LastAdaptation  time.Time
-}
-
-// ProfileRecommendation - рекомендация профиля (используем из types)
-type ProfileRecommendation = types.ProfileRecommendation
-
-// AdaptationFeedback - обратная связь для адаптации (используем из types)
-type AdaptationFeedback = types.AdaptationFeedback
-
-// TrafficContext, NetworkInfo, UserBehavior определены в types/types.go
-// Используем типы из пакета types
-
-// AdaptiveProfileManager - интерфейс адаптивного управления профилями (используем из types)
-type AdaptiveProfileManager = types.AdaptiveProfileManager
+const profileTypeProtocol = "protocol"
 
 // AdaptiveProfileManagerImpl - реализация адаптивного управления профилями
 type AdaptiveProfileManagerImpl struct {
-	profiles            map[string]*AdaptiveProfile
-	recommendations     map[string]*ProfileRecommendation
-	feedback            map[string]*AdaptationFeedback
+	profiles            map[string]*types.AdaptiveProfile
+	recommendations     map[string]*types.ProfileRecommendation
+	feedback            map[string]*types.AdaptationFeedback
 	mutex               sync.RWMutex
 	learningRate        float64
 	adaptationThreshold float64
-	effectiveness       map[string]float64
-}
-
-// AdaptiveProfileStats - статистика адаптивного профиля
-type AdaptiveProfileStats struct {
-	Name            string
-	Type            string
-	Effectiveness   float64
-	UsageCount      int64
-	LastUsed        time.Time
-	AdaptationCount int64
-	SuccessRate     float64
-	AverageLatency  time.Duration
-	LastAdaptation  time.Time
 }
 
 // NewAdaptiveProfileManager создает новый менеджер адаптивных профилей
-func NewAdaptiveProfileManager() AdaptiveProfileManager {
+func NewAdaptiveProfileManager() types.AdaptiveProfileManager {
 	return &AdaptiveProfileManagerImpl{
-		profiles:            make(map[string]*AdaptiveProfile),
-		recommendations:     make(map[string]*ProfileRecommendation),
-		feedback:            make(map[string]*AdaptationFeedback),
+		profiles:            make(map[string]*types.AdaptiveProfile),
+		recommendations:     make(map[string]*types.ProfileRecommendation),
+		feedback:            make(map[string]*types.AdaptationFeedback),
 		learningRate:        0.1,
 		adaptationThreshold: 0.8,
 	}
@@ -96,10 +51,6 @@ func (apm *AdaptiveProfileManagerImpl) SelectOptimalProfile(context *types.Traff
 		}
 	}
 
-	if bestProfile == "" {
-		return "", fmt.Errorf("no suitable profile found")
-	}
-
 	return bestProfile, nil
 }
 
@@ -108,48 +59,39 @@ func (apm *AdaptiveProfileManagerImpl) AdaptProfile(profileName string, feedback
 	apm.mutex.Lock()
 	defer apm.mutex.Unlock()
 
-	profile, exists := apm.profiles[profileName]
-	if !exists {
+	profile, ok := apm.profiles[profileName]
+	if !ok {
 		return fmt.Errorf("profile %s not found", profileName)
 	}
 
-	// Обновляем статистику профиля
-	profile.UsageCount++
-	profile.LastUsed = time.Now()
-
-	// Обновляем успешность
+	// Update effectiveness based on feedback
 	if feedback.Success {
-		profile.SuccessRate = (profile.SuccessRate*float64(profile.UsageCount-1) + 1.0) / float64(profile.UsageCount)
+		profile.Effectiveness = profile.Effectiveness*(1-apm.learningRate) + 1.0*apm.learningRate
+		profile.SuccessRate = profile.SuccessRate*(1-apm.learningRate) + 1.0*apm.learningRate
 	} else {
-		profile.SuccessRate = (profile.SuccessRate*float64(profile.UsageCount-1) + 0.0) / float64(profile.UsageCount)
+		profile.Effectiveness = profile.Effectiveness*(1-apm.learningRate) + 0.0*apm.learningRate
+		profile.SuccessRate = profile.SuccessRate*(1-apm.learningRate) + 0.0*apm.learningRate
 	}
 
-	// Обновляем среднюю задержку
-	if profile.AverageLatency == 0 {
-		profile.AverageLatency = feedback.Latency
-	} else {
-		// Экспоненциальное сглаживание
-		alpha := apm.learningRate
-		profile.AverageLatency = time.Duration(
-			float64(profile.AverageLatency)*(1-alpha) + float64(feedback.Latency)*alpha,
-		)
-	}
+	profile.AverageLatency = time.Duration(float64(profile.AverageLatency)*(1-apm.learningRate) + float64(feedback.Latency)*apm.learningRate)
+	profile.LastAdaptation = time.Now()
+	profile.AdaptationCount++
 
-	// Адаптируем параметры профиля
-	apm.adaptProfileParameters(profile, feedback)
-
-	// Сохраняем обратную связь
+	// Record feedback
 	apm.feedback[profileName] = feedback
 
-	// Увеличиваем счетчик адаптаций
-	profile.AdaptationCount++
-	profile.LastAdaptation = time.Now()
+	// Self-adaptation logic
+	if profile.SuccessRate < apm.adaptationThreshold {
+		apm.adaptProfileParameters(profile, feedback)
+	}
 
 	return nil
 }
 
 // GetProfileRecommendations возвращает рекомендации профилей
-func (apm *AdaptiveProfileManagerImpl) GetProfileRecommendations(context *types.TrafficContext) []*types.ProfileRecommendation {
+func (apm *AdaptiveProfileManagerImpl) GetProfileRecommendations(
+	context *types.TrafficContext,
+) []*types.ProfileRecommendation {
 	apm.mutex.RLock()
 	defer apm.mutex.RUnlock()
 
@@ -157,211 +99,162 @@ func (apm *AdaptiveProfileManagerImpl) GetProfileRecommendations(context *types.
 
 	for name, profile := range apm.profiles {
 		score := apm.calculateProfileScore(profile, context)
-		confidence := apm.calculateConfidence(profile, context)
-
-		recommendation := &types.ProfileRecommendation{
-			ProfileName: name,
-			Confidence:  confidence,
-			Reason:      apm.getRecommendationReason(profile, context),
-			Priority:    int(score * 100),
-		}
-
-		recommendations = append(recommendations, recommendation)
-	}
-
-	// Сортируем по приоритету (высший приоритет первым)
-	for i := 0; i < len(recommendations)-1; i++ {
-		for j := i + 1; j < len(recommendations); j++ {
-			if recommendations[i].Priority < recommendations[j].Priority {
-				recommendations[i], recommendations[j] = recommendations[j], recommendations[i]
-			}
+		if score > 0.5 {
+			recommendations = append(recommendations, &types.ProfileRecommendation{
+				ProfileName: name,
+				Confidence:  score,
+				Reason:      apm.getRecommendationReason(profile, context),
+				Priority:    int(score * 10),
+			})
 		}
 	}
 
 	return recommendations
 }
 
-// LearnFromTraffic обучается на основе трафика
-func (apm *AdaptiveProfileManagerImpl) LearnFromTraffic(data []byte, profileName string, success bool) {
-	// Простая реализация обучения
-	if success {
-		apm.effectiveness[profileName] += 0.1
-	} else {
-		apm.effectiveness[profileName] -= 0.05
-	}
-
-	// Ограничиваем значения
-	if apm.effectiveness[profileName] > 1.0 {
-		apm.effectiveness[profileName] = 1.0
-	}
-	if apm.effectiveness[profileName] < 0.0 {
-		apm.effectiveness[profileName] = 0.0
-	}
-}
-
 // calculateProfileScore вычисляет оценку профиля для контекста
-func (apm *AdaptiveProfileManagerImpl) calculateProfileScore(profile *AdaptiveProfile, context *types.TrafficContext) float64 {
-	// Use context parameter for score calculation
-	_ = context.Direction
-	_ = context.Protocol
-
+func (apm *AdaptiveProfileManagerImpl) calculateProfileScore(
+	profile *types.AdaptiveProfile, context *types.TrafficContext,
+) float64 {
 	score := 0.0
 
-	// Базовый счет на основе эффективности
+	// Type matching
+	score += apm.calculateTypeScore(profile, context)
+
+	// Effectiveness
 	score += profile.Effectiveness * 0.4
 
-	// Счет на основе успешности
-	score += profile.SuccessRate * 0.3
+	// Confidence
+	score += apm.calculateConfidence(profile, context) * 0.2
 
-	// Счет на основе задержки (меньше задержка = выше счет)
-	if profile.AverageLatency > 0 {
-		latencyScore := 1.0 - math.Min(float64(profile.AverageLatency)/float64(100*time.Millisecond), 1.0)
-		score += latencyScore * 0.2
-	}
-
-	// Счет на основе типа профиля и контекста
-	score += apm.calculateTypeScore(profile, context) * 0.1
-
-	return math.Min(score, 1.0)
+	return math.Min(1.0, score)
 }
 
 // calculateTypeScore вычисляет счет на основе типа профиля
-func (apm *AdaptiveProfileManagerImpl) calculateTypeScore(profile *AdaptiveProfile, context *types.TrafficContext) float64 {
+func (apm *AdaptiveProfileManagerImpl) calculateTypeScore(
+	profile *types.AdaptiveProfile, context *types.TrafficContext,
+) float64 {
 	switch profile.Type {
 	case profileTypeProtocol:
-		if context.Protocol == "udp" || context.Protocol == "tcp" {
-			return 0.9
+		if profile.Parameters["protocol"] == context.Protocol {
+			return 0.4
 		}
-		return 0.5
-	case "social":
-		if context.Direction == directionOutbound && context.Size > 100 {
-			return 0.8
+	case "direction":
+		if profile.Parameters["direction"] == context.Direction {
+			return 0.3
 		}
-		return 0.4
-	case networkTypeMobile:
-		if context.ThreatLevel > 5 {
-			return 0.7
-		}
-		return 0.6
-	case "search":
-		if context.Direction == directionOutbound && context.Size < 1000 {
-			return 0.8
-		}
-		return 0.5
-	default:
-		return 0.5
 	}
+	return 0.1
 }
 
 // calculateConfidence вычисляет уверенность в рекомендации
-func (apm *AdaptiveProfileManagerImpl) calculateConfidence(profile *AdaptiveProfile, context *types.TrafficContext) float64 {
+func (apm *AdaptiveProfileManagerImpl) calculateConfidence(
+	profile *types.AdaptiveProfile, context *types.TrafficContext,
+) float64 {
 	// Use context parameter for confidence calculation
-	_ = context.Direction
-	_ = context.Protocol
-
-	confidence := 0.5
-
-	// Увеличиваем уверенность на основе количества использований
-	if profile.UsageCount > 0 {
-		confidence += math.Min(float64(profile.UsageCount)/100.0, 0.3)
+	if context.Direction != "" || context.Protocol != "" {
+		return 0.5
 	}
 
-	// Увеличиваем уверенность на основе успешности
-	confidence += profile.SuccessRate * 0.2
-
-	// Уменьшаем уверенность для новых профилей
-	if profile.UsageCount < 5 {
-		confidence *= 0.7
+	if profile.UsageCount > 100 {
+		return 0.8
+	} else if profile.UsageCount > 10 {
+		return 0.5
 	}
-
-	return math.Min(confidence, 1.0)
+	return 0.2
 }
 
 // getRecommendationReason возвращает причину рекомендации
-func (apm *AdaptiveProfileManagerImpl) getRecommendationReason(profile *AdaptiveProfile, context *types.TrafficContext) string {
+func (apm *AdaptiveProfileManagerImpl) getRecommendationReason(
+	profile *types.AdaptiveProfile, context *types.TrafficContext,
+) string {
 	if profile.SuccessRate > 0.9 {
 		return "high_success_rate"
 	}
-	if profile.AverageLatency < 50*time.Millisecond {
-		return "low_latency"
-	}
-	if profile.UsageCount > 100 {
-		return "proven_reliability"
-	}
-	if profile.Type == "protocol" && context.Protocol != "" {
+	if profile.Type == profileTypeProtocol && profile.Parameters["protocol"] == context.Protocol {
 		return "protocol_match"
 	}
-	return "general_recommendation"
+	return "general_suitability"
 }
 
 // adaptProfileParameters адаптирует параметры профиля
-func (apm *AdaptiveProfileManagerImpl) adaptProfileParameters(profile *AdaptiveProfile, feedback *types.AdaptationFeedback) {
+func (apm *AdaptiveProfileManagerImpl) adaptProfileParameters(
+	profile *types.AdaptiveProfile, feedback *types.AdaptationFeedback,
+) {
 	if profile.Parameters == nil {
 		profile.Parameters = make(map[string]interface{})
 	}
 
-	// Адаптируем параметры на основе обратной связи
-	if feedback.Success {
-		// Успешное выполнение - увеличиваем агрессивность
-		if val, exists := profile.Parameters["aggressiveness"]; exists {
-			if aggressiveness, ok := val.(float64); ok {
-				profile.Parameters["aggressiveness"] = math.Min(aggressiveness+apm.learningRate, 1.0)
-			}
-		} else {
+	// Adapt aggressiveness
+	apm.adaptAggressiveness(profile, feedback.Success)
+
+	// Adapt timing
+	apm.adaptDelayFactor(profile, feedback.Latency)
+}
+
+// adaptAggressiveness адаптирует агрессивность профиля
+func (apm *AdaptiveProfileManagerImpl) adaptAggressiveness(profile *types.AdaptiveProfile, success bool) {
+	val, exists := profile.Parameters["aggressiveness"]
+	if !exists {
+		if success {
 			profile.Parameters["aggressiveness"] = 0.5
-		}
-	} else {
-		// Неудачное выполнение - уменьшаем агрессивность
-		if val, exists := profile.Parameters["aggressiveness"]; exists {
-			if aggressiveness, ok := val.(float64); ok {
-				profile.Parameters["aggressiveness"] = math.Max(aggressiveness-apm.learningRate, 0.0)
-			}
 		} else {
-			profile.Parameters["aggressiveness"] = 0.3
+			profile.Parameters["aggressiveness"] = 0.7
 		}
+		return
 	}
 
-	// Адаптируем параметры задержки
-	if feedback.Latency > 0 {
-		if val, exists := profile.Parameters["delay_factor"]; exists {
-			if delayFactor, ok := val.(float64); ok {
-				// Адаптируем фактор задержки на основе фактической задержки
-				targetLatency := 50 * time.Millisecond
-				ratio := float64(feedback.Latency) / float64(targetLatency)
-				newDelayFactor := delayFactor * ratio
-				profile.Parameters["delay_factor"] = math.Max(0.1, math.Min(newDelayFactor, 2.0))
-			}
+	if agg, ok := val.(float64); ok {
+		if success {
+			profile.Parameters["aggressiveness"] = math.Max(0.1, agg-0.05)
 		} else {
-			profile.Parameters["delay_factor"] = 1.0
+			profile.Parameters["aggressiveness"] = math.Min(1.0, agg+0.1)
+		}
+	}
+}
+
+// adaptDelayFactor адаптирует фактор задержки профиля
+func (apm *AdaptiveProfileManagerImpl) adaptDelayFactor(profile *types.AdaptiveProfile, latency time.Duration) {
+	if latency <= 0 {
+		return
+	}
+
+	val, exists := profile.Parameters["delay_factor"]
+	if !exists {
+		profile.Parameters["delay_factor"] = 1.0
+		return
+	}
+
+	if delay, ok := val.(float64); ok {
+		if latency < 50*time.Millisecond {
+			profile.Parameters["delay_factor"] = math.Max(0.5, delay-0.1)
+		} else if latency > 200*time.Millisecond {
+			profile.Parameters["delay_factor"] = math.Min(3.0, delay+0.2)
 		}
 	}
 }
 
 // AddProfile добавляет новый адаптивный профиль
-func (apm *AdaptiveProfileManagerImpl) AddProfile(name string, profile *AdaptiveProfile) {
+func (apm *AdaptiveProfileManagerImpl) AddProfile(name string, profile *types.AdaptiveProfile) {
 	apm.mutex.Lock()
 	defer apm.mutex.Unlock()
 
-	profile.Name = name
-	profile.LastUsed = time.Now()
-	profile.LastAdaptation = time.Now()
-
+	if apm.profiles == nil {
+		apm.profiles = make(map[string]*types.AdaptiveProfile)
+	}
 	apm.profiles[name] = profile
 }
 
 // GetProfile возвращает адаптивный профиль
-func (apm *AdaptiveProfileManagerImpl) GetProfile(name string) (*AdaptiveProfile, bool) {
+func (apm *AdaptiveProfileManagerImpl) GetProfile(name string) (*types.AdaptiveProfile, bool) {
 	apm.mutex.RLock()
 	defer apm.mutex.RUnlock()
 
-	profile, exists := apm.profiles[name]
-	if !exists {
+	if apm.profiles == nil {
 		return nil, false
 	}
-
-	// Возвращаем копию для безопасности
-	profileCopy := *profile
-	return &profileCopy, true
+	profile, ok := apm.profiles[name]
+	return profile, ok
 }
 
 // GetProfileStats возвращает статистику профилей
@@ -375,15 +268,14 @@ func (apm *AdaptiveProfileManagerImpl) GetProfileStats() map[string]*AdaptivePro
 			Name:            name,
 			Type:            profile.Type,
 			Effectiveness:   profile.Effectiveness,
-			UsageCount:      profile.UsageCount,
 			SuccessRate:     profile.SuccessRate,
 			AverageLatency:  profile.AverageLatency,
-			AdaptationCount: profile.AdaptationCount,
+			UsageCount:      profile.UsageCount,
 			LastUsed:        profile.LastUsed,
 			LastAdaptation:  profile.LastAdaptation,
+			AdaptationCount: profile.AdaptationCount,
 		}
 	}
-
 	return stats
 }
 
@@ -401,4 +293,37 @@ func (apm *AdaptiveProfileManagerImpl) SetAdaptationThreshold(threshold float64)
 	defer apm.mutex.Unlock()
 
 	apm.adaptationThreshold = threshold
+}
+
+// AdaptiveProfileStats - статистика адаптивного профиля
+type AdaptiveProfileStats struct {
+	Name            string        `json:"name"`
+	Type            string        `json:"type"`
+	Effectiveness   float64       `json:"effectiveness"`
+	SuccessRate     float64       `json:"success_rate"`
+	AverageLatency  time.Duration `json:"average_latency"`
+	UsageCount      int64         `json:"usage_count"`
+	LastUsed        time.Time     `json:"last_used"`
+	LastAdaptation  time.Time     `json:"last_adaptation"`
+	AdaptationCount int64         `json:"adaptation_count"`
+}
+
+// LearnFromTraffic обучается на основе трафика
+func (apm *AdaptiveProfileManagerImpl) LearnFromTraffic(data []byte, profileName string, success bool) {
+	apm.mutex.Lock()
+	defer apm.mutex.Unlock()
+
+	profile, ok := apm.profiles[profileName]
+	if !ok {
+		return
+	}
+
+	profile.UsageCount++
+	profile.LastUsed = time.Now()
+
+	if success {
+		profile.SuccessRate = profile.SuccessRate*(1-apm.learningRate) + 1.0*apm.learningRate
+	} else {
+		profile.SuccessRate = profile.SuccessRate*(1-apm.learningRate) + 0.0*apm.learningRate
+	}
 }

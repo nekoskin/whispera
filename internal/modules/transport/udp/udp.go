@@ -1,0 +1,371 @@
+// Package udp provides UDP transport module implementation
+package udp
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"whispera/internal/core/base"
+	"whispera/internal/core/events"
+	"whispera/internal/core/interfaces"
+)
+
+const (
+	ModuleName    = "transport.udp"
+	ModuleVersion = "1.0.0"
+)
+
+// Config holds UDP transport configuration
+type Config struct {
+	ListenAddr    string
+	MaxPacketSize int
+	ReadTimeout   time.Duration
+	WriteTimeout  time.Duration
+	BufferSize    int
+	WorkerCount   int
+}
+
+// DefaultConfig returns default UDP configuration
+func DefaultConfig() *Config {
+	return &Config{
+		ListenAddr:    ":51820",
+		MaxPacketSize: 65535,
+		ReadTimeout:   0, // No timeout by default
+		WriteTimeout:  10 * time.Second,
+		BufferSize:    1024,
+		WorkerCount:   4,
+	}
+}
+
+// Validate validates the configuration
+func (c *Config) Validate() error {
+	if c.ListenAddr == "" {
+		return fmt.Errorf("listen address is required")
+	}
+	if c.MaxPacketSize <= 0 {
+		c.MaxPacketSize = 65535
+	}
+	return nil
+}
+
+// Transport implements interfaces.PacketTransport for UDP
+type Transport struct {
+	*base.Module
+	config      *Config
+	conn        *net.UDPConn
+	mu          sync.RWMutex
+	workerPool  *base.WorkerPool
+	rateLimiter *base.RateLimiter
+	metrics     *base.Metrics
+
+	// XUDP support for Full Cone NAT
+	xudpManager *XUDPManager
+
+	// Callbacks for packet handling
+	onPacket func(data []byte, addr net.Addr)
+
+	// Stats
+	packetsRx uint64
+	packetsTx uint64
+	bytesRx   uint64
+	bytesTx   uint64
+}
+
+// New creates a new UDP transport module
+func New(cfg *Config) (*Transport, error) {
+	if cfg == nil {
+		cfg = DefaultConfig()
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	t := &Transport{
+		Module:      base.NewModule(ModuleName, ModuleVersion, nil),
+		config:      cfg,
+		workerPool:  base.NewWorkerPool(cfg.WorkerCount, cfg.BufferSize),
+		rateLimiter: base.NewRateLimiter(1000000, 100000), // ОПТИМИЗИРОВАНО: 1M packets/sec with burst of 100k
+		metrics:     base.NewMetrics(),
+	}
+
+	// Initialize XUDP manager for Full Cone NAT support
+	t.xudpManager = NewXUDPManager(t)
+
+	return t, nil
+}
+
+// Init initializes the transport
+func (t *Transport) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
+	if err := t.Module.Init(ctx, cfg); err != nil {
+		return err
+	}
+
+	// Parse config if provided
+	if udpCfg, ok := cfg.(*Config); ok {
+		t.config = udpCfg
+	}
+
+	return nil
+}
+
+// Start starts the UDP transport
+func (t *Transport) Start() error {
+	if err := t.Module.Start(); err != nil {
+		return err
+	}
+
+	// Resolve UDP address
+	addr, err := net.ResolveUDPAddr("udp", t.config.ListenAddr)
+	if err != nil {
+		t.SetHealthy(false, fmt.Sprintf("failed to resolve address: %v", err))
+		return fmt.Errorf("failed to resolve UDP address: %w", err)
+	}
+
+	// Listen on UDP
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		t.SetHealthy(false, fmt.Sprintf("failed to listen: %v", err))
+		return fmt.Errorf("failed to listen on UDP: %w", err)
+	}
+
+	t.mu.Lock()
+	t.conn = conn
+	t.mu.Unlock()
+
+	// Start worker pool
+	t.workerPool.Start()
+
+	// Start read loop
+	go t.readLoop()
+
+	t.SetHealthy(true, fmt.Sprintf("listening on %s", t.config.ListenAddr))
+	t.PublishEvent(events.EventTypeModuleStarted, map[string]interface{}{
+		"listen_addr": t.config.ListenAddr,
+	})
+
+	return nil
+}
+
+// Stop stops the UDP transport
+func (t *Transport) Stop() error {
+	t.mu.Lock()
+	if t.conn != nil {
+		t.conn.Close()
+		t.conn = nil
+	}
+	t.mu.Unlock()
+
+	t.workerPool.Stop()
+
+	t.PublishEvent(events.EventTypeModuleStopped, nil)
+	return t.Module.Stop()
+}
+
+// Type returns the transport type
+func (t *Transport) Type() interfaces.TransportType {
+	return interfaces.TransportUDP
+}
+
+// Listen starts listening (already done in Start)
+func (t *Transport) Listen(addr string) error {
+	// For UDP, we listen in Start()
+	return nil
+}
+
+// Dial connects to a remote UDP address
+func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return net.DialUDP("udp", nil, udpAddr)
+}
+
+// Accept is not applicable for UDP
+func (t *Transport) Accept() (net.Conn, error) {
+	return nil, fmt.Errorf("Accept() not supported for UDP transport")
+}
+
+// Close closes the transport
+func (t *Transport) Close() error {
+	return t.Stop()
+}
+
+// ReadFrom reads a packet from the UDP connection
+func (t *Transport) ReadFrom(buf []byte) (n int, addr net.Addr, err error) {
+	t.mu.RLock()
+	conn := t.conn
+	t.mu.RUnlock()
+
+	if conn == nil {
+		return 0, nil, fmt.Errorf("transport not running")
+	}
+
+	n, udpAddr, err := conn.ReadFromUDP(buf)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	atomic.AddUint64(&t.packetsRx, 1)
+	atomic.AddUint64(&t.bytesRx, uint64(n))
+	t.UpdateActivity()
+
+	return n, udpAddr, nil
+}
+
+// WriteTo writes a packet to the specified address
+func (t *Transport) WriteTo(buf []byte, addr net.Addr) (n int, err error) {
+	t.mu.RLock()
+	conn := t.conn
+	t.mu.RUnlock()
+
+	if conn == nil {
+		return 0, fmt.Errorf("transport not running")
+	}
+
+	udpAddr, ok := addr.(*net.UDPAddr)
+	if !ok {
+		return 0, fmt.Errorf("address must be *net.UDPAddr")
+	}
+
+	n, err = conn.WriteToUDP(buf, udpAddr)
+	if err != nil {
+		return 0, err
+	}
+
+	atomic.AddUint64(&t.packetsTx, 1)
+	atomic.AddUint64(&t.bytesTx, uint64(n))
+	t.UpdateActivity()
+
+	return n, nil
+}
+
+// OnPacket sets the packet handler callback
+func (t *Transport) OnPacket(handler func(data []byte, addr net.Addr)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onPacket = handler
+}
+
+// readLoop is the main packet reading loop
+func (t *Transport) readLoop() {
+	buf := make([]byte, t.config.MaxPacketSize)
+
+	for t.IsRunning() {
+		n, addr, err := t.ReadFrom(buf)
+		if err != nil {
+			if !t.IsRunning() {
+				return
+			}
+			// Handle temporary errors
+			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
+				continue
+			}
+			// Log and continue for other errors
+			t.metrics.Increment("read_errors")
+			continue
+		}
+
+		// Rate limit check
+		if !t.rateLimiter.Allow() {
+			t.metrics.Increment("rate_limited")
+			continue
+		}
+
+		// Copy packet data for async processing
+		packetData := make([]byte, n)
+		copy(packetData, buf[:n])
+		packetAddr := addr
+
+		// Submit to worker pool
+		t.workerPool.SubmitAsync(func() {
+			t.handlePacket(packetData, packetAddr)
+		})
+	}
+}
+
+// handlePacket processes a received packet
+func (t *Transport) handlePacket(data []byte, addr net.Addr) {
+	t.mu.RLock()
+	handler := t.onPacket
+	t.mu.RUnlock()
+
+	if handler != nil {
+		handler(data, addr)
+	}
+
+	// Publish event
+	t.PublishEvent(events.EventTypePacketReceived, map[string]interface{}{
+		"size":    len(data),
+		"address": addr.String(),
+	})
+}
+
+// HealthCheck returns detailed health status
+func (t *Transport) HealthCheck() interfaces.HealthStatus {
+	status := t.Module.HealthCheck()
+	status.Details["packets_rx"] = atomic.LoadUint64(&t.packetsRx)
+	status.Details["packets_tx"] = atomic.LoadUint64(&t.packetsTx)
+	status.Details["bytes_rx"] = atomic.LoadUint64(&t.bytesRx)
+	status.Details["bytes_tx"] = atomic.LoadUint64(&t.bytesTx)
+	status.Details["listen_addr"] = t.config.ListenAddr
+	return status
+}
+
+// Stats returns transport statistics
+func (t *Transport) Stats() TransportStats {
+	return TransportStats{
+		PacketsRx: atomic.LoadUint64(&t.packetsRx),
+		PacketsTx: atomic.LoadUint64(&t.packetsTx),
+		BytesRx:   atomic.LoadUint64(&t.bytesRx),
+		BytesTx:   atomic.LoadUint64(&t.bytesTx),
+	}
+}
+
+// GetXUDPManager returns the XUDP manager for Full Cone NAT support
+func (t *Transport) GetXUDPManager() *XUDPManager {
+	return t.xudpManager
+}
+
+// HandleXUDPPacket processes an XUDP packet and returns payload + session
+func (t *Transport) HandleXUDPPacket(data []byte, addr net.Addr) ([]byte, *XUDPSession, error) {
+	if t.xudpManager == nil {
+		return data, nil, nil
+	}
+	return t.xudpManager.HandlePacket(data, addr)
+}
+
+// TransportStats holds transport statistics
+type TransportStats struct {
+	PacketsRx uint64
+	PacketsTx uint64
+	BytesRx   uint64
+	BytesTx   uint64
+}
+
+// GetConnection returns the underlying UDP connection (for advanced usage)
+func (t *Transport) GetConnection() *net.UDPConn {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.conn
+}
+
+// SetRateLimit updates the rate limiter configuration
+func (t *Transport) SetRateLimit(rate float64, burst int) {
+	t.rateLimiter.SetRate(rate, burst)
+}
+
+// Factory creates UDP transport modules
+func Factory(cfg interface{}) (interfaces.Module, error) {
+	var config *Config
+	if c, ok := cfg.(*Config); ok {
+		config = c
+	} else {
+		config = DefaultConfig()
+	}
+	return New(config)
+}

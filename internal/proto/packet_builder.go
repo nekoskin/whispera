@@ -1,6 +1,10 @@
 package proto
 
-import "errors"
+import (
+	"errors"
+
+	"whispera/internal/proto/headers"
+)
 
 // PacketBuilder создает пакеты V1 или V2 в зависимости от настроек
 type PacketBuilder struct {
@@ -19,8 +23,8 @@ func (pb *PacketBuilder) BuildHeader(seq uint32, payloadLen uint16, flags byte) 
 
 // buildHeaderV1 создает V1 заголовок
 func (pb *PacketBuilder) buildHeaderV1(seq uint32, payloadLen uint16, flags byte) []byte {
-	h := PacketHeader{
-		Version:    Version,
+	h := headers.PacketHeader{
+		Version:    headers.Version,
 		Flags:      flags,
 		SessionID:  pb.SessionID,
 		Seq:        seq,
@@ -31,7 +35,7 @@ func (pb *PacketBuilder) buildHeaderV1(seq uint32, payloadLen uint16, flags byte
 
 // buildHeaderV2 создает V2 заголовок
 func (pb *PacketBuilder) buildHeaderV2(seq uint32, payloadLen uint16, flags byte) []byte {
-	h2 := CompactHeaderV2{
+	h2 := headers.CompactHeaderV2{
 		Flags:    flags,
 		StreamID: pb.StreamID,
 		Seq:      seq,
@@ -39,7 +43,7 @@ func (pb *PacketBuilder) buildHeaderV2(seq uint32, payloadLen uint16, flags byte
 	header := h2.MarshalBinary()
 
 	// Добавляем PayloadLen (variable length encoding)
-	if payloadLen < uint16(SmallPayloadThreshold) {
+	if payloadLen < uint16(headers.SmallPayloadThreshold) {
 		header = append(header, byte(payloadLen))
 	} else {
 		header = append(header, 0xFF)
@@ -52,15 +56,15 @@ func (pb *PacketBuilder) buildHeaderV2(seq uint32, payloadLen uint16, flags byte
 // GetHeaderSize возвращает размер заголовка для текущей версии
 func (pb *PacketBuilder) GetHeaderSize(payloadLen uint16) int {
 	if pb.UseV2 {
-		size := CompactHeaderLenV2
-		if payloadLen < uint16(SmallPayloadThreshold) {
+		size := headers.CompactHeaderLenV2
+		if payloadLen < uint16(headers.SmallPayloadThreshold) {
 			size += 1
 		} else {
 			size += 3
 		}
 		return size
 	}
-	return HeaderLen
+	return headers.HeaderLen
 }
 
 // ParsePacketHeader парсит заголовок и определяет версию
@@ -71,31 +75,30 @@ func ParsePacketHeader(data []byte) (version byte, headerSize int, err error) {
 
 	// Проверяем версию
 	versionByte := (data[0] >> 5) & 0x07
-	if versionByte == Version2 {
+	if versionByte == headers.Version2 {
 		// V2 протокол
-		if len(data) < CompactHeaderLenV2 {
+		if len(data) < headers.CompactHeaderLenV2 {
 			return 0, 0, errors.New("short V2 header")
 		}
-		headerSize = CompactHeaderLenV2
+		headerSize = headers.CompactHeaderLenV2
 		// Проверяем, есть ли PayloadLen
-		if len(data) > CompactHeaderLenV2 {
-			if data[CompactHeaderLenV2] == 0xFF {
+		if len(data) > headers.CompactHeaderLenV2 {
+			if data[headers.CompactHeaderLenV2] == 0xFF {
 				headerSize += 3
 			} else {
 				headerSize += 1
 			}
 		}
-		return Version2, headerSize, nil
+		return headers.Version2, headerSize, nil
 	}
 
 	// V1 протокол (проверяем первый байт напрямую)
-	if data[0] == Version {
-		if len(data) < HeaderLen {
+	if data[0] == headers.Version {
+		if len(data) < headers.HeaderLen {
 			return 0, 0, errors.New("short V1 header")
 		}
-		return Version, HeaderLen, nil
+		return headers.Version, headers.HeaderLen, nil
 	}
 
 	return 0, 0, errors.New("unknown version")
 }
-

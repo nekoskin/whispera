@@ -213,21 +213,3 @@ type TrafficState struct {
 	Direction   string    `json:"direction"`
 	LastUpdate  time.Time `json:"last_update"`
 }
-
-// BehavioralProfile represents behavioral characteristics
-type BehavioralProfile struct {
-	UserBehavior    string  `json:"user_behavior"`
-	SessionPattern  string  `json:"session_pattern"`
-	TimingPattern   string  `json:"timing_pattern"`
-	BurstPattern    string  `json:"burst_pattern"`
-	AdaptationLevel float64 `json:"adaptation_level"`
-}
-
-// TimingProfile represents timing characteristics
-type TimingProfile struct {
-	MinInterval time.Duration `json:"min_interval"`
-	MaxInterval time.Duration `json:"max_interval"`
-	AverageRTT  time.Duration `json:"average_rtt"`
-	Jitter      time.Duration `json:"jitter"`
-	BurstFreq   float64       `json:"burst_frequency"`
-}

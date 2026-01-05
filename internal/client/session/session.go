@@ -1,38 +1,69 @@
+// Package session provides client session context
 package session
 
 import (
+	"sync"
 	"sync/atomic"
-
-	aeadpkg "whispera/internal/crypto"
-	"whispera/internal/proto"
 )
 
-// SessionCtx инкапсулирует общее состояние сессии клиента:
-//   - один SessionID для всех транспортов;
-//   - один AEADState (Noise/PSK) для всех туннелей;
-//   - единый глобальный счётчик SeqSend, используемый всеми транспортами.
-//
-// Это позволяет прозрачно мигрировать между UDP/TCP/WS/WS2, сохраняя
-// согласованный порядок пакетов и единое sliding-окно для приёма.
+// SessionCtx represents a client session context
 type SessionCtx struct {
-	// Immutable after handshake
+	mu        sync.RWMutex
 	SessionID uint32
-	AEAD      *aeadpkg.AEADState
-
-	// Global send sequence number shared across all transports.
-	// MUST be incremented атомарно через atomic.AddUint32.
-	SeqSend uint32
-
-	// Per-session receive window and reassembler.
-	RecvWin *aeadpkg.SlidingWindow
-	Reasm   *proto.Reassembler
+	seq       uint32
+	Keys      *SessionKeys
+	Active    bool
 }
 
-// NextSeq атомарно увеличивает глобальный счётчик и возвращает новое значение.
-func (s *SessionCtx) NextSeq() uint32 {
-	if s == nil {
-		return 0
+// SessionKeys holds session encryption keys
+type SessionKeys struct {
+	SendKey []byte
+	RecvKey []byte
+	Seed    []byte
+}
+
+// NewSessionCtx creates a new session context
+func NewSessionCtx(sessionID uint32) *SessionCtx {
+	return &SessionCtx{
+		SessionID: sessionID,
+		Active:    true,
 	}
-	return atomic.AddUint32(&s.SeqSend, 1)
 }
 
+// NextSeq returns the next sequence number
+func (s *SessionCtx) NextSeq() uint32 {
+	return atomic.AddUint32(&s.seq, 1)
+}
+
+// GetSeq returns the current sequence number
+func (s *SessionCtx) GetSeq() uint32 {
+	return atomic.LoadUint32(&s.seq)
+}
+
+// SetKeys sets the session keys
+func (s *SessionCtx) SetKeys(keys *SessionKeys) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Keys = keys
+}
+
+// GetKeys returns the session keys
+func (s *SessionCtx) GetKeys() *SessionKeys {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Keys
+}
+
+// Close closes the session
+func (s *SessionCtx) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Active = false
+}
+
+// IsActive returns whether the session is active
+func (s *SessionCtx) IsActive() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Active
+}

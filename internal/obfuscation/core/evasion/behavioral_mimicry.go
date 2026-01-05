@@ -26,13 +26,13 @@ type BehavioralMimicry struct {
 	mlSystem     types.MLSystem          // Интеграция с ML-системой
 	userProfiles map[string]*UserProfile // Профили пользователей
 	adaptation   *AdaptationEngine       // Адаптивный движок
-	
+
 	// Асинхронная обработка
-	mutex          sync.RWMutex
-	workerPool     *BehavioralWorkerPool
-	contextCache   sync.Map // Кэш контекстов
-	profileCache   sync.Map // Кэш профилей
-	processingCount int64   // Счетчик обработанных запросов
+	mutex           sync.RWMutex
+	workerPool      *BehavioralWorkerPool
+	contextCache    sync.Map // Кэш контекстов
+	profileCache    sync.Map // Кэш профилей
+	processingCount int64    // Счетчик обработанных запросов
 	ctx             context.Context
 	cancel          context.CancelFunc
 }
@@ -88,7 +88,7 @@ type UserProfile struct {
 	TypingPattern   *TypingPattern
 	NavigationStyle *NavigationStyle
 	InteractionMode *InteractionMode
-	TimingProfile   *TimingProfile
+	TimingProfile   *BehavioralTimingProfile
 	DeviceProfile   *DeviceProfile
 	LastUpdated     time.Time
 	Effectiveness   float64
@@ -122,8 +122,8 @@ type InteractionMode struct {
 	RightClickRate   float64
 }
 
-// TimingProfile - временной профиль
-type TimingProfile struct {
+// BehavioralTimingProfile - временной профиль
+type BehavioralTimingProfile struct {
 	SessionDuration time.Duration
 	BreakFrequency  float64
 	PeakHours       []int
@@ -243,7 +243,7 @@ func NewBehavioralWorkerPool() *BehavioralWorkerPool {
 	if workers < 2 {
 		workers = 2
 	}
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	pool := &BehavioralWorkerPool{
 		workers:    workers,
@@ -301,7 +301,7 @@ func (p *BehavioralWorkerPool) dispatcher() {
 func (p *BehavioralWorkerPool) worker() {
 	defer p.wg.Done()
 	workerChan := make(chan *BehavioralJob, 1)
-	
+
 	for {
 		select {
 		case <-p.ctx.Done():
@@ -331,7 +331,7 @@ func (p *BehavioralWorkerPool) processJob(job *BehavioralJob) {
 			}
 		}
 	}()
-	
+
 	if time.Since(job.Timestamp) > job.Timeout {
 		select {
 		case job.Result <- job.Data:
@@ -340,7 +340,7 @@ func (p *BehavioralWorkerPool) processJob(job *BehavioralJob) {
 		}
 		return
 	}
-	
+
 	// Обрабатываем задачу (здесь будет вызов behavioral mimicry методов)
 	select {
 	case job.Result <- job.Data:
@@ -375,7 +375,7 @@ func (bm *BehavioralMimicry) ApplyBehavioralMimicry(data []byte, context *types.
 	if len(data) < 1024 {
 		return bm.applyBehavioralMimicrySync(data, context)
 	}
-	
+
 	// Для больших пакетов используем асинхронную обработку
 	// Проверяем кэш
 	cacheKey := fmt.Sprintf("%d_%s_%d", len(data), context.Direction, context.ThreatLevel)
@@ -387,22 +387,22 @@ func (bm *BehavioralMimicry) ApplyBehavioralMimicry(data []byte, context *types.
 			return result
 		}
 	}
-	
+
 	// Обрабатываем синхронно (можно переключить на асинхронную обработку)
 	result := bm.applyBehavioralMimicrySync(data, context)
-	
+
 	// Кэшируем результат
 	if len(result) > 0 {
 		resultCopy := make([]byte, len(result))
 		copy(resultCopy, result)
 		bm.contextCache.Store(cacheKey, resultCopy)
-		
+
 		// Очищаем кэш периодически
 		if atomic.AddInt64(&bm.processingCount, 1)%1000 == 0 {
 			bm.cleanupCache()
 		}
 	}
-	
+
 	return result
 }
 
@@ -444,7 +444,7 @@ func (bm *BehavioralMimicry) cleanupCache() {
 		count++
 		return count < 100
 	})
-	
+
 	count = 0
 	bm.profileCache.Range(func(key, value interface{}) bool {
 		if count > 50 {
@@ -460,7 +460,7 @@ func (bm *BehavioralMimicry) cleanupCache() {
 func (bm *BehavioralMimicry) getBehavioralContext(context *types.TrafficContext) *BehavioralContext {
 	// Создаем или получаем существующий контекст
 	sessionID := bm.generateSessionID()
-	
+
 	// Проверяем кэш
 	if cached, ok := bm.contextCache.Load(sessionID); ok {
 		if cachedContext, ok := cached.(*BehavioralContext); ok {
@@ -490,10 +490,10 @@ func (bm *BehavioralMimicry) getBehavioralContext(context *types.TrafficContext)
 	bm.mutex.Lock()
 	bm.contexts[sessionID] = behavioralContext
 	bm.mutex.Unlock()
-	
+
 	// Кэшируем контекст
 	bm.contextCache.Store(sessionID, behavioralContext)
-	
+
 	return behavioralContext
 }
 
@@ -919,8 +919,8 @@ func (bm *BehavioralMimicry) createInteractionMode(context *BehavioralContext) *
 }
 
 // createTimingProfile создает временной профиль
-func (bm *BehavioralMimicry) createTimingProfile(context *BehavioralContext) *TimingProfile {
-	return &TimingProfile{
+func (bm *BehavioralMimicry) createTimingProfile(context *BehavioralContext) *BehavioralTimingProfile {
+	return &BehavioralTimingProfile{
 		SessionDuration: time.Duration(30+context.BehaviorScore*60) * time.Minute,
 		BreakFrequency:  0.2 + context.BehaviorScore*0.1,
 		PeakHours:       []int{9, 10, 11, 14, 15, 16, 19, 20, 21},
@@ -963,7 +963,7 @@ func (bm *BehavioralMimicry) applyNavigationEnhancements(data []byte, style *Nav
 }
 
 // applyTimingEnhancements применяет временные улучшения
-func (bm *BehavioralMimicry) applyTimingEnhancements(data []byte, profile *TimingProfile) []byte {
+func (bm *BehavioralMimicry) applyTimingEnhancements(data []byte, profile *BehavioralTimingProfile) []byte {
 	// Добавляем реалистичные временные паттерны
 	timingData := make([]byte, int(profile.BreakFrequency*15))
 	for i := range timingData {
