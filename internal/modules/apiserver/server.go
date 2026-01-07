@@ -3,6 +3,8 @@ package apiserver
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -22,6 +24,8 @@ import (
 	"whispera/internal/modules/dhcp"
 	"whispera/internal/network"
 	"whispera/internal/stats"
+
+	"golang.org/x/crypto/curve25519"
 )
 
 const (
@@ -129,6 +133,25 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("GET /api/v1/dhcp/status", s.handleDHCPStatus)
 	s.Handle("GET /api/v1/dhcp/leases", s.handleDHCPLeases)
 	s.Handle("DELETE /api/v1/dhcp/lease", s.handleDHCPRelease)
+
+	// User management endpoints (frontend uses /api/users format)
+	s.Handle("GET /api/users", s.handleGetUsers)
+	s.Handle("POST /api/users/add", s.handleAddUser)
+	s.Handle("PUT /api/users/{id}", s.handleUpdateUser)
+	s.Handle("POST /api/users/delete", s.handleDeleteUser)
+
+	// Key generation
+	s.Handle("POST /api/keys/generate", s.handleGenerateKeys)
+
+	// Sessions (frontend format)
+	s.Handle("GET /api/sessions", s.handleGetSessionsAPI)
+
+	// Stats (frontend format)
+	s.Handle("GET /api/stats", s.handleGetStatsAPI)
+	s.Handle("GET /api/stats/traffic", s.handleTrafficStatsAPI)
+
+	// System info (frontend format)
+	s.Handle("GET /api/system/info", s.handleSystemInfoAPI)
 }
 
 // Init initializes the API server
@@ -695,6 +718,317 @@ func (s *Server) handleDHCPRelease(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.jsonOK(w, map[string]string{"message": "Lease released"})
+}
+
+// ============================================
+// User Management Handlers
+// ============================================
+
+// User represents a user in the system
+type User struct {
+	ID           int       `json:"id"`
+	Username     string    `json:"username"`
+	PrivateKey   string    `json:"privateKey,omitempty"`
+	PublicKey    string    `json:"publicKey,omitempty"`
+	Upload       int64     `json:"upload"`
+	Download     int64     `json:"download"`
+	TrafficLimit int64     `json:"trafficLimit"`
+	ExpiryDate   string    `json:"expiryDate,omitempty"`
+	Status       string    `json:"status"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
+// In-memory user store (in production, use database)
+var (
+	userStore   = make(map[int]*User)
+	userStoreMu sync.RWMutex
+	nextUserID  = 1
+)
+
+func (s *Server) handleGetUsers(w http.ResponseWriter, r *http.Request) {
+	userStoreMu.RLock()
+	defer userStoreMu.RUnlock()
+
+	users := make([]*User, 0, len(userStore))
+	for _, u := range userStore {
+		// Get traffic from stats
+		userStats := stats.GetUserStats(u.Username)
+		if userStats != nil {
+			u.Upload = userStats.BytesTx
+			u.Download = userStats.BytesRx
+		}
+		users = append(users, u)
+	}
+
+	s.jsonOK(w, users)
+}
+
+func (s *Server) handleAddUser(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username     string `json:"username"`
+		TrafficLimit int64  `json:"trafficLimit"`
+		ExpiryDate   string `json:"expiryDate"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if req.Username == "" {
+		s.jsonError(w, http.StatusBadRequest, "Username is required")
+		return
+	}
+
+	// Generate keys
+	keys, err := generateX25519Keys()
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to generate keys: "+err.Error())
+		return
+	}
+
+	userStoreMu.Lock()
+	user := &User{
+		ID:           nextUserID,
+		Username:     req.Username,
+		PrivateKey:   keys.PrivateKey,
+		PublicKey:    keys.PublicKey,
+		TrafficLimit: req.TrafficLimit,
+		ExpiryDate:   req.ExpiryDate,
+		Status:       "active",
+		CreatedAt:    time.Now(),
+	}
+	userStore[nextUserID] = user
+	nextUserID++
+	userStoreMu.Unlock()
+
+	s.jsonOK(w, map[string]interface{}{
+		"success":    true,
+		"user":       user,
+		"privateKey": keys.PrivateKey,
+		"publicKey":  keys.PublicKey,
+	})
+}
+
+func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	// Extract user ID from path
+	idStr := r.PathValue("id")
+	if idStr == "" {
+		s.jsonError(w, http.StatusBadRequest, "User ID required")
+		return
+	}
+
+	var id int
+	fmt.Sscanf(idStr, "%d", &id)
+
+	var req map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	userStoreMu.Lock()
+	defer userStoreMu.Unlock()
+
+	user, ok := userStore[id]
+	if !ok {
+		s.jsonError(w, http.StatusNotFound, "User not found")
+		return
+	}
+
+	// Update fields
+	if username, ok := req["username"].(string); ok {
+		user.Username = username
+	}
+	if status, ok := req["status"].(string); ok {
+		user.Status = status
+	}
+
+	s.jsonOK(w, map[string]interface{}{"success": true, "user": user})
+}
+
+func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID int `json:"id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	userStoreMu.Lock()
+	delete(userStore, req.ID)
+	userStoreMu.Unlock()
+
+	s.jsonOK(w, map[string]interface{}{"success": true, "message": "User deleted"})
+}
+
+// ============================================
+// Key Generation
+// ============================================
+
+type KeyPair struct {
+	PrivateKey string `json:"privateKey"`
+	PublicKey  string `json:"publicKey"`
+}
+
+func generateX25519Keys() (*KeyPair, error) {
+	// Generate random 32 bytes for private key
+	privateBytes := make([]byte, 32)
+	if _, err := rand.Read(privateBytes); err != nil {
+		return nil, err
+	}
+
+	// Derive public key using X25519
+	publicBytes, err := curve25519.X25519(privateBytes, curve25519.Basepoint)
+	if err != nil {
+		return nil, err
+	}
+
+	return &KeyPair{
+		PrivateKey: hex.EncodeToString(privateBytes),
+		PublicKey:  hex.EncodeToString(publicBytes),
+	}, nil
+}
+
+func (s *Server) handleGenerateKeys(w http.ResponseWriter, r *http.Request) {
+	keys, err := generateX25519Keys()
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to generate keys")
+		return
+	}
+
+	s.jsonOK(w, map[string]interface{}{
+		"success":    true,
+		"privateKey": keys.PrivateKey,
+		"publicKey":  keys.PublicKey,
+	})
+}
+
+// ============================================
+// Sessions API (frontend format)
+// ============================================
+
+func (s *Server) handleGetSessionsAPI(w http.ResponseWriter, r *http.Request) {
+	if s.registry == nil {
+		s.jsonOK(w, []interface{}{})
+		return
+	}
+
+	module, ok := s.registry.Get("session.manager")
+	if !ok {
+		s.jsonOK(w, []interface{}{})
+		return
+	}
+
+	sessionMgr, ok := module.(interfaces.SessionManager)
+	if !ok {
+		s.jsonOK(w, []interface{}{})
+		return
+	}
+
+	sessions := sessionMgr.GetAllSessions()
+	sessionList := make([]map[string]interface{}, 0, len(sessions))
+
+	for _, sess := range sessions {
+		sessionList = append(sessionList, map[string]interface{}{
+			"id":           fmt.Sprintf("sess_%d", sess.ID()),
+			"user":         "user_" + sess.ClientAddr().String(),
+			"ip":           sess.ClientAddr().String(),
+			"connected_at": sess.LastActivity().Format(time.RFC3339),
+			"status":       "active",
+			"traffic":      0,
+		})
+	}
+
+	s.jsonOK(w, sessionList)
+}
+
+// ============================================
+// Stats API (frontend format)
+// ============================================
+
+func (s *Server) handleGetStatsAPI(w http.ResponseWriter, r *http.Request) {
+	globalStats := stats.GetGlobalStats()
+
+	userStoreMu.RLock()
+	totalUsers := len(userStore)
+	userStoreMu.RUnlock()
+
+	s.jsonOK(w, map[string]interface{}{
+		"total_users":     totalUsers,
+		"active_sessions": globalStats.ActiveUsers,
+		"total_upload":    globalStats.TotalBytesTx,
+		"total_download":  globalStats.TotalBytesRx,
+		"traffic": map[string]interface{}{
+			"upload":   globalStats.TotalBytesTx,
+			"download": globalStats.TotalBytesRx,
+		},
+	})
+}
+
+func (s *Server) handleTrafficStatsAPI(w http.ResponseWriter, r *http.Request) {
+	globalStats := stats.GetGlobalStats()
+
+	s.jsonOK(w, map[string]interface{}{
+		"total_download":   globalStats.TotalBytesRx,
+		"total_upload":     globalStats.TotalBytesTx,
+		"total_packets_rx": globalStats.TotalPacketsRx,
+		"total_packets_tx": globalStats.TotalPacketsTx,
+		"active_users":     globalStats.ActiveUsers,
+		"uptime":           globalStats.Uptime,
+		"uptime_seconds":   globalStats.UptimeSeconds,
+		"history":          globalStats.History,
+	})
+}
+
+// ============================================
+// System Info API (frontend format)
+// ============================================
+
+func (s *Server) handleSystemInfoAPI(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	externalIP, _ := network.DetectServerIP(ctx)
+	if externalIP == "" {
+		externalIP = "unknown"
+	}
+
+	hostname, _ := os.Hostname()
+
+	// Get server public key from config provider
+	var serverPub string
+	if s.registry != nil {
+		if configMod, ok := s.registry.Get("config.provider"); ok {
+			if provider, ok := configMod.(interface{ GetConfig() interface{} }); ok {
+				// Try to get public key
+				_ = provider
+			}
+		}
+	}
+
+	info := map[string]interface{}{
+		"server_ip":       externalIP,
+		"serverIP":        externalIP,
+		"server_pub":      serverPub,
+		"serverPublicKey": serverPub,
+		"hostname":        hostname,
+		"os":              runtime.GOOS,
+		"arch":            runtime.GOARCH,
+		"go_version":      runtime.Version(),
+		"num_cpu":         runtime.NumCPU(),
+		"num_goroutine":   runtime.NumGoroutine(),
+		"version":         ModuleVersion,
+	}
+
+	if s.registry != nil {
+		modules := s.registry.GetAll()
+		info["module_count"] = len(modules)
+	}
+
+	s.jsonOK(w, info)
 }
 
 // HealthCheck returns health status
