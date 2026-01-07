@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"runtime"
@@ -157,20 +158,32 @@ func (s *Server) Start() error {
 	s.server = &http.Server{
 		Addr:         s.config.ListenAddr,
 		Handler:      handler,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
+	// Create listener first to verify port binding
+	ln, err := net.Listen("tcp", s.config.ListenAddr)
+	if err != nil {
+		errMsg := fmt.Sprintf("Failed to bind API server to %s: %v", s.config.ListenAddr, err)
+		fmt.Printf("[ERROR] %s\n", errMsg)
+		s.SetHealthy(false, errMsg)
+		return fmt.Errorf(errMsg)
+	}
+
+	fmt.Printf("[INFO] API Server listening on %s\n", s.config.ListenAddr)
+
 	go func() {
-		var err error
+		var serveErr error
 		if s.config.TLSCert != "" && s.config.TLSKey != "" {
-			err = s.server.ListenAndServeTLS(s.config.TLSCert, s.config.TLSKey)
+			serveErr = s.server.ServeTLS(ln, s.config.TLSCert, s.config.TLSKey)
 		} else {
-			err = s.server.ListenAndServe()
+			serveErr = s.server.Serve(ln)
 		}
-		if err != nil && err != http.ErrServerClosed {
-			s.SetHealthy(false, fmt.Sprintf("HTTP server error: %v", err))
+		if serveErr != nil && serveErr != http.ErrServerClosed {
+			fmt.Printf("[ERROR] API Server error: %v\n", serveErr)
+			s.SetHealthy(false, fmt.Sprintf("HTTP server error: %v", serveErr))
 		}
 	}()
 
