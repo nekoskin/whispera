@@ -102,6 +102,9 @@ func New(cfg *Config) (*Server, error) {
 
 // registerDefaultRoutes registers built-in API routes
 func (s *Server) registerDefaultRoutes() {
+	// Login endpoint (no auth required)
+	s.Handle("POST /api/login", s.handleLogin)
+
 	s.Handle("GET /api/v1/health", s.handleHealth)
 	s.Handle("GET /api/v1/status", s.handleStatus)
 	s.Handle("GET /api/v1/modules", s.handleModules)
@@ -310,8 +313,8 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Skip auth for health endpoint
-		if strings.HasSuffix(r.URL.Path, "/health") {
+		// Skip auth for login and health endpoints
+		if r.URL.Path == "/api/login" || strings.HasSuffix(r.URL.Path, "/health") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -395,6 +398,40 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.jsonOK(w, response)
+}
+
+// handleLogin handles user authentication
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Simple authentication: admin/admin returns the auth token from config
+	// In production, this should use proper password hashing
+	if req.Username == "admin" && req.Password == "admin" {
+		token := s.config.AuthToken
+		if token == "" {
+			// Generate a default token if not configured
+			token = "whispera_default_token"
+		}
+		s.jsonOK(w, map[string]interface{}{
+			"success": true,
+			"token":   token,
+			"user": map[string]string{
+				"username": req.Username,
+				"role":     "admin",
+			},
+		})
+		return
+	}
+
+	s.jsonError(w, http.StatusUnauthorized, "Invalid username or password")
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
