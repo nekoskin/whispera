@@ -137,6 +137,15 @@ build_whispera() {
     
     cp whispera-server "$BIN_PATH/whispera"
     chmod +x "$BIN_PATH/whispera"
+
+    # Install Web UI
+    log_info "Installing Web UI..."
+    mkdir -p "$DAT_PATH/web"
+    if [[ -d "web" ]]; then
+        cp -r web/* "$DAT_PATH/web/"
+    else
+        log_warn "Web directory not found, skipping UI installation"
+    fi
     
     log_success "Whispera binary installed to $BIN_PATH/whispera"
 }
@@ -198,6 +207,12 @@ obfuscation:
 logging:
   level: "info"
   path: "$LOG_PATH/access.log"
+
+api:
+  enabled: true
+  listen_addr: ":8080"
+  auth_token: "$UUID"
+  web_root: "$DAT_PATH/web"
 EOF
     
     log_success "Config saved to $CONF_PATH/config.yaml"
@@ -216,7 +231,7 @@ Requires=network-online.target
 [Service]
 User=root
 WorkingDirectory=$WORK_DIR
-ExecStart=$BIN_PATH/whispera -config $CONF_PATH/config.yaml
+ExecStart=$BIN_PATH/whispera -config $CONF_PATH/config.yaml -api :8080
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
@@ -253,7 +268,13 @@ case $1 in
     status) systemctl status whispera ;;
     log) journalctl -u whispera -f ;;
     config) nano /etc/whispera/config.yaml ;;
-    *) echo "Usage: whispera-mgmt {start|stop|restart|status|log|config}" ;;
+    info)
+        echo "=== Whispera Server Info ==="
+        echo "UUID:       $(cat /etc/whispera/uuid)"
+        echo "Public Key: $(cat /etc/whispera/server.pub)"
+        echo "Config:     /etc/whispera/config.yaml"
+        ;;
+    *) echo "Usage: whispera-mgmt {start|stop|restart|status|log|config|info}" ;;
 esac
 EOF
     chmod +x "$BIN_PATH/whispera-cli"
@@ -291,6 +312,7 @@ main() {
     log_success "Whispera installed successfully!"
     echo -e "  Manage command: ${GREEN}whispera-mgmt${PLAIN}"
     echo -e "  Config file:    ${GREEN}$CONF_PATH/config.yaml${PLAIN}"
+    echo -e "  Web Interface:  ${GREEN}http://<YOUR_IP>:8080${PLAIN}"
     echo ""
 }
 

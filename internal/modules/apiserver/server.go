@@ -33,6 +33,7 @@ type Config struct {
 	Enabled    bool
 	ListenAddr string
 	AuthToken  string
+	WebRoot    string
 	EnableCORS bool
 	TLSCert    string
 	TLSKey     string
@@ -209,7 +210,23 @@ func (s *Server) Handle(pattern string, handler http.HandlerFunc) {
 
 // buildHandler builds the final HTTP handler
 func (s *Server) buildHandler() http.Handler {
-	// Register all handlers
+	// Root handler (Mux)
+	var rootHandler http.Handler = s.mux
+
+	// If WebRoot is configured, serve static files
+	if s.config.WebRoot != "" {
+		fs := http.FileServer(http.Dir(s.config.WebRoot))
+		// Chain handler: check API routes first (s.mux), then static files
+		rootHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Check if it's an API request
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				s.mux.ServeHTTP(w, r)
+				return
+			}
+			// Serve static file
+			fs.ServeHTTP(w, r)
+		})
+	}
 	s.mu.RLock()
 	for pattern, handler := range s.handlers {
 		// Parse method and path from pattern
@@ -223,7 +240,7 @@ func (s *Server) buildHandler() http.Handler {
 	s.mu.RUnlock()
 
 	// Wrap with middleware
-	var handler http.Handler = s.mux
+	var handler http.Handler = rootHandler
 
 	// CORS middleware
 	if s.config.EnableCORS {

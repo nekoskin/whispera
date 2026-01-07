@@ -336,6 +336,7 @@ func createModules(manager *lifecycle.Manager) error {
 			Enabled:    true,
 			ListenAddr: serverConfig.API.ListenAddr,
 			AuthToken:  serverConfig.API.AuthToken,
+			WebRoot:    serverConfig.API.WebRoot,
 			EnableCORS: true,
 		})
 		if err != nil {

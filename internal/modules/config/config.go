@@ -142,6 +142,7 @@ type APIConfig struct {
 	Enabled    bool   `yaml:"enabled"`
 	ListenAddr string `yaml:"listen_addr"`
 	AuthToken  string `yaml:"auth_token"`
+	WebRoot    string `yaml:"web_root"`
 	TLSCert    string `yaml:"tls_cert"`
 	TLSKey     string `yaml:"tls_key"`
 }
