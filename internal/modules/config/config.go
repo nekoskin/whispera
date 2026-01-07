@@ -307,7 +307,11 @@ func (p *Provider) Load(source string) error {
 		return fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	var cfg ServerConfig
+	// Start with default configuration to ensure missing fields use defaults
+	cfgPtr := DefaultServerConfig()
+	// Dereference to get a copy we can modify
+	cfg := *cfgPtr
+
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return fmt.Errorf("failed to parse config: %w", err)
 	}
