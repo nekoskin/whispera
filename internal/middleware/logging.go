@@ -2,25 +2,29 @@ package middleware
 
 import (
 	"context"
-	"log"
 	"time"
 
 	"whispera/core/router"
+	"whispera/internal/logger"
 )
 
 // ServerLoggingMiddleware реализует глобальное логирование
-type ServerLoggingMiddleware struct{}
+type ServerLoggingMiddleware struct {
+	log *logger.Logger
+}
 
 // NewServerLoggingMiddleware создает новый ServerLoggingMiddleware
 func NewServerLoggingMiddleware() *ServerLoggingMiddleware {
-	return &ServerLoggingMiddleware{}
+	return &ServerLoggingMiddleware{
+		log: logger.Module("server"),
+	}
 }
 
 // Process реализует интерфейс Middleware
 func (m *ServerLoggingMiddleware) Process(ctx context.Context, req *router.Request, next router.Handler) (*router.Response, error) {
 	start := time.Now()
 
-	log.Printf("[SERVER] REQ ID=%s Type=%s Addr=%s Session=%s",
+	m.log.Debug("REQ ID=%s Type=%s Addr=%s Session=%s",
 		req.ID, req.Type, req.RemoteAddr, req.SessionID)
 
 	resp, err := next.Handle(ctx, req)
@@ -28,10 +32,10 @@ func (m *ServerLoggingMiddleware) Process(ctx context.Context, req *router.Reque
 	duration := time.Since(start)
 
 	if err != nil {
-		log.Printf("[SERVER] ERR ID=%s Duration=%v Error=%v",
+		m.log.Error("ERR ID=%s Duration=%v Error=%v",
 			req.ID, duration, err)
 	} else {
-		log.Printf("[SERVER] RES ID=%s Duration=%v Status=%d",
+		m.log.Info("RES ID=%s Duration=%v Status=%d",
 			req.ID, duration, resp.StatusCode)
 	}
 

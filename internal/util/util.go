@@ -1,15 +1,16 @@
 package util
 
 import (
-	"log"
 	"sync"
 	"time"
+
+	"whispera/internal/logger"
 )
 
 // SafeClose safely closes a resource and logs any error
 func SafeClose(name string, closer func() error) {
 	if err := closer(); err != nil {
-		log.Printf("[WARN] Failed to close %s: %v", name, err)
+		logger.Warn("Failed to close %s: %v", name, err)
 	}
 }
 

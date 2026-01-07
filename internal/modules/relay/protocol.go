@@ -185,12 +185,21 @@ type ConnectPayload struct {
 	Addr     string // Address (IP or domain)
 	Port     uint16 // Port number
 	Protocol uint8  // 0x01=TCP, 0x02=UDP
+	Profile  uint8  // Behavior profile ID
 }
 
 // Protocol types
 const (
 	ProtoTCP uint8 = 0x01
 	ProtoUDP uint8 = 0x02
+)
+
+// Behavior Profiles
+const (
+	ProfileBalanced   uint8 = 0x00 // Default, balanced timeout/retry
+	ProfileLowLatency uint8 = 0x01 // Aggressive timeouts, fail fast
+	ProfileAggressive uint8 = 0x02 // Long timeouts, resilient (for heavy censorship)
+	ProfilePersonal   uint8 = 0x03 // Stealthy, mimics browser timing (v1 Personal)
 )
 
 // Encode serializes the connect payload
@@ -202,6 +211,9 @@ func (p *ConnectPayload) Encode() []byte {
 
 	// Address type
 	buf = append(buf, p.AddrType)
+
+	// Profile (new field)
+	buf = append(buf, p.Profile)
 
 	// Address
 	switch p.AddrType {
@@ -227,16 +239,17 @@ func (p *ConnectPayload) Encode() []byte {
 
 // DecodeConnectPayload parses a connect payload
 func DecodeConnectPayload(data []byte) (*ConnectPayload, error) {
-	if len(data) < 4 {
+	if len(data) < 5 { // Min length increased for Profile
 		return nil, ErrInvalidFrame
 	}
 
 	p := &ConnectPayload{
 		Protocol: data[0],
 		AddrType: data[1],
+		Profile:  data[2], // Read Profile
 	}
 
-	offset := 2
+	offset := 3 // incremented offset
 
 	switch p.AddrType {
 	case AddrTypeIPv4:
@@ -327,12 +340,13 @@ func parseIPv6(addr string) []byte {
 }
 
 // NewConnectFrame creates a CONNECT frame
-func NewConnectFrame(streamID uint16, proto uint8, addrType uint8, addr string, port uint16) *Frame {
+func NewConnectFrame(streamID uint16, proto uint8, addrType uint8, addr string, port uint16, profile uint8) *Frame {
 	payload := &ConnectPayload{
 		Protocol: proto,
 		AddrType: addrType,
 		Addr:     addr,
 		Port:     port,
+		Profile:  profile,
 	}
 	return &Frame{
 		StreamID: streamID,

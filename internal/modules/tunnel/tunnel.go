@@ -12,7 +12,11 @@ import (
 	"whispera/internal/core/base"
 	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
+	"whispera/internal/logger"
+	"whispera/internal/modules/killswitch"
 )
+
+var log = logger.Module("tunnel")
 
 const (
 	ModuleName    = "tunnel.manager"
@@ -55,6 +59,11 @@ type Config struct {
 	ReconnectMaxDelay    time.Duration // Max reconnect delay
 	MaxReconnectAttempts int           // Max reconnect attempts (0 = infinite)
 	ConnectionTimeout    time.Duration // Connection timeout
+
+	// Kill Switch
+	KillSwitchEnabled  bool // Enable kill switch
+	KillSwitchAllowLAN bool // Allow LAN access when kill switch active
+	KillSwitchAllowDNS bool // Allow DNS when kill switch active
 }
 
 // DefaultConfig returns default tunnel configuration
@@ -119,6 +128,9 @@ type Manager struct {
 
 	// Callbacks
 	onStateChange func(TunnelState)
+
+	// Kill Switch
+	killSwitch *killswitch.KillSwitch
 }
 
 // New creates a new tunnel manager
@@ -134,6 +146,30 @@ func New(cfg *Config) (*Manager, error) {
 		Module: base.NewModule(ModuleName, ModuleVersion, []string{"tun.device", "handshake.handler"}),
 		config: cfg,
 		state:  StateDisconnected,
+	}
+
+	// Initialize Kill Switch if enabled in config
+	if cfg.KillSwitchEnabled {
+		ksConfig := &killswitch.Config{
+			Enabled:      cfg.KillSwitchEnabled,
+			AllowLAN:     cfg.KillSwitchAllowLAN,
+			AllowDNS:     cfg.KillSwitchAllowDNS,
+			PersistRules: false, // Don't persist on exit to avoid locking user out
+		}
+
+		ks, err := killswitch.New(ksConfig)
+		if err != nil {
+			log.Warn("Failed to initialize kill switch: %v", err)
+		} else {
+			m.killSwitch = ks
+
+			// Set callbacks
+			ks.OnStateChange(func(state killswitch.State) {
+				m.PublishEvent("killswitch.state_changed", map[string]interface{}{
+					"state": state.String(),
+				})
+			})
+		}
 	}
 
 	return m, nil
@@ -225,6 +261,17 @@ func (m *Manager) Connect(ctx context.Context) error {
 	m.connectedAt = time.Now()
 	m.setState(StateConnected)
 
+	// Activate Kill Switch
+	if m.killSwitch != nil && m.config.KillSwitchEnabled {
+		// Set VPN server IP (resolved address)
+		// addr is already *net.UDPAddr from net.ResolveUDPAddr above
+		m.killSwitch.SetVPNServer(addr.IP, addr.Port)
+		if err := m.killSwitch.Enable(); err != nil {
+			log.Error("Failed to enable kill switch: %v", err)
+			m.PublishEvent("killswitch.error", err.Error())
+		}
+	}
+
 	m.PublishEvent("tunnel.connected", map[string]interface{}{
 		"server":     m.config.ServerAddr,
 		"session_id": m.sessionID,
@@ -236,6 +283,13 @@ func (m *Manager) Connect(ctx context.Context) error {
 // Disconnect disconnects from the VPN server
 func (m *Manager) Disconnect() {
 	m.stopKeepalive()
+
+	// Deactivate Kill Switch
+	if m.killSwitch != nil {
+		if err := m.killSwitch.Disable(); err != nil {
+			log.Error("Failed to disable kill switch: %v", err)
+		}
+	}
 
 	m.connMu.Lock()
 	if m.conn != nil {

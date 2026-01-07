@@ -21,6 +21,14 @@ type FTE struct {
 	effectivenessTracker  *EffectivenessTracker
 	coverTraffic          []byte
 	adaptiveProfiles      map[string]*AdaptiveProfile
+
+	// Grammar Rotation
+	rotationEnabled    bool
+	rotationInterval   time.Duration
+	rotationBytes      uint64
+	lastRotationTime   time.Time
+	bytesSinceRotation uint64
+	rotationProfiles   []string
 }
 
 // NewFTE creates a new FTE obfuscator
@@ -32,6 +40,8 @@ func NewFTE() *FTE {
 		reinforcementLearning: NewReinforcementLearning(),
 		effectivenessTracker:  NewEffectivenessTracker(),
 		adaptiveProfiles:      make(map[string]*AdaptiveProfile),
+		rotationProfiles:      []string{},
+		lastRotationTime:      time.Now(),
 	}
 
 	fte.initProfiles()
@@ -134,11 +144,69 @@ func (fte *FTE) SetActiveProfile(name string) error {
 	return fmt.Errorf("profile %s not found", name)
 }
 
+// EnableRotation enables grammar rotation
+func (fte *FTE) EnableRotation(interval time.Duration, bytes uint64, profiles []string) {
+	fte.mutex.Lock()
+	defer fte.mutex.Unlock()
+	fte.rotationEnabled = true
+	fte.rotationInterval = interval
+	fte.rotationBytes = bytes
+	fte.rotationProfiles = profiles
+	if len(profiles) > 0 {
+		fte.active = profiles[0]
+	}
+}
+
+// RotateProfile rotates to the next profile
+func (fte *FTE) RotateProfile() {
+	if len(fte.rotationProfiles) < 2 {
+		return
+	}
+
+	// Find current index
+	currentIndex := -1
+	for i, name := range fte.rotationProfiles {
+		if name == fte.active {
+			currentIndex = i
+			break
+		}
+	}
+
+	// Next index
+	nextIndex := (currentIndex + 1) % len(fte.rotationProfiles)
+	nextProfile := fte.rotationProfiles[nextIndex]
+
+	fte.active = nextProfile
+	fte.state = &ProtocolState{} // Reset state for new profile
+	fte.lastRotationTime = time.Now()
+	fte.bytesSinceRotation = 0
+
+	// Notify ML system if needed?
+	// log.Printf("Rotated to profile: %s", nextProfile)
+}
+
 func (fte *FTE) updateState(size int) {
 	fte.state.MessageCount++
 	fte.state.MessageSizes = append(fte.state.MessageSizes, size)
 	if len(fte.state.MessageSizes) > 100 {
 		fte.state.MessageSizes = fte.state.MessageSizes[1:]
+	}
+
+	// Check Rotation
+	if fte.rotationEnabled {
+		fte.bytesSinceRotation += uint64(size)
+		shouldRotate := false
+
+		if fte.rotationInterval > 0 && time.Since(fte.lastRotationTime) > fte.rotationInterval {
+			shouldRotate = true
+		}
+		if fte.rotationBytes > 0 && fte.bytesSinceRotation > fte.rotationBytes {
+			shouldRotate = true
+		}
+
+		if shouldRotate {
+			fte.RotateProfile()
+		}
 	}
 
 	profile := fte.profiles[fte.active]

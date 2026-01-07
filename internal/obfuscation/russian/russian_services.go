@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -493,7 +492,7 @@ func (t *RussianTunneler) CreateTunnel(ctx context.Context, cdnEndpoint string) 
 		// Resolve hostname to IP with fallback
 		resolvedIP, err := dnsResolver.ResolveWithFallback(host, 5*time.Second)
 		if err != nil {
-			log.Printf("[TUNNEL] Warning: Failed to resolve CDN endpoint %s: %v, will try direct connection", host, err)
+			log.Warn("Failed to resolve CDN endpoint %s: %v, will try direct connection", host, err)
 			// Try to use host as-is (might be IP address)
 			if net.ParseIP(host) != nil {
 				resolvedIP = host
@@ -504,7 +503,7 @@ func (t *RussianTunneler) CreateTunnel(ctx context.Context, cdnEndpoint string) 
 
 		cdnIP = resolvedIP
 		targetDomain = service.Domain // Keep original domain for TLS SNI and headers
-		log.Printf("[TUNNEL] CDN endpoint resolved: %s -> %s:%s (using domain %s for TLS)", cdnEndpoint, cdnIP, cdnPort, targetDomain)
+		log.Debug("CDN endpoint resolved: %s -> %s:%s (using domain %s for TLS)", cdnEndpoint, cdnIP, cdnPort, targetDomain)
 	} else {
 		targetDomain = service.Domain
 	}
@@ -548,7 +547,7 @@ func (t *RussianTunneler) CreateTunnel(ctx context.Context, cdnEndpoint string) 
 			d := net.Dialer{Timeout: 10 * time.Second}
 			return d.DialContext(ctx, network, addr)
 		}
-		log.Printf("[TUNNEL] DialContext overridden: connecting to %s (but using %s in Host/TLS SNI)", cdnAddr, targetDomain)
+		log.Debug("DialContext overridden: connecting to %s (but using %s in Host/TLS SNI)", cdnAddr, targetDomain)
 	}
 
 	client := &http.Client{
@@ -672,7 +671,7 @@ func (r *DNSResolver) ResolveWithFallback(hostname string, timeout time.Duration
 			return res.ip, nil
 		}
 		if res.err != nil {
-			log.Printf("[DNS] Failed to resolve %s via DNS server: %v", hostname, res.err)
+			log.Debug("Failed to resolve %s via DNS server: %v", hostname, res.err)
 		}
 	}
 
@@ -840,7 +839,7 @@ func (st *ServiceTunnel) createRequest(data []byte) (*http.Request, error) {
 	protocol := st.Service.Protocol
 	if protocol != "https" {
 		protocol = "https" // Принудительно используем HTTPS
-		log.Printf("[TUNNEL] Warning: forcing HTTPS for %s", st.Service.Domain)
+		log.Warn("Forcing HTTPS for %s", st.Service.Domain)
 	}
 	baseURL := fmt.Sprintf("%s://%s:%d%s",
 		protocol, st.Service.Domain, st.Service.Port, endpoint)
@@ -858,7 +857,7 @@ func (st *ServiceTunnel) createRequest(data []byte) (*http.Request, error) {
 	// Go automatically sets Host from URL, but we explicitly set it to be sure
 	req.Host = st.Service.Domain
 	if st.CDNIP != "" {
-		log.Printf("[TUNNEL] Request: URL=%s, Host=%s, Connecting to CDN=%s", baseURL, req.Host, st.CDNIP)
+		log.Debug("Request: URL=%s, Host=%s, Connecting to CDN=%s", baseURL, req.Host, st.CDNIP)
 	}
 
 	// Set service-specific headers

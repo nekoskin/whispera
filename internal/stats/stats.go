@@ -1,0 +1,355 @@
+// Package stats provides traffic statistics for Whispera
+package stats
+
+import (
+	"fmt"
+	"sync"
+	"time"
+
+	"whispera/internal/logger"
+)
+
+// TrafficStats tracks traffic statistics
+type TrafficStats struct {
+	mu sync.RWMutex
+
+	// Global stats
+	totalBytesRx   int64
+	totalBytesTx   int64
+	totalPacketsRx int64
+	totalPacketsTx int64
+
+	// Per-user stats
+	userStats map[string]*UserStats
+
+	// Traffic history (hourly)
+	historySize int
+	history     []TrafficSnapshot
+
+	// Start time
+	startTime time.Time
+
+	log *logger.Logger
+}
+
+// UserStats tracks per-user traffic
+type UserStats struct {
+	UserID       string    `json:"user_id"`
+	BytesRx      int64     `json:"bytes_rx"`
+	BytesTx      int64     `json:"bytes_tx"`
+	PacketsRx    int64     `json:"packets_rx"`
+	PacketsTx    int64     `json:"packets_tx"`
+	LastActivity time.Time `json:"last_activity"`
+	SessionCount int       `json:"session_count"`
+	AssignedIP   string    `json:"assigned_ip,omitempty"`
+}
+
+// TrafficSnapshot represents a point-in-time traffic snapshot
+type TrafficSnapshot struct {
+	Timestamp time.Time `json:"timestamp"`
+	BytesRx   int64     `json:"bytes_rx"`
+	BytesTx   int64     `json:"bytes_tx"`
+	PacketsRx int64     `json:"packets_rx"`
+	PacketsTx int64     `json:"packets_tx"`
+	UserCount int       `json:"user_count"`
+}
+
+// GlobalStats returns aggregated global statistics
+type GlobalStats struct {
+	TotalBytesRx   int64             `json:"total_bytes_rx"`
+	TotalBytesTx   int64             `json:"total_bytes_tx"`
+	TotalPacketsRx int64             `json:"total_packets_rx"`
+	TotalPacketsTx int64             `json:"total_packets_tx"`
+	ActiveUsers    int               `json:"active_users"`
+	Uptime         string            `json:"uptime"`
+	UptimeSeconds  int64             `json:"uptime_seconds"`
+	History        []TrafficSnapshot `json:"history,omitempty"`
+}
+
+// New creates a new traffic stats tracker
+func New() *TrafficStats {
+	return &TrafficStats{
+		userStats:   make(map[string]*UserStats),
+		historySize: 168, // 7 days of hourly data
+		history:     make([]TrafficSnapshot, 0, 168),
+		startTime:   time.Now(),
+		log:         logger.Module("stats"),
+	}
+}
+
+// AddRx records received bytes
+func (s *TrafficStats) AddRx(userID string, bytes int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.totalBytesRx += bytes
+	s.totalPacketsRx++
+
+	if userID != "" {
+		user := s.getOrCreateUser(userID)
+		user.BytesRx += bytes
+		user.PacketsRx++
+		user.LastActivity = time.Now()
+	}
+
+	s.log.Debug("RX: user=%s bytes=%d", userID, bytes)
+}
+
+// AddTx records transmitted bytes
+func (s *TrafficStats) AddTx(userID string, bytes int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.totalBytesTx += bytes
+	s.totalPacketsTx++
+
+	if userID != "" {
+		user := s.getOrCreateUser(userID)
+		user.BytesTx += bytes
+		user.PacketsTx++
+		user.LastActivity = time.Now()
+	}
+
+	s.log.Debug("TX: user=%s bytes=%d", userID, bytes)
+}
+
+// AddTraffic records bidirectional traffic
+func (s *TrafficStats) AddTraffic(userID string, bytesRx, bytesTx int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.totalBytesRx += bytesRx
+	s.totalBytesTx += bytesTx
+	if bytesRx > 0 {
+		s.totalPacketsRx++
+	}
+	if bytesTx > 0 {
+		s.totalPacketsTx++
+	}
+
+	if userID != "" {
+		user := s.getOrCreateUser(userID)
+		user.BytesRx += bytesRx
+		user.BytesTx += bytesTx
+		if bytesRx > 0 {
+			user.PacketsRx++
+		}
+		if bytesTx > 0 {
+			user.PacketsTx++
+		}
+		user.LastActivity = time.Now()
+	}
+}
+
+// SetUserIP sets the assigned IP for a user
+func (s *TrafficStats) SetUserIP(userID, ip string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	user := s.getOrCreateUser(userID)
+	user.AssignedIP = ip
+
+	s.log.Info("User %s assigned IP %s", userID, ip)
+}
+
+// IncrementSessionCount increments session count for a user
+func (s *TrafficStats) IncrementSessionCount(userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	user := s.getOrCreateUser(userID)
+	user.SessionCount++
+}
+
+// DecrementSessionCount decrements session count for a user
+func (s *TrafficStats) DecrementSessionCount(userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if user, ok := s.userStats[userID]; ok {
+		user.SessionCount--
+		if user.SessionCount < 0 {
+			user.SessionCount = 0
+		}
+	}
+}
+
+// getOrCreateUser gets or creates user stats (must hold lock)
+func (s *TrafficStats) getOrCreateUser(userID string) *UserStats {
+	if user, ok := s.userStats[userID]; ok {
+		return user
+	}
+
+	user := &UserStats{
+		UserID:       userID,
+		LastActivity: time.Now(),
+	}
+	s.userStats[userID] = user
+	return user
+}
+
+// GetGlobalStats returns global statistics
+func (s *TrafficStats) GetGlobalStats() *GlobalStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	uptime := time.Since(s.startTime)
+
+	return &GlobalStats{
+		TotalBytesRx:   s.totalBytesRx,
+		TotalBytesTx:   s.totalBytesTx,
+		TotalPacketsRx: s.totalPacketsRx,
+		TotalPacketsTx: s.totalPacketsTx,
+		ActiveUsers:    s.countActiveUsers(),
+		Uptime:         formatDuration(uptime),
+		UptimeSeconds:  int64(uptime.Seconds()),
+		History:        s.history,
+	}
+}
+
+// GetUserStats returns statistics for a specific user
+func (s *TrafficStats) GetUserStats(userID string) *UserStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if user, ok := s.userStats[userID]; ok {
+		// Return a copy
+		copy := *user
+		return &copy
+	}
+	return nil
+}
+
+// GetAllUserStats returns all user statistics
+func (s *TrafficStats) GetAllUserStats() []*UserStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]*UserStats, 0, len(s.userStats))
+	for _, user := range s.userStats {
+		copy := *user
+		result = append(result, &copy)
+	}
+	return result
+}
+
+// TakeSnapshot takes a traffic snapshot for history
+func (s *TrafficStats) TakeSnapshot() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	snapshot := TrafficSnapshot{
+		Timestamp: time.Now(),
+		BytesRx:   s.totalBytesRx,
+		BytesTx:   s.totalBytesTx,
+		PacketsRx: s.totalPacketsRx,
+		PacketsTx: s.totalPacketsTx,
+		UserCount: len(s.userStats),
+	}
+
+	s.history = append(s.history, snapshot)
+
+	// Trim if needed
+	if len(s.history) > s.historySize {
+		s.history = s.history[len(s.history)-s.historySize:]
+	}
+
+	s.log.Debug("Snapshot taken: rx=%d tx=%d users=%d",
+		s.totalBytesRx, s.totalBytesTx, len(s.userStats))
+}
+
+// ResetUserStats resets statistics for a specific user
+func (s *TrafficStats) ResetUserStats(userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if user, ok := s.userStats[userID]; ok {
+		user.BytesRx = 0
+		user.BytesTx = 0
+		user.PacketsRx = 0
+		user.PacketsTx = 0
+		s.log.Info("Reset stats for user %s", userID)
+	}
+}
+
+// countActiveUsers counts users with recent activity (must hold lock)
+func (s *TrafficStats) countActiveUsers() int {
+	count := 0
+	cutoff := time.Now().Add(-5 * time.Minute)
+
+	for _, user := range s.userStats {
+		if user.LastActivity.After(cutoff) || user.SessionCount > 0 {
+			count++
+		}
+	}
+	return count
+}
+
+// formatDuration formats duration as human readable string
+func formatDuration(d time.Duration) string {
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	minutes := int(d.Minutes()) % 60
+
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	}
+	return fmt.Sprintf("%dm", minutes)
+}
+
+// Global instance
+var (
+	globalStats     *TrafficStats
+	globalStatsOnce sync.Once
+)
+
+// Global returns the global traffic stats instance
+func Global() *TrafficStats {
+	globalStatsOnce.Do(func() {
+		globalStats = New()
+		// Start snapshot goroutine
+		go func() {
+			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				globalStats.TakeSnapshot()
+			}
+		}()
+	})
+	return globalStats
+}
+
+// Package-level convenience functions
+
+// AddRx adds received bytes
+func AddRx(userID string, bytes int64) {
+	Global().AddRx(userID, bytes)
+}
+
+// AddTx adds transmitted bytes
+func AddTx(userID string, bytes int64) {
+	Global().AddTx(userID, bytes)
+}
+
+// AddTraffic adds bidirectional traffic
+func AddTraffic(userID string, bytesRx, bytesTx int64) {
+	Global().AddTraffic(userID, bytesRx, bytesTx)
+}
+
+// GetGlobalStats returns global statistics
+func GetGlobalStats() *GlobalStats {
+	return Global().GetGlobalStats()
+}
+
+// GetUserStats returns user statistics
+func GetUserStats(userID string) *UserStats {
+	return Global().GetUserStats(userID)
+}
+
+// GetAllUserStats returns all user statistics
+func GetAllUserStats() []*UserStats {
+	return Global().GetAllUserStats()
+}

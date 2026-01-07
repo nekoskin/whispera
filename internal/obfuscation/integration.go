@@ -1,6 +1,7 @@
 package obfuscation
 
 import (
+	"sync"
 	"time"
 	"whispera/internal/obfuscation/core/types"
 	ftepkg "whispera/internal/obfuscation/fte"
@@ -13,14 +14,85 @@ const (
 	statusInactive = "inactive"
 )
 
+// MLConfig holds ML processing configuration
+type MLConfig struct {
+	BatchSize              int           // Packets per batch
+	MaxConcurrentWorkers   int           // Max parallel ML workers
+	CircuitBreakerLimit    int           // Failures before trip
+	CircuitBreakerCooldown time.Duration // Cooldown after trip
+	DefaultSampleRate      int           // Default sampling rate
+	StableSampleRate       int           // Rate when network stable
+	UnstableSampleRate     int           // Rate when network unstable
+	BatchFlushTimeout      time.Duration // Max wait for batch
+	MinPacketSize          int           // Min size for ML processing
+}
+
+// DefaultMLConfig returns production defaults
+func DefaultMLConfig() *MLConfig {
+	return &MLConfig{
+		BatchSize:              10,
+		MaxConcurrentWorkers:   2,
+		CircuitBreakerLimit:    5,
+		CircuitBreakerCooldown: 60 * time.Second,
+		DefaultSampleRate:      10,
+		StableSampleRate:       20,
+		UnstableSampleRate:     5,
+		BatchFlushTimeout:      100 * time.Millisecond,
+		MinPacketSize:          2048,
+	}
+}
+
+// Metrics holds observable counters for monitoring
+type Metrics struct {
+	PacketsProcessed    uint64
+	PacketsSkipped      uint64
+	MLProcessed         uint64
+	MLSkipped           uint64
+	MLErrors            uint64
+	CircuitBreakerTrips uint64
+	BatchesProcessed    uint64
+	CurrentSampleRate   int
+	NetworkStable       bool
+}
+
+// batchPool reuses slice allocations to prevent memory growth
+var batchPool = sync.Pool{
+	New: func() interface{} {
+		return make([][]byte, 0, 10)
+	},
+}
+
 // IntegrationManager manages integration between modules
 type IntegrationManager struct {
+	mu sync.RWMutex
+
 	marionette *marionettepkg.Marionette
 	adapter    *marionettepkg.MarionetteAdapter
 	mlSystem   *mlpkg.UnifiedMLSystem
 	fte        *ftepkg.FTE
 	mlEnabled  bool
 	fteEnabled bool
+	config     *MLConfig
+
+	// ML Circuit Breaker
+	mlFailures      int
+	mlDisabledUntil time.Time
+
+	// Dynamic Sampling
+	packetTimings []time.Time
+	sampleRate    int
+	packetCounter int
+	networkStable bool
+
+	// Batch Processing (uses pool)
+	packetBatch    [][]byte
+	lastBatchFlush time.Time
+
+	// Resource Limits
+	mlSemaphore chan struct{}
+
+	// Observability
+	metrics Metrics
 }
 
 // NewIntegrationManager creates a new integration manager
@@ -28,14 +100,20 @@ func NewIntegrationManager() *IntegrationManager {
 	adapter := marionettepkg.NewMarionetteAdapter()
 	mlSystem := mlpkg.NewUnifiedMLSystem()
 	fte := ftepkg.NewFTE()
+	cfg := DefaultMLConfig()
 
 	return &IntegrationManager{
-		marionette: adapter.GetCore(),
-		adapter:    adapter,
-		mlSystem:   mlSystem,
-		fte:        fte,
-		mlEnabled:  true,
-		fteEnabled: true,
+		marionette:    adapter.GetCore(),
+		adapter:       adapter,
+		mlSystem:      mlSystem,
+		fte:           fte,
+		mlEnabled:     true,
+		fteEnabled:    true,
+		config:        cfg,
+		sampleRate:    cfg.DefaultSampleRate,
+		packetBatch:   make([][]byte, 0, cfg.BatchSize),
+		packetTimings: make([]time.Time, 0, 20),
+		mlSemaphore:   make(chan struct{}, cfg.MaxConcurrentWorkers),
 	}
 }
 
@@ -60,14 +138,19 @@ func NewIntegrationManagerWithOptions(enableML, enableFTE bool) *IntegrationMana
 }
 
 // ProcessTraffic processes traffic through the integrated system
-// Order: FTE -> Marionette -> ML (if enabled)
+// Order: FTE -> Marionette -> ML (if enabled, with optimization)
 func (im *IntegrationManager) ProcessTraffic(data []byte, direction string) ([]byte, time.Duration, error) {
 	processed := data
+
+	// Increment processed counter (atomic via mutex)
+	im.mu.Lock()
+	im.metrics.PacketsProcessed++
+	im.mu.Unlock()
 
 	// Step 1: FTE transformation (if enabled)
 	if im.fteEnabled && im.fte != nil {
 		transformed, err := im.fte.Transform(processed)
-		if err == nil && transformed != nil && len(transformed) > 0 {
+		if err == nil && len(transformed) > 0 {
 			processed = transformed
 		}
 	}
@@ -78,22 +161,136 @@ func (im *IntegrationManager) ProcessTraffic(data []byte, direction string) ([]b
 		return data, 0, err
 	}
 
-	// Step 3: ML processing (if enabled and packet is large enough)
-	if im.mlEnabled && im.mlSystem != nil && len(processed) > 2048 {
+	// Step 3: ML processing with optimizations
+	if im.mlEnabled && im.mlSystem != nil && len(processed) > im.config.MinPacketSize {
+		// Circuit Breaker Check (read lock)
+		im.mu.RLock()
+		disabled := time.Now().Before(im.mlDisabledUntil)
+		im.mu.RUnlock()
+
+		if disabled {
+			im.mu.Lock()
+			im.metrics.MLSkipped++
+			im.mu.Unlock()
+			return processed, delay, err
+		}
+
+		// Dynamic Sampling (write lock for state)
+		now := time.Now()
+		im.mu.Lock()
+		im.packetTimings = append(im.packetTimings, now)
+		if len(im.packetTimings) > 20 {
+			im.packetTimings = im.packetTimings[1:]
+		}
+		im.updateNetworkStabilityLocked()
+
+		// Apply sampling rate
+		im.packetCounter++
+		skip := im.packetCounter%im.sampleRate != 0
+		im.mu.Unlock()
+
+		if skip {
+			im.mu.Lock()
+			im.metrics.PacketsSkipped++
+			im.mu.Unlock()
+			return processed, delay, err
+		}
+
+		// Batch Processing with pool
+		im.mu.Lock()
+		im.packetBatch = append(im.packetBatch, processed)
+		batchFull := len(im.packetBatch) >= im.config.BatchSize || time.Since(im.lastBatchFlush) >= im.config.BatchFlushTimeout
+		im.mu.Unlock()
+
+		if !batchFull {
+			return processed, delay, err
+		}
+
+		// Resource Limit: acquire semaphore (non-blocking)
+		select {
+		case im.mlSemaphore <- struct{}{}:
+			defer func() { <-im.mlSemaphore }()
+		default:
+			im.mu.Lock()
+			im.metrics.MLSkipped++
+			im.mu.Unlock()
+			return processed, delay, err
+		}
+
+		// Process batch (get from pool, return old to pool)
+		im.mu.Lock()
+		im.lastBatchFlush = now
+		batchToProcess := im.packetBatch
+		im.packetBatch = batchPool.Get().([][]byte)[:0] // Get from pool
+		im.metrics.BatchesProcessed++
+		im.mu.Unlock()
+
+		// Use last packet for ML context
 		context := &types.UnifiedTrafficContext{
 			Direction: direction,
-			Protocol:  "tcp", // Will be set by caller if needed
-			Size:      len(processed),
-			Timestamp: time.Now(),
+			Protocol:  "tcp",
+			Size:      len(batchToProcess[len(batchToProcess)-1]),
+			Timestamp: now,
 		}
 
 		mlProcessed, mlErr := im.mlSystem.ProcessTraffic(processed, context)
-		if mlErr == nil && mlProcessed != nil && len(mlProcessed) > 0 {
+
+		// Return batch to pool
+		batchPool.Put(batchToProcess[:0])
+
+		im.mu.Lock()
+		if mlErr != nil {
+			im.mlFailures++
+			im.metrics.MLErrors++
+			if im.mlFailures >= im.config.CircuitBreakerLimit {
+				im.mlDisabledUntil = time.Now().Add(im.config.CircuitBreakerCooldown)
+				im.mlFailures = 0
+				im.metrics.CircuitBreakerTrips++
+			}
+		} else if len(mlProcessed) > 0 {
 			processed = mlProcessed
+			im.mlFailures = 0
+			im.metrics.MLProcessed++
 		}
+		im.mu.Unlock()
 	}
 
 	return processed, delay, err
+}
+
+// updateNetworkStabilityLocked adjusts sampling rate based on packet timing variance
+// MUST be called with im.mu held
+func (im *IntegrationManager) updateNetworkStabilityLocked() {
+	if len(im.packetTimings) < 5 {
+		return
+	}
+
+	// Calculate variance of inter-packet times
+	var total int64
+	for i := 1; i < len(im.packetTimings); i++ {
+		total += im.packetTimings[i].Sub(im.packetTimings[i-1]).Milliseconds()
+	}
+	avg := total / int64(len(im.packetTimings)-1)
+
+	var variance int64
+	for i := 1; i < len(im.packetTimings); i++ {
+		diff := im.packetTimings[i].Sub(im.packetTimings[i-1]).Milliseconds() - avg
+		variance += diff * diff
+	}
+	variance /= int64(len(im.packetTimings) - 1)
+
+	// High variance = unstable network = more sampling
+	if variance > 10000 { // >100ms variance
+		im.networkStable = false
+		im.sampleRate = im.config.UnstableSampleRate
+	} else {
+		im.networkStable = true
+		im.sampleRate = im.config.StableSampleRate
+	}
+
+	// Update metrics
+	im.metrics.CurrentSampleRate = im.sampleRate
+	im.metrics.NetworkStable = im.networkStable
 }
 
 // ProcessTrafficWithML processes traffic with explicit ML context
@@ -138,6 +335,13 @@ func (im *IntegrationManager) GetMLSystem() *mlpkg.UnifiedMLSystem {
 	return im.mlSystem
 }
 
+// GetMetrics returns a copy of current metrics for monitoring
+func (im *IntegrationManager) GetMetrics() Metrics {
+	im.mu.RLock()
+	defer im.mu.RUnlock()
+	return im.metrics
+}
+
 // GetFTE returns the FTE instance
 func (im *IntegrationManager) GetFTE() *ftepkg.FTE {
 	return im.fte
@@ -156,6 +360,13 @@ func (im *IntegrationManager) SetProfile(name string) error {
 // SetStrict enables or disables strict obfuscation mode
 func (im *IntegrationManager) SetStrict(strict bool) {
 	im.adapter.SetStrict(strict)
+}
+
+// EnableGrammarRotation enables grammar rotation for FTE
+func (im *IntegrationManager) EnableGrammarRotation(interval time.Duration, bytes uint64, profiles []string) {
+	if im.fteEnabled && im.fte != nil {
+		im.fte.EnableRotation(interval, bytes, profiles)
+	}
 }
 
 // GetHealthStatus returns the health status of all modules

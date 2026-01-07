@@ -3,14 +3,17 @@ package monitoring
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"whispera/internal/auto_detection"
+	"whispera/internal/logger"
 	"whispera/internal/obfuscation"
 	ftepkg "whispera/internal/obfuscation/fte"
 	"whispera/internal/obfuscation/russian"
 )
+
+// log is the module logger
+var log = logger.Module("monitoring")
 
 // NewAdaptiveMonitor создает новый адаптивный монитор
 func NewAdaptiveMonitor() *AdaptiveMonitor {
@@ -58,7 +61,7 @@ func (am *AdaptiveMonitor) Start(ctx context.Context) error {
 	go am.adaptationLoop(ctx)
 
 	if am.config.EnableLogging {
-		log.Printf("Adaptive monitor started")
+		log.Info("Adaptive monitor started")
 	}
 
 	return nil
@@ -72,7 +75,7 @@ func (am *AdaptiveMonitor) Stop() {
 	am.isRunning = false
 
 	if am.config.EnableLogging {
-		log.Printf("Adaptive monitor stopped")
+		log.Info("Adaptive monitor stopped")
 	}
 }
 

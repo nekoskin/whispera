@@ -297,7 +297,7 @@ func (s *Server) relayThroughTunnel(conn net.Conn, targetAddr string, targetPort
 	}
 
 	// Create CONNECT frame
-	frame := relay.NewConnectFrame(streamID, relay.ProtoTCP, addrType, targetAddr, targetPort)
+	frame := relay.NewConnectFrame(streamID, relay.ProtoTCP, addrType, targetAddr, targetPort, relay.ProfileBalanced)
 	frameData, err := frame.Encode()
 	if err != nil {
 		return fmt.Errorf("failed to encode frame: %w", err)

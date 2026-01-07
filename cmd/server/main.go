@@ -3,14 +3,17 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"flag"
-	"log"
 	"net"
 	"os"
+
+	"golang.org/x/crypto/curve25519"
 
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/lifecycle"
 	"whispera/internal/core/registry"
+	"whispera/internal/logger"
 
 	// Modules
 	"whispera/internal/modules/apiserver"
@@ -25,6 +28,9 @@ import (
 	"whispera/internal/modules/session"
 	"whispera/internal/modules/transport/udp"
 )
+
+// log is the module logger
+var log = logger.Module("server")
 
 // Version information (set at build time)
 var (
@@ -205,6 +211,26 @@ func createModules(manager *lifecycle.Manager) error {
 		return err
 	}
 	handshakeHandler.SetDependencies(cryptoProvider, sessionMgr)
+
+	// Set static keys from config
+	if serverConfig.Server.PrivateKey != "" {
+		privKey, err := hex.DecodeString(serverConfig.Server.PrivateKey)
+		if err != nil {
+			log.Fatalf("Invalid private key in config: %v", err)
+		}
+		if len(privKey) != 32 {
+			log.Fatalf("Private key must be 32 bytes (hex encoded)")
+		}
+
+		pubKey, err := curve25519.X25519(privKey, curve25519.Basepoint)
+		if err != nil {
+			log.Fatalf("Failed to derive public key: %v", err)
+		}
+
+		log.Printf("Loaded static key pair (Public: %x)", pubKey)
+		handshakeHandler.SetStaticKeys(pubKey, privKey)
+	}
+
 	globalHandshake = handshakeHandler
 	if err := manager.Register(handshakeHandler); err != nil {
 		return err

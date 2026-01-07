@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"net/http"
 	"os"
@@ -108,9 +107,9 @@ func createSecureHTTPClient(baseURL string, timeout time.Duration) *http.Client 
 
 		// Включаем HTTP/2 поддержку для HTTPS
 		if err := http2.ConfigureTransport(transport); err != nil {
-			log.Printf("[ML] Warning: Failed to configure HTTP/2 transport: %v (will use HTTP/1.1)", err)
+			log.Warn("Failed to configure HTTP/2 transport: %v (will use HTTP/1.1)", err)
 		} else {
-			log.Printf("[ML] HTTP/2 support enabled for ML requests")
+			log.Debug("HTTP/2 support enabled for ML requests")
 		}
 	}
 
@@ -129,7 +128,7 @@ func NewPythonMLClient(baseURL string) *PythonMLClient {
 			!strings.Contains(baseURL, "127.0.0.1") &&
 			!strings.Contains(baseURL, "::1") {
 			// Для внешних серверов рекомендуем HTTPS
-			log.Printf("[ML] Warning: Using HTTP for external ML server. Consider HTTPS: %s", baseURL)
+			log.Warn("Using HTTP for external ML server. Consider HTTPS: %s", baseURL)
 		}
 	}
 
@@ -168,7 +167,7 @@ func NewPythonMLClientLocal() *PythonMLClient {
 	// Принудительно используем HTTPS если указан HTTP без localhost
 	if strings.HasPrefix(baseURL, "http://") && !strings.Contains(baseURL, "localhost") && !strings.Contains(baseURL, "127.0.0.1") {
 		baseURL = strings.Replace(baseURL, "http://", "https://", 1)
-		log.Printf("[ML] Auto-upgraded ML server URL to HTTPS: %s", baseURL)
+		log.Info("Auto-upgraded ML server URL to HTTPS: %s", baseURL)
 	}
 	client := &PythonMLClient{
 		baseURL:      baseURL,
@@ -255,7 +254,7 @@ func (client *PythonMLClient) checkMLAvailability() {
 		// Если получили ответ (даже если не 200), сервис доступен
 		if resp.StatusCode >= 200 && resp.StatusCode < 500 {
 			client.mlAvailable = true
-			log.Printf("[INFO] ML service at %s is available", client.baseURL)
+			log.Info("ML service at %s is available", client.baseURL)
 		} else {
 			client.mlAvailable = false
 		}
@@ -337,9 +336,9 @@ func (client *PythonMLClient) PredictTraffic(packetData []byte, protocol, direct
 		if shouldLog {
 			if isConnectionRefused {
 				// Только одно сообщение при старте, если сервис не запущен
-				log.Printf("[INFO] ML service at %s is not running, using fallback mode (ML still active). To enable ML service, start whispera-ml service.", client.baseURL)
+				log.Info("ML service at %s is not running, using fallback mode (ML still active). To enable ML service, start whispera-ml service.", client.baseURL)
 			} else {
-				log.Printf("[INFO] ML service temporarily unavailable, using fallback (ML still active): %v (will suppress further warnings for 5m)", err)
+				log.Info("ML service temporarily unavailable, using fallback (ML still active): %v (will suppress further warnings for 5m)", err)
 			}
 		}
 		// Use enhanced fallback for better local prediction - ML продолжает работать
@@ -892,7 +891,7 @@ func (client *PythonMLClient) ProcessTraffic(packetData []byte, context *types.U
 		if pred.DPIType > 0 {
 			obfuscated, obfErr := client.applyObfuscation(packetData, pred)
 			if obfErr != nil {
-				log.Printf("[ML] Obfuscation failed: %v, using original data", obfErr)
+				log.Warn("Obfuscation failed: %v, using original data", obfErr)
 				return packetData, nil // Graceful degradation
 			}
 			return obfuscated, nil

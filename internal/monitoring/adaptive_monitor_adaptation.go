@@ -3,7 +3,6 @@ package monitoring
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"whispera/internal/auto_detection"
@@ -23,13 +22,13 @@ func (am *AdaptiveMonitor) performAdaptation() {
 	ctx := context.Background()
 	config, err := am.analyzer.GetOptimalConfig(ctx, "example.com")
 	if err != nil {
-		log.Printf("Failed to get optimal config: %v", err)
+		log.Warn("Failed to get optimal config: %v", err)
 		return
 	}
 
 	// Применяем новую конфигурацию
 	if err := am.applyConfiguration(config); err != nil {
-		log.Printf("Failed to apply configuration: %v", err)
+		log.Warn("Failed to apply configuration: %v", err)
 		return
 	}
 
@@ -52,7 +51,7 @@ func (am *AdaptiveMonitor) performAdaptation() {
 	}
 
 	if am.config.EnableLogging {
-		log.Printf("Adaptation performed: %s -> %s (effectiveness: %.2f)",
+		log.Info("Adaptation performed: %s -> %s (effectiveness: %.2f)",
 			am.getProfileName(am.adaptation.CurrentProfile),
 			am.getProfileName(config),
 			am.effectiveness.BypassSuccessRate)

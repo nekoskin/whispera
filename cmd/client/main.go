@@ -3,13 +3,13 @@ package main
 
 import (
 	"flag"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"whispera/internal/core/lifecycle"
+	"whispera/internal/logger"
 
 	// Modules
 	"whispera/internal/modules/config"
@@ -21,6 +21,9 @@ import (
 	"whispera/internal/modules/socks5"
 	"whispera/internal/modules/tunnel"
 )
+
+// log is the module logger
+var log = logger.Module("client")
 
 var Version = "2.0.0"
 

@@ -2,12 +2,16 @@ package geoip
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"path/filepath"
 	"sync"
+
+	"whispera/internal/logger"
 )
+
+// log is the module logger
+var log = logger.Module("geoip")
 
 // Service управляет GeoIP базой данных
 type Service struct {
@@ -27,7 +31,7 @@ func NewService(dbPath string, autoLoad bool) *Service {
 
 	if autoLoad {
 		if err := service.Load(); err != nil {
-			log.Printf("[GeoIP] Warning: failed to load database: %v", err)
+			log.Warn("Failed to load database: %v", err)
 		}
 	}
 
@@ -107,12 +111,12 @@ func (s *Service) DownloadDatabase() error {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	log.Printf("[GeoIP] Downloading database from %s...", url)
+	log.Info("Downloading database from %s...", url)
 	if err := DownloadGeoIP(url, s.dbPath); err != nil {
 		return fmt.Errorf("failed to download: %w", err)
 	}
 
-	log.Printf("[GeoIP] Database downloaded successfully to %s", s.dbPath)
+	log.Info("Database downloaded successfully to %s", s.dbPath)
 
 	// Перезагружаем базу
 	return s.Load()
@@ -121,10 +125,9 @@ func (s *Service) DownloadDatabase() error {
 // EnsureDatabase проверяет наличие базы и загружает при необходимости
 func (s *Service) EnsureDatabase() error {
 	if _, err := os.Stat(s.dbPath); os.IsNotExist(err) {
-		log.Printf("[GeoIP] Database not found, downloading...")
+		log.Info("Database not found, downloading...")
 		return s.DownloadDatabase()
 	}
 
 	return s.Load()
 }
-

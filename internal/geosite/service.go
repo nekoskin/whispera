@@ -2,11 +2,15 @@ package geosite
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
+
+	"whispera/internal/logger"
 )
+
+// log is the module logger
+var log = logger.Module("geosite")
 
 // Service управляет GeoSite базой данных
 type Service struct {
@@ -26,7 +30,7 @@ func NewService(dbPath string, autoLoad bool) *Service {
 
 	if autoLoad {
 		if err := service.Load(); err != nil {
-			log.Printf("[GeoSite] Warning: failed to load database: %v", err)
+			log.Warn("Failed to load database: %v", err)
 		}
 	}
 
@@ -76,12 +80,12 @@ func (s *Service) DownloadDatabase() error {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	log.Printf("[GeoSite] Downloading database from %s...", url)
+	log.Info("Downloading database from %s...", url)
 	if err := DownloadGeoSite(url, s.dbPath); err != nil {
 		return fmt.Errorf("failed to download: %w", err)
 	}
 
-	log.Printf("[GeoSite] Database downloaded successfully to %s", s.dbPath)
+	log.Info("Database downloaded successfully to %s", s.dbPath)
 
 	// Перезагружаем базу
 	return s.Load()
@@ -90,7 +94,7 @@ func (s *Service) DownloadDatabase() error {
 // EnsureDatabase проверяет наличие базы и загружает при необходимости
 func (s *Service) EnsureDatabase() error {
 	if _, err := os.Stat(s.dbPath); os.IsNotExist(err) {
-		log.Printf("[GeoSite] Database not found, downloading...")
+		log.Info("Database not found, downloading...")
 		return s.DownloadDatabase()
 	}
 
@@ -112,4 +116,3 @@ func (s *Service) IsDomainInCategory(domain, category string) bool {
 
 	return s.db.IsDomainInCategory(domain, category)
 }
-

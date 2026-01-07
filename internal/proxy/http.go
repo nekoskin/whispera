@@ -4,12 +4,13 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"whispera/internal/logger"
 )
 
 // HTTPServer представляет HTTP прокси сервер
@@ -17,6 +18,7 @@ type HTTPServer struct {
 	listenAddr  string
 	handler     func(*http.Request, http.ResponseWriter) error
 	authHandler func(username, password string) bool // Обработчик аутентификации
+	log         *logger.Logger
 }
 
 // NewHTTPServer создает новый HTTP прокси сервер
@@ -24,6 +26,7 @@ func NewHTTPServer(addr string, handler func(*http.Request, http.ResponseWriter)
 	return &HTTPServer{
 		listenAddr: addr,
 		handler:    handler,
+		log:        logger.Module("http-proxy"),
 	}
 }
 
@@ -41,8 +44,8 @@ func (s *HTTPServer) ListenAndServe() error {
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
-	
-	log.Printf("[HTTP-PROXY] ✅ Server listening on %s - ready to accept connections", s.listenAddr)
+
+	s.log.Info("✅ Server listening on %s - ready to accept connections", s.listenAddr)
 	return httpServer.ListenAndServe()
 }
 
@@ -56,16 +59,16 @@ func (s *HTTPServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	
+
 	// Обрабатываем CONNECT метод (для HTTPS)
 	if r.Method == http.MethodConnect {
 		s.handleCONNECT(w, r)
 		return
 	}
-	
+
 	// Обрабатываем обычные HTTP запросы
 	if err := s.handler(r, w); err != nil {
-		log.Printf("[HTTP-PROXY] Handler error: %v", err)
+		s.log.Error("Handler error: %v", err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 	}
 }
@@ -75,30 +78,30 @@ func (s *HTTPServer) checkAuth(r *http.Request) bool {
 	if s.authHandler == nil {
 		return true
 	}
-	
+
 	auth := r.Header.Get("Proxy-Authorization")
 	if auth == "" {
 		return false
 	}
-	
+
 	// Парсим Basic auth
 	if !strings.HasPrefix(auth, "Basic ") {
 		return false
 	}
-	
+
 	// Декодируем base64
 	encoded := auth[6:] // Убираем "Basic "
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return false
 	}
-	
+
 	// Парсим username:password
 	parts := strings.SplitN(string(decoded), ":", 2)
 	if len(parts) != 2 {
 		return false
 	}
-	
+
 	return s.authHandler(parts[0], parts[1])
 }
 
@@ -109,37 +112,37 @@ func (s *HTTPServer) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 	if targetAddr == "" {
 		targetAddr = r.URL.Host
 	}
-	
+
 	// Подключаемся к целевому серверу
 	targetConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
 	if err != nil {
-		log.Printf("[HTTP-PROXY] Failed to connect to %s: %v", targetAddr, err)
+		s.log.Error("Failed to connect to %s: %v", targetAddr, err)
 		http.Error(w, "Failed to connect to target", http.StatusBadGateway)
 		return
 	}
 	defer targetConn.Close()
-	
+
 	// Отправляем успешный ответ клиенту
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
 		return
 	}
-	
+
 	clientConn, _, err := hijacker.Hijack()
 	if err != nil {
 		http.Error(w, "Failed to hijack connection", http.StatusInternalServerError)
 		return
 	}
 	defer clientConn.Close()
-	
+
 	// Отправляем 200 Connection Established
 	response := "HTTP/1.1 200 Connection Established\r\n\r\n"
 	if _, err := clientConn.Write([]byte(response)); err != nil {
-		log.Printf("[HTTP-PROXY] Failed to send response: %v", err)
+		s.log.Error("Failed to send response: %v", err)
 		return
 	}
-	
+
 	// Проксируем данные в обе стороны
 	go func() {
 		io.Copy(targetConn, clientConn)
@@ -155,18 +158,18 @@ func HandleHTTPRequest(r *http.Request, w http.ResponseWriter, targetURL string)
 	if err != nil {
 		return fmt.Errorf("invalid target URL: %w", err)
 	}
-	
+
 	// Создаем новый запрос к целевому серверу
 	targetReq := r.Clone(r.Context())
 	targetReq.URL = parsedURL
 	targetReq.Host = parsedURL.Host
 	targetReq.RequestURI = ""
-	
+
 	// Удаляем заголовки прокси
 	targetReq.Header.Del("Proxy-Connection")
 	targetReq.Header.Del("Proxy-Authorization")
 	targetReq.Header.Del("Connection")
-	
+
 	// Создаем HTTP клиент
 	client := &http.Client{
 		Timeout: 30 * time.Second,
@@ -175,24 +178,24 @@ func HandleHTTPRequest(r *http.Request, w http.ResponseWriter, targetURL string)
 			return nil
 		},
 	}
-	
+
 	// Выполняем запрос
 	resp, err := client.Do(targetReq)
 	if err != nil {
 		return fmt.Errorf("failed to execute request: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	// Копируем заголовки ответа
 	for key, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}
 	}
-	
+
 	// Устанавливаем статус код
 	w.WriteHeader(resp.StatusCode)
-	
+
 	// Копируем тело ответа
 	_, err = io.Copy(w, resp.Body)
 	return err
@@ -207,7 +210,7 @@ func SimpleHTTPProxyHandler() func(*http.Request, http.ResponseWriter) error {
 			// Если URL относительный, добавляем схему
 			targetURL = "http://" + r.Host + targetURL
 		}
-		
+
 		return HandleHTTPRequest(r, w, targetURL)
 	}
 }
@@ -219,4 +222,3 @@ func ForwardHTTPProxyHandler(proxyURL string) func(*http.Request, http.ResponseW
 		return HandleHTTPRequest(r, w, proxyURL)
 	}
 }
-

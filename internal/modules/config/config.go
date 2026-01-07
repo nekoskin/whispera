@@ -56,6 +56,8 @@ type ServerSettings struct {
 	MTU          int           `yaml:"mtu"`
 	Workers      int           `yaml:"workers"`
 	GracefulStop time.Duration `yaml:"graceful_stop"`
+	PrivateKey   string        `yaml:"private_key"`
+	UUID         string        `yaml:"uuid"`
 }
 
 // TransportConfig contains transport layer settings

@@ -6,16 +6,19 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"time"
 
 	"whispera/internal/handshake"
+	"whispera/internal/logger"
 	"whispera/internal/util"
 
 	"golang.org/x/crypto/curve25519"
 )
+
+// log is the module logger
+var log = logger.Module("p2p")
 
 // P2PNetwork представляет децентрализованную сеть Whispera
 type P2PNetwork struct { //nolint:revive // Name is part of public API
@@ -119,7 +122,7 @@ func (p *P2PNetwork) createMyNode() *Node {
 	// Генерируем уникальный ID
 	id := make([]byte, 16)
 	if _, err := rand.Read(id); err != nil {
-		log.Printf("[P2P] Error generating node ID: %v", err)
+		log.Error("Error generating node ID: %v", err)
 		return nil
 	}
 
@@ -132,7 +135,7 @@ func (p *P2PNetwork) createMyNode() *Node {
 	if p.ecdhPriv == nil || p.ecdhPub == nil {
 		priv := make([]byte, 32)
 		if _, err := rand.Read(priv); err != nil {
-			log.Printf("[P2P] Error generating ECDH key: %v", err)
+			log.Error("Error generating ECDH key: %v", err)
 			return nil
 		}
 		pub, _ := curve25519.X25519(priv, curve25519.Basepoint)

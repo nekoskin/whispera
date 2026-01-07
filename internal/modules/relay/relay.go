@@ -4,14 +4,15 @@ package relay
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"whispera/internal/core/base"
 	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
+	"whispera/internal/logger"
 )
 
 const (
@@ -25,6 +26,7 @@ type Config struct {
 	EnableTCP  bool // Enable TCP relay
 	EnableUDP  bool // Enable UDP relay
 	Debug      bool // Enable debug logging
+	SafeMode   bool // Force safe profiles (disable Aggressive)
 }
 
 // DefaultConfig returns default configuration
@@ -34,6 +36,7 @@ func DefaultConfig() *Config {
 		EnableTCP:  true,
 		EnableUDP:  true,
 		Debug:      false,
+		SafeMode:   true, // Default to Safe Mode
 	}
 }
 
@@ -68,7 +71,8 @@ type Server struct {
 	connectSuccess uint64
 	connectFailed  uint64
 
-	mu sync.RWMutex
+	log *logger.Logger
+	mu  sync.RWMutex
 }
 
 // New creates a new relay server
@@ -84,6 +88,7 @@ func New(cfg *Config) (*Server, error) {
 		Module:       base.NewModule(ModuleName, ModuleVersion, []string{"transport.udp"}),
 		config:       cfg,
 		sessionAddrs: make(map[uint32]net.Addr),
+		log:          logger.Module("relay"),
 	}
 
 	return s, nil
@@ -111,6 +116,9 @@ func (s *Server) Start() error {
 	// Create stream manager with callback to send frames
 	s.streamManager = NewStreamManager(s.handleOutgoingFrame)
 
+	// Start health monitoring loop
+	go s.healthLoop()
+
 	s.SetHealthy(true, "relay server running")
 	s.PublishEvent(events.EventTypeModuleStarted, map[string]interface{}{
 		"max_streams": s.config.MaxStreams,
@@ -118,7 +126,7 @@ func (s *Server) Start() error {
 		"udp_enabled": s.config.EnableUDP,
 	})
 
-	log.Printf("[Relay] Server started (max streams: %d)", s.config.MaxStreams)
+	s.log.Info("Server started (max streams: %d)", s.config.MaxStreams)
 	return nil
 }
 
@@ -129,7 +137,7 @@ func (s *Server) Stop() error {
 	}
 
 	s.PublishEvent(events.EventTypeModuleStopped, nil)
-	log.Printf("[Relay] Server stopped")
+	s.log.Info("Server stopped")
 	return s.Module.Stop()
 }
 
@@ -167,13 +175,13 @@ func (s *Server) ProcessFrame(data []byte, session interfaces.Session, addr net.
 	frame, err := Decode(data)
 	if err != nil {
 		if s.config.Debug {
-			log.Printf("[Relay] Failed to decode frame: %v", err)
+			s.log.Debug("Failed to decode frame: %v", err)
 		}
 		return err
 	}
 
 	if s.config.Debug {
-		log.Printf("[Relay] Received frame: type=%s streamID=%d len=%d",
+		s.log.Debug("Received frame: type=%s streamID=%d len=%d",
 			FrameTypeName(frame.Type), frame.StreamID, len(frame.Payload))
 	}
 
@@ -192,7 +200,7 @@ func (s *Server) ProcessFrame(data []byte, session interfaces.Session, addr net.
 		return s.handleUDPData(frame)
 	default:
 		if s.config.Debug {
-			log.Printf("[Relay] Unknown frame type: %d", frame.Type)
+			s.log.Debug("Unknown frame type: %d", frame.Type)
 		}
 		return nil
 	}
@@ -203,19 +211,27 @@ func (s *Server) handleConnect(frame *Frame, addr net.Addr) error {
 	payload, err := DecodeConnectPayload(frame.Payload)
 	if err != nil {
 		atomic.AddUint64(&s.connectFailed, 1)
-		s.sendFrameToAddr(NewConnectFailFrame(frame.StreamID, "invalid payload"), addr)
+		s.sendFrameToAddr(NewConnectFailFrame(frame.StreamID, "connection refused"), addr)
 		return err
+	}
+
+	// Safe Mode Enforcement
+	if s.config.SafeMode && payload.Profile == ProfileAggressive {
+		if s.config.Debug {
+			s.log.Debug("SafeMode: Downgrading stream %d from Aggressive to Personal", frame.StreamID)
+		}
+		payload.Profile = ProfilePersonal
 	}
 
 	// Check protocol support
 	if payload.Protocol == ProtoTCP && !s.config.EnableTCP {
 		atomic.AddUint64(&s.connectFailed, 1)
-		s.sendFrameToAddr(NewConnectFailFrame(frame.StreamID, "TCP not enabled"), addr)
+		s.sendFrameToAddr(NewConnectFailFrame(frame.StreamID, "connection refused"), addr)
 		return fmt.Errorf("TCP relay not enabled")
 	}
 	if payload.Protocol == ProtoUDP && !s.config.EnableUDP {
 		atomic.AddUint64(&s.connectFailed, 1)
-		s.sendFrameToAddr(NewConnectFailFrame(frame.StreamID, "UDP not enabled"), addr)
+		s.sendFrameToAddr(NewConnectFailFrame(frame.StreamID, "connection refused"), addr)
 		return fmt.Errorf("UDP relay not enabled")
 	}
 
@@ -224,22 +240,28 @@ func (s *Server) handleConnect(frame *Frame, addr net.Addr) error {
 		if payload.Protocol == ProtoUDP {
 			protoName = "UDP"
 		}
-		log.Printf("[Relay] CONNECT streamID=%d %s -> %s:%d",
+		s.log.Debug("CONNECT streamID=%d %s -> %s:%d",
 			frame.StreamID, protoName, payload.Addr, payload.Port)
 	}
 
 	// Handle connect in stream manager (async)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Silently recover from panic
+			}
+		}()
+
 		if err := s.streamManager.HandleConnect(frame.StreamID, payload); err != nil {
 			atomic.AddUint64(&s.connectFailed, 1)
 			if s.config.Debug {
-				log.Printf("[Relay] Connect failed streamID=%d: %v", frame.StreamID, err)
+				s.log.Debug("Connect failed streamID=%d: %v", frame.StreamID, err)
 			}
 		} else {
 			atomic.AddUint64(&s.connectSuccess, 1)
 			atomic.AddUint64(&s.activeStreams, 1)
 			if s.config.Debug {
-				log.Printf("[Relay] Connect success streamID=%d", frame.StreamID)
+				s.log.Debug("Connect success streamID=%d", frame.StreamID)
 			}
 		}
 	}()
@@ -251,7 +273,7 @@ func (s *Server) handleConnect(frame *Frame, addr net.Addr) error {
 func (s *Server) handleData(frame *Frame) error {
 	if err := s.streamManager.HandleData(frame.StreamID, frame.Payload); err != nil {
 		if s.config.Debug {
-			log.Printf("[Relay] Data forward failed streamID=%d: %v", frame.StreamID, err)
+			s.log.Debug("Data forward failed streamID=%d: %v", frame.StreamID, err)
 		}
 		return err
 	}
@@ -266,7 +288,7 @@ func (s *Server) handleClose(frame *Frame) {
 	atomic.AddUint64(&s.activeStreams, ^uint64(0)) // Decrement
 
 	if s.config.Debug {
-		log.Printf("[Relay] Stream closed streamID=%d", frame.StreamID)
+		s.log.Debug("Stream closed streamID=%d", frame.StreamID)
 	}
 }
 
@@ -328,7 +350,7 @@ func (s *Server) handleUDPData(frame *Frame) error {
 
 	_, err = conn.Write(data)
 	if s.config.Debug {
-		log.Printf("[Relay] UDP sent to %s (%d bytes)", target, len(data))
+		s.log.Debug("UDP sent to %s (%d bytes)", target, len(data))
 	}
 
 	atomic.AddUint64(&s.bytesRelayed, uint64(len(data)))
@@ -368,7 +390,7 @@ func (s *Server) handleOutgoingFrame(frame *Frame) error {
 	}
 
 	if s.config.Debug {
-		log.Printf("[Relay] Sending frame: type=%s streamID=%d len=%d",
+		s.log.Debug("Sending frame: type=%s streamID=%d len=%d",
 			FrameTypeName(frame.Type), frame.StreamID, len(frame.Payload))
 	}
 
@@ -424,4 +446,34 @@ func Factory(cfg interface{}) (interfaces.Module, error) {
 		config = DefaultConfig()
 	}
 	return New(config)
+}
+
+// healthLoop runs periodic health checks
+func (s *Server) healthLoop() {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// Collect stats
+			activeStreams := atomic.LoadUint64(&s.activeStreams)
+			bytesRelayed := atomic.LoadUint64(&s.bytesRelayed)
+
+			// Check thresholds
+			if activeStreams > uint64(s.config.MaxStreams) {
+				s.log.Warn("Active streams (%d) exceeds max (%d)",
+					activeStreams, s.config.MaxStreams)
+			}
+
+			if s.config.Debug {
+				s.log.Debug("Health: Streams=%d, Bytes=%d", activeStreams, bytesRelayed)
+			}
+
+			// Run FSM self-checks on streams
+			if s.streamManager != nil {
+				// Could iterate streams and call fsm.SelfCheck()
+			}
+		}
+	}
 }

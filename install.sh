@@ -174,15 +174,20 @@ generate_config() {
     
     cat > "$CONF_PATH/config.yaml" <<EOF
 server:
-  listen: "0.0.0.0:443"
+  listen_addr: "0.0.0.0:443"
   uuid: "$UUID"
   private_key: "$PRIVATE_KEY"
 
 transport:
-  tcp: true
-  udp: true
-  websocket: true
-  quic: true
+  udp:
+    enabled: true
+    listen_addr: ":51820"
+  tcp:
+    enabled: true
+    listen_addr: ":4443"
+  websocket:
+    enabled: true
+    listen_addr: ":8443"
 
 obfuscation:
   enabled: true

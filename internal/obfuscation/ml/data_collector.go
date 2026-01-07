@@ -3,7 +3,6 @@ package ml
 
 import (
 	"encoding/json"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -257,7 +256,7 @@ func (dc *DataCollector) SaveToDisk() error {
 	dc.lastSave = time.Now()
 	dc.mu.Unlock()
 
-	log.Printf("[ML DataCollector] Saved %d samples to %s", len(samples), filename)
+	log.Info("Saved %d samples to %s", len(samples), filename)
 	return nil
 }
 
@@ -268,7 +267,7 @@ func (dc *DataCollector) backgroundSaveLoop() {
 
 	for range ticker.C {
 		if err := dc.SaveToDisk(); err != nil {
-			log.Printf("[ML DataCollector] Save error: %v", err)
+			log.Warn("Save error: %v", err)
 		}
 	}
 }

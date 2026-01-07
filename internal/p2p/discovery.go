@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -142,7 +141,7 @@ func (d *DiscoveryService) handleMessages() {
 
 		// Устанавливаем таймаут для чтения
 		if err := d.udpConn.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
-			log.Printf("error setting read deadline: %v", err)
+			log.Debug("error setting read deadline: %v", err)
 		}
 
 		n, addr, err := d.udpConn.ReadFromUDP(buffer)
@@ -453,7 +452,7 @@ func (d *DiscoveryService) broadcastAnnounce() {
 		}
 
 		if _, err := d.udpConn.WriteToUDP(data, addr); err != nil {
-			log.Printf("error writing to UDP: %v", err)
+			log.Debug("error writing to UDP: %v", err)
 		}
 	}
 	d.mu.RUnlock()
@@ -512,7 +511,7 @@ func (d *DiscoveryService) pingBootstrapNodes() {
 		}
 
 		if _, err := d.udpConn.WriteToUDP(data, addr); err != nil {
-			log.Printf("error writing to UDP: %v", err)
+			log.Debug("error writing to UDP: %v", err)
 		}
 		// Ping sent to bootstrap
 	}
@@ -558,7 +557,7 @@ func (d *DiscoveryService) sendPong(addr *net.UDPAddr) {
 	}
 
 	if _, err := d.udpConn.WriteToUDP(data, addr); err != nil {
-		log.Printf("[P2P Discovery] Error writing UDP: %v", err)
+		log.Debug("Error writing UDP: %v", err)
 	}
 }
 

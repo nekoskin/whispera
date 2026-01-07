@@ -91,6 +91,10 @@ type ClientConfig struct {
 	Routing *ClientRoutingConfig `yaml:"routing,omitempty" json:"routing,omitempty"`
 	DNS     *ClientDNSConfig     `yaml:"dns,omitempty" json:"dns,omitempty"`
 	AdBlock *ClientAdBlockConfig `yaml:"adblock,omitempty" json:"adblock,omitempty"`
+
+	// Phase 3: Security features
+	KillSwitch *ClientKillSwitchConfig `yaml:"kill_switch,omitempty" json:"kill_switch,omitempty"`
+	Failover   *ClientFailoverConfig   `yaml:"failover,omitempty" json:"failover,omitempty"`
 }
 
 // ClientRoutingConfig holds routing rules and engine settings
@@ -133,6 +137,27 @@ type AdBlockRule struct {
 	Domain string `yaml:"domain,omitempty" json:"domain,omitempty"`
 	URL    string `yaml:"url,omitempty" json:"url,omitempty"`
 	Type   string `yaml:"type" json:"type"` // "dns", "https", "both"
+}
+
+// ClientKillSwitchConfig holds kill switch settings
+type ClientKillSwitchConfig struct {
+	Enabled      bool     `yaml:"enabled" json:"enabled"`
+	AllowLAN     bool     `yaml:"allow_lan" json:"allow_lan"`         // Allow local network access
+	AllowDNS     bool     `yaml:"allow_dns" json:"allow_dns"`         // Allow DNS queries when disconnected
+	PersistRules bool     `yaml:"persist_rules" json:"persist_rules"` // Keep rules after app exit
+	AllowedIPs   []string `yaml:"allowed_ips,omitempty" json:"allowed_ips,omitempty"`
+	AllowedPorts []int    `yaml:"allowed_ports,omitempty" json:"allowed_ports,omitempty"`
+}
+
+// ClientFailoverConfig holds failover/HA settings
+type ClientFailoverConfig struct {
+	Enabled         bool     `yaml:"enabled" json:"enabled"`
+	Servers         []string `yaml:"servers" json:"servers"`                   // List of fallback servers
+	HealthInterval  int      `yaml:"health_interval" json:"health_interval"`   // Health check interval (seconds)
+	Timeout         int      `yaml:"timeout" json:"timeout"`                   // Connection timeout (seconds)
+	MaxRetries      int      `yaml:"max_retries" json:"max_retries"`           // Max retries per server
+	StickySession   bool     `yaml:"sticky_session" json:"sticky_session"`     // Prefer last working server
+	WeightedBalance bool     `yaml:"weighted_balance" json:"weighted_balance"` // Use weighted server selection
 }
 
 // LoadClient loads client configuration from path

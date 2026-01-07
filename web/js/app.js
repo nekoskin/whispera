@@ -16,29 +16,53 @@ class WhisperaApp {
         if (api.token) {
             this.showMainPanel();
             this.loadDashboard();
-            // Проверяем необходимость мастера настройки
-            this.checkSetupWizard();
+            // Setup wizard disabled
+            // this.checkSetupWizard();
         } else {
             this.showLogin();
         }
 
         // Обработчики событий
         this.setupEventListeners();
-        
+
         // Автоматическое обновление данных
         this.startAutoRefresh();
-        
+
         // Автоматическое обновление статистики каждые 30 секунд
         if (this.currentPage === 'stats') {
             setInterval(() => this.loadTrafficStats(), 30000);
         } else if (this.currentPage === 'adblock') {
             setInterval(() => this.loadAdblockStats(), 30000);
         }
-        
+
         // Принудительная инициализация поля username при показе логина
         this.ensureUsernameFieldWorks();
+
+        // Update connection status indicator
+        this.updateConnectionStatus();
+        setInterval(() => this.updateConnectionStatus(), 10000);
     }
-    
+
+    updateConnectionStatus() {
+        const statusDiv = document.getElementById('serverStatus');
+        if (!statusDiv) return;
+
+        const icon = statusDiv.querySelector('i');
+        const text = statusDiv.querySelector('span');
+
+        if (api.fallbackToDemo) {
+            icon.className = 'fas fa-circle';
+            icon.style.color = 'var(--warning-color)';
+            text.textContent = 'Demo режим';
+            statusDiv.title = 'Сервер недоступен, используются демо-данные';
+        } else {
+            icon.className = 'fas fa-circle status-online';
+            icon.style.color = '';
+            text.textContent = 'Сервер работает';
+            statusDiv.title = 'Подключено к ' + api.baseURL;
+        }
+    }
+
     ensureUsernameFieldWorks() {
         // Убеждаемся, что поле username работает
         const usernameField = document.getElementById('username');
@@ -48,14 +72,14 @@ class WhisperaApp {
             usernameField.readOnly = false;
             usernameField.style.pointerEvents = 'auto';
             usernameField.style.opacity = '1';
-            
+
             // Устанавливаем фокус через небольшую задержку (на случай если autofocus не сработал)
             setTimeout(() => {
                 if (document.getElementById('loginScreen')?.style.display !== 'none') {
                     usernameField.focus();
                 }
             }, 100);
-            
+
             // Обработчик для проверки работоспособности
             usernameField.addEventListener('input', () => {
                 console.log('Username field is working, value:', usernameField.value);
@@ -64,11 +88,17 @@ class WhisperaApp {
     }
 
     async checkSetupWizard() {
+        // Skip wizard in demo mode
+        if (api.fallbackToDemo) {
+            console.log('[Whispera] Demo mode - skipping setup wizard');
+            return;
+        }
+
         try {
             // Проверяем, нужна ли первоначальная настройка
             const users = await api.getUsers();
             const info = await api.getSystemInfo();
-            
+
             // Если нет пользователей или нет публичного ключа сервера
             if (users.length === 0 || !info.server_pub) {
                 // Инициализируем мастер настройки
@@ -126,6 +156,40 @@ class WhisperaApp {
             this.loadSessions();
         });
 
+        // Делегирование событий для таблицы пользователей (Actions Delegation)
+        const usersTable = document.getElementById('usersTableBody');
+        // DISABLED: Using direct onclick instead
+        if (false && usersTable) {
+            usersTable.addEventListener('click', (e) => {
+                const btn = e.target.closest('button');
+                if (!btn) return;
+
+                // Use getAttribute for safer access
+                const userId = btn.getAttribute('data-userid');
+                console.log('Button clicked:', btn.className, 'UserID:', userId);
+
+                if (!userId) {
+                    console.error('No UserID found on button');
+                    return;
+                }
+
+                // Определяем действие по классу кнопки
+                if (btn.classList.contains('action-quick-connect')) {
+                    this.showQuickConnectModal(userId);
+                } else if (btn.classList.contains('action-copy-key')) {
+                    this.copyUserKey(userId);
+                } else if (btn.classList.contains('action-generate-key')) {
+                    this.generateUserKey(userId);
+                } else if (btn.classList.contains('action-download')) {
+                    this.showClientConfig(userId);
+                } else if (btn.classList.contains('action-edit')) {
+                    this.editUser(userId);
+                } else if (btn.classList.contains('action-delete')) {
+                    this.deleteUser(userId);
+                }
+            });
+        }
+
         // Автоматическое обновление YAML при изменении IP адреса (как в 3x-ui)
         // Используем делегирование событий, так как элемент может не существовать при инициализации
         document.addEventListener('input', (e) => {
@@ -144,11 +208,11 @@ class WhisperaApp {
         try {
             // Загружаем настройки с сервера
             const info = await api.getSystemInfo();
-            
+
             // Заполняем форму настроек
             const serverIPInput = document.getElementById('settingsServerIP');
             const serverPubInput = document.getElementById('settingsServerPub');
-            
+
             if (serverIPInput) {
                 const hostname = window.location.hostname;
                 if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
@@ -162,19 +226,19 @@ class WhisperaApp {
                     serverIPInput.value = info.server_ip || '';
                 }
             }
-            
+
             // Загружаем порты
             const udpPortInput = document.getElementById('settingsUdpPort');
             const tcpPortInput = document.getElementById('settingsTcpPort');
             const wsPortInput = document.getElementById('settingsWsPort');
             const ws2PortInput = document.getElementById('settingsWs2Port');
-            
+
             if (udpPortInput) udpPortInput.value = info.server_port || 51820;
             if (tcpPortInput) tcpPortInput.value = info.tcp_port || 4443;
             if (wsPortInput) wsPortInput.value = info.ws_port || 8080;
             if (ws2PortInput) ws2PortInput.value = info.ws2_port || 8443;
             if (serverPubInput) serverPubInput.value = info.server_pub || info.serverPublicKey || '';
-            
+
             // Загружаем статус сертификата
             await this.checkCertificateStatus();
 
@@ -282,21 +346,21 @@ class WhisperaApp {
 
                 configManager.saveConfig();
 
-            // Автоматически настраиваем firewall если включено
-            if (autoFirewall) {
-                try {
-                    const firewallPorts = [
-                        { port: udpPort || 51820, protocol: 'udp', name: 'UDP основной' },
-                        { port: tcpPort || 4443, protocol: 'tcp', name: 'TCP fallback' },
-                        { port: wsPort || 8080, protocol: 'tcp', name: 'WebSocket' },
-                        { port: ws2Port || 8443, protocol: 'tcp', name: 'WebSocket Secure' }
-                    ];
-                    await api.configureFirewall(firewallPorts);
-                } catch (firewallError) {
-                    console.warn('Не удалось настроить firewall автоматически:', firewallError);
-                    // Не показываем ошибку, так как это опциональная функция
+                // Автоматически настраиваем firewall если включено
+                if (autoFirewall) {
+                    try {
+                        const firewallPorts = [
+                            { port: udpPort || 51820, protocol: 'udp', name: 'UDP основной' },
+                            { port: tcpPort || 4443, protocol: 'tcp', name: 'TCP fallback' },
+                            { port: wsPort || 8080, protocol: 'tcp', name: 'WebSocket' },
+                            { port: ws2Port || 8443, protocol: 'tcp', name: 'WebSocket Secure' }
+                        ];
+                        await api.configureFirewall(firewallPorts);
+                    } catch (firewallError) {
+                        console.warn('Не удалось настроить firewall автоматически:', firewallError);
+                        // Не показываем ошибку, так как это опциональная функция
+                    }
                 }
-            }
             }
 
             // Можно добавить сохранение на сервер через API
@@ -315,7 +379,7 @@ class WhisperaApp {
         errorDiv.style.cssText = 'position: fixed; top: 20px; right: 20px; background: #f44336; color: white; padding: 1rem; border-radius: 4px; z-index: 10000; max-width: 400px;';
         errorDiv.textContent = message;
         document.body.appendChild(errorDiv);
-        
+
         setTimeout(() => {
             errorDiv.remove();
         }, 5000);
@@ -387,7 +451,11 @@ class WhisperaApp {
             stats: 'Статистика',
             settings: 'Настройки',
             adblock: 'Блокировщик рекламы',
-            logs: 'Логи'
+            logs: 'Логи',
+            routing: 'Маршрутизация',
+            subscriptions: 'Подписки',
+            outbounds: 'Серверы',
+            geo: 'Geo базы'
         };
         document.getElementById('pageTitle').textContent = titles[page] || page;
 
@@ -419,6 +487,18 @@ class WhisperaApp {
                 break;
             case 'adblock':
                 await this.loadAdblockStats();
+                break;
+            case 'routing':
+                await this.loadRoutingRules();
+                break;
+            case 'subscriptions':
+                await this.loadSubscriptions();
+                break;
+            case 'outbounds':
+                await this.loadOutbounds();
+                break;
+            case 'geo':
+                await this.loadGeoStatus();
                 break;
         }
     }
@@ -490,10 +570,12 @@ class WhisperaApp {
         }
 
         tbody.innerHTML = this.users.map(user => {
-            const privateKey = user.privateKey || '';
-            const hasKey = privateKey.length >= 32;
+            const privateKey = user.privateKey || user.key || '';
+            const hasKey = privateKey.length >= 10; // Relaxed check for demo keys
             const keyPreview = hasKey ? `${privateKey.substring(0, 12)}...${privateKey.substring(privateKey.length - 8)}` : 'Нет ключа';
-            
+            // Safe ID for functions
+            const uid = user.id;
+
             return `
             <tr>
                 <td>${user.id || '-'}</td>
@@ -504,14 +586,14 @@ class WhisperaApp {
                             ${keyPreview}
                         </code>
                         ${hasKey ? `
-                            <button class="btn btn-sm btn-primary" onclick="app.showQuickConnectModal('${user.id}')" title="Ключ для Quick Connect">
+                            <button class="btn btn-sm btn-primary action-quick-connect" onclick="app.showQuickConnectModal('${uid}')" title="Ключ для Quick Connect">
                                 <i class="fas fa-bolt"></i> Quick Connect
                             </button>
-                            <button class="btn btn-sm btn-secondary" onclick="app.copyUserKey('${user.id}')" title="Копировать ключ">
+                            <button class="btn btn-sm btn-secondary action-copy-key" onclick="app.copyUserKey('${uid}')" title="Копировать ключ">
                                 <i class="fas fa-copy"></i>
                             </button>
                         ` : `
-                            <button class="btn btn-sm btn-warning" onclick="app.generateUserKey('${user.id}')" title="Сгенерировать ключ">
+                            <button class="btn btn-sm btn-warning action-generate-key" onclick="app.generateUserKey('${uid}')" title="Сгенерировать ключ">
                                 <i class="fas fa-key"></i> Создать ключ
                             </button>
                         `}
@@ -533,13 +615,13 @@ class WhisperaApp {
                 </td>
                 <td>
                     <div style="display: flex; gap: 0.25rem; flex-wrap: wrap;">
-                        <button class="btn btn-sm btn-primary" onclick="app.showClientConfig('${user.id}')" title="Конфигурация клиента">
+                        <button class="btn btn-sm btn-primary action-download" onclick="app.showClientConfig('${uid}')" title="Конфигурация клиента">
                             <i class="fas fa-download"></i>
                         </button>
-                        <button class="btn btn-sm btn-secondary" onclick="app.editUser('${user.id}')" title="Редактировать">
+                        <button class="btn btn-sm btn-secondary action-edit" onclick="app.editUser('${uid}')" title="Редактировать">
                             <i class="fas fa-edit"></i>
                         </button>
-                        <button class="btn btn-sm btn-danger" onclick="app.deleteUser('${user.id}')" title="Удалить">
+                        <button class="btn btn-sm btn-danger action-delete" onclick="app.deleteUser('${uid}')" title="Удалить">
                             <i class="fas fa-trash"></i>
                         </button>
                     </div>
@@ -550,7 +632,7 @@ class WhisperaApp {
     }
 
     async showClientConfig(userId) {
-        const user = this.users.find(u => u.id === userId);
+        const user = this.users.find(u => u.id == userId);
         if (!user) {
             alert('Пользователь не найден');
             return;
@@ -574,16 +656,16 @@ class WhisperaApp {
                         privateKey: keys.privateKey.trim(),
                         publicKey: keys.publicKey ? keys.publicKey.trim() : null
                     };
-                    
+
                     await api.updateUser(user.id, updatedUser);
-                    
+
                     // Обновляем локальный объект пользователя
                     user.privateKey = updatedUser.privateKey;
                     user.publicKey = updatedUser.publicKey;
-                    
+
                     // Перезагружаем список пользователей
                     await this.loadUsers();
-                    
+
                     this.showSuccessMessage('Приватный ключ автоматически сгенерирован и сохранен!');
                 }
             } catch (error) {
@@ -599,15 +681,15 @@ class WhisperaApp {
             // Получаем информацию о сервере через API
             const serverInfo = await api.getSystemInfo();
             const serverPub = serverInfo.server_pub || serverInfo.serverPublicKey || 'YOUR_SERVER_PUBLIC_KEY';
-            
+
             // Автоматическое определение IP адреса (как в 3x-ui)
             let serverIP = serverInfo.server_ip || serverInfo.serverIP;
-            
+
             // Если IP не получен из API, используем hostname из URL
             if (!serverIP || serverIP === '' || serverIP === 'YOUR_SERVER_IP') {
                 const hostname = window.location.hostname;
                 // Пропускаем localhost и внутренние IP
-                if (hostname !== 'localhost' && hostname !== '127.0.0.1' && 
+                if (hostname !== 'localhost' && hostname !== '127.0.0.1' &&
                     !hostname.startsWith('192.168.') && !hostname.startsWith('10.')) {
                     serverIP = hostname;
                 } else {
@@ -625,7 +707,7 @@ class WhisperaApp {
             // Генерируем конфигурацию в текущем формате
             const configContent = this.generateWhisperaConfig(user, serverPub, serverIP, this.currentConfigFormat);
             document.getElementById('clientConfigYAML').value = configContent;
-            
+
             // Обновляем UI в зависимости от формата
             this.updateConfigFormatUI();
 
@@ -634,21 +716,21 @@ class WhisperaApp {
         } catch (error) {
             console.error('Ошибка при загрузке информации о сервере:', error);
             // В случае ошибки используем значения по умолчанию
-            const serverIP = window.location.hostname !== 'localhost' && 
-                            window.location.hostname !== '127.0.0.1' 
-                            ? window.location.hostname : 'YOUR_SERVER_IP';
-            
+            const serverIP = window.location.hostname !== 'localhost' &&
+                window.location.hostname !== '127.0.0.1'
+                ? window.location.hostname : 'YOUR_SERVER_IP';
+
             document.getElementById('configUsername').value = user.username || '';
             document.getElementById('clientPrivateKey').value = user.privateKey || 'NOT_GENERATED';
             document.getElementById('serverPublicKey').value = 'YOUR_SERVER_PUBLIC_KEY';
             document.getElementById('serverIP').value = serverIP;
-            
+
             const configContent = this.generateWhisperaConfig(user, 'YOUR_SERVER_PUBLIC_KEY', serverIP, this.currentConfigFormat);
             document.getElementById('clientConfigYAML').value = configContent;
-            
+
             // Обновляем UI в зависимости от формата
             this.updateConfigFormatUI();
-            
+
             document.getElementById('clientConfigModal').classList.add('active');
         }
     }
@@ -670,22 +752,22 @@ class WhisperaApp {
 
     generateWhisperaConfig(user, serverPub, serverIP, format = 'yaml') {
         const port = 51820;
-        
+
         // Нормализуем ключи (обрезаем до 64 символов для x25519)
         const normalizedServerPub = this.normalizeKey(serverPub, 64);
         const normalizedStaticKey = this.normalizeKey(user.privateKey || 'CLIENT_PRIVATE_KEY', 64);
         const tcpPort = 4443;
         const wsPort = 8080;
         const ws2Port = 8443;
-        
+
         const obfsProfile = user.obfsProfile || (typeof configManager !== 'undefined' ? configManager.get('obfuscation.defaultProfile') : 'http2') || 'http2';
         const marionetteProfile = user.marionetteProfile || (typeof configManager !== 'undefined' ? configManager.get('obfuscation.defaultMarionette') : 'browser') || 'browser';
-        
+
         // Если нужен JSON формат для C# клиента
         if (format === 'json') {
             return this.generateAppSettingsJson(user, serverPub, serverIP, port, obfsProfile, marionetteProfile);
         }
-        
+
         // Используем ConfigManager для генерации оптимизированной YAML конфигурации
         if (typeof configManager !== 'undefined') {
             return configManager.generateClientConfig(user, {
@@ -693,7 +775,7 @@ class WhisperaApp {
                 serverPub: serverPub
             });
         }
-        
+
         // Fallback на старую YAML генерацию
         return `# Whispera Client Configuration
 # Generated for user: ${user.username || 'user'}
@@ -794,7 +876,7 @@ monitoring:
     // Переключение формата конфигурации
     switchConfigFormat(format) {
         this.currentConfigFormat = format;
-        
+
         // Обновляем кнопки выбора формата
         document.querySelectorAll('.format-btn').forEach(btn => {
             btn.classList.remove('active');
@@ -813,7 +895,7 @@ monitoring:
         const formatLabel = document.getElementById('configFormatLabel');
         const downloadBtnText = document.getElementById('downloadBtnText');
         const clientInfoText = document.getElementById('clientInfoText');
-        
+
         if (this.currentConfigFormat === 'json') {
             if (formatLabel) formatLabel.textContent = 'JSON конфигурация (appsettings.json)';
             if (downloadBtnText) downloadBtnText.textContent = 'Скачать appsettings.json';
@@ -847,6 +929,36 @@ monitoring:
                 `;
             }
         }
+    }
+
+
+    async deleteUser(userId) {
+        alert('DEBUG: deleteUser function entry. userId=' + userId + ', app is ' + (typeof app));
+        if (!confirm('Вы уверены, что хотите удалить этого пользователя?')) {
+            return;
+        }
+        try {
+            const user = this.users.find(u => String(u.id) === String(userId));
+            if (!user) {
+                alert('Пользователь не найден');
+                return;
+            }
+            await api.deleteUser(userId);
+            this.showSuccessMessage(`Пользователь "${user.username}" удален.`);
+            await this.loadUsers();
+        } catch (error) {
+            console.error('Ошибка удаления пользователя:', error);
+            alert('Ошибка удаления пользователя: ' + error.message);
+        }
+    }
+
+    editUser(userId) {
+        const user = this.users.find(u => String(u.id) === String(userId));
+        if (!user) {
+            alert('Пользователь не найден');
+            return;
+        }
+        alert('Функция редактирования восстанавливается для пользователя: ' + user.username);
     }
 
     async loadSessions() {
@@ -892,20 +1004,20 @@ monitoring:
     async loadTrafficStats() {
         try {
             const period = document.getElementById('statsPeriod')?.value || '24h';
-            
+
             // Загружаем общую статистику
             const stats = await api.getStats();
             const trafficStats = await api.getTrafficStats();
-            
+
             // Обновляем общую статистику
             const totalUpload = stats.traffic?.upload || 0;
             const totalDownload = stats.traffic?.download || 0;
             const totalTraffic = totalUpload + totalDownload;
-            
+
             document.getElementById('totalUploadStats').textContent = this.formatBytes(totalUpload);
             document.getElementById('totalDownloadStats').textContent = this.formatBytes(totalDownload);
             document.getElementById('totalTrafficStats').textContent = this.formatBytes(totalTraffic);
-            
+
             // Загружаем активных пользователей
             const users = await api.getUsers();
             const activeUsers = users.filter(u => u.status === 'active').length;
@@ -917,7 +1029,7 @@ monitoring:
 
             // Загружаем трафик по пользователям
             await this.loadUserTrafficStats(users);
-            
+
         } catch (error) {
             console.error('Error loading stats:', error);
         }
@@ -986,14 +1098,14 @@ monitoring:
 
         const ctx = canvas.getContext('2d');
         const data = history.data;
-        
+
         // Устанавливаем размер canvas
         canvas.width = canvas.parentElement.clientWidth;
         canvas.height = 300;
 
         // Простая отрисовка графика (можно заменить на Chart.js)
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
+
         if (data.length === 0) {
             ctx.fillStyle = '#6b7280';
             ctx.font = '16px Arial';
@@ -1022,12 +1134,12 @@ monitoring:
         ctx.strokeStyle = '#4a90e2';
         ctx.lineWidth = 2;
         ctx.beginPath();
-        
+
         data.forEach((point, index) => {
             const x = padding + index * stepX;
             const value = (point.upload || 0) + (point.download || 0);
             const y = canvas.height - padding - (value / maxValue) * chartHeight;
-            
+
             if (index === 0) {
                 ctx.moveTo(x, y);
             } else {
@@ -1067,11 +1179,11 @@ monitoring:
             } catch (error) {
                 // Если API недоступен, проверяем локально
                 // Проверяем в списке занятых портов
-                const found = usedPorts.find(p => 
-                    p.port === portInfo.value && 
+                const found = usedPorts.find(p =>
+                    p.port === portInfo.value &&
                     (p.protocol === portInfo.protocol || p.protocol === 'tcp+udp')
                 );
-                
+
                 if (found) {
                     isAvailable = false;
                     occupiedBy = found.service || found.name || 'Неизвестная служба';
@@ -1103,7 +1215,7 @@ monitoring:
         const helpId = inputId.replace('settings', '').toLowerCase() + 'PortHelp';
         const statusEl = document.getElementById(statusId);
         const helpEl = document.getElementById(helpId);
-        
+
         if (!input || !input.value) {
             if (statusEl) statusEl.textContent = '';
             return;
@@ -1234,10 +1346,10 @@ monitoring:
             ]);
 
             if (!checkResults.allAvailable) {
-                const occupiedPorts = checkResults.occupied.map(p => 
+                const occupiedPorts = checkResults.occupied.map(p =>
                     `${p.name} (${p.value})${p.occupiedBy ? ' - занят ' + p.occupiedBy : ''}`
                 ).join('\n');
-                
+
                 if (!confirm(`ВНИМАНИЕ! Следующие порты уже заняты:\n\n${occupiedPorts}\n\nПродолжить настройку firewall?`)) {
                     return;
                 }
@@ -1279,7 +1391,7 @@ monitoring:
     async handleAddUser() {
         const form = document.getElementById('addUserForm');
         const formData = new FormData(form);
-        
+
         // Валидация имени пользователя
         const username = formData.get('username').trim();
         if (!username || !/^[a-zA-Z0-9_]+$/.test(username)) {
@@ -1334,20 +1446,20 @@ monitoring:
 
             // Создаем пользователя
             const result = await api.addUser(userData);
-            
+
             this.showSuccessMessage(`Пользователь "${username}" успешно создан!`);
             this.closeModal();
             form.reset();
             this.hideKeyPreview();
             await this.loadUsers();
-            
+
             // Восстанавливаем кнопку
             submitBtn.disabled = false;
             submitBtn.innerHTML = originalHTML;
         } catch (error) {
             console.error('Ошибка создания пользователя:', error);
             alert('Ошибка создания пользователя: ' + error.message);
-            
+
             // Восстанавливаем кнопку
             const submitBtn = form.querySelector('button[type="submit"]');
             if (submitBtn) {
@@ -1361,15 +1473,15 @@ monitoring:
         const previewSection = document.getElementById('keyPreviewSection');
         const privateKeyPreview = document.getElementById('previewPrivateKey');
         const publicKeyPreview = document.getElementById('previewPublicKey');
-        
+
         if (previewSection && privateKeyPreview) {
             previewSection.style.display = 'block';
             privateKeyPreview.textContent = keys.privateKey || 'Не сгенерирован';
-            
+
             if (publicKeyPreview) {
                 publicKeyPreview.textContent = keys.publicKey || 'Будет вычислен на сервере';
             }
-            
+
             // Прокручиваем к превью
             previewSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
@@ -1385,14 +1497,14 @@ monitoring:
     downloadConfig() {
         const content = document.getElementById('clientConfigYAML').value;
         const username = document.getElementById('configUsername').value;
-        
+
         // Определяем расширение файла и MIME тип в зависимости от формата
         const extension = this.currentConfigFormat === 'json' ? 'json' : 'yaml';
         const mimeType = this.currentConfigFormat === 'json' ? 'application/json' : 'text/yaml';
-        const filename = this.currentConfigFormat === 'json' 
-            ? 'appsettings.json' 
+        const filename = this.currentConfigFormat === 'json'
+            ? 'appsettings.json'
             : `whispera-client-${username || 'config'}.yaml`;
-        
+
         const blob = new Blob([content], { type: mimeType });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -1400,7 +1512,7 @@ monitoring:
         a.download = filename;
         a.click();
         URL.revokeObjectURL(url);
-        
+
         // Показываем уведомление
         this.showSuccessMessage(`Конфигурация ${filename} скачана успешно!`);
     }
@@ -1440,7 +1552,7 @@ monitoring:
                 const fullKey = keys.privateKey ? keys.privateKey.trim() : '';
                 document.getElementById('clientPrivateKey').value = fullKey;
                 console.log('Generated private key length:', fullKey.length);
-                
+
                 // Если есть публичный ключ, показываем его
                 if (keys.publicKey) {
                     const publicKeyGroup = document.getElementById('clientPublicKeyGroup');
@@ -1450,7 +1562,7 @@ monitoring:
                         publicKeyInput.value = keys.publicKey;
                     }
                 }
-                
+
                 // Обновляем текущего пользователя с новым ключом
                 if (this.currentConfigUser) {
                     this.currentConfigUser.privateKey = keys.privateKey;
@@ -1473,7 +1585,7 @@ monitoring:
         } catch (error) {
             console.error('Ошибка генерации ключей:', error);
             alert('Ошибка генерации ключей: ' + error.message);
-            
+
             // Восстанавливаем кнопку
             const generateBtn = event.target.closest('button');
             if (generateBtn) {
@@ -1537,7 +1649,7 @@ monitoring:
             if (keys && keys.publicKey) {
                 // Обновляем поле публичного ключа сервера
                 document.getElementById('serverPublicKey').value = keys.publicKey;
-                
+
                 // Перегенерируем конфигурацию с новым ключом
                 if (this.currentConfigUser) {
                     this.updateConfigYAML();
@@ -1554,7 +1666,7 @@ monitoring:
         } catch (error) {
             console.error('Ошибка генерации ключей сервера:', error);
             alert('Ошибка генерации ключей сервера: ' + error.message);
-            
+
             // Восстанавливаем кнопку
             const generateBtn = event.target.closest('button');
             if (generateBtn) {
@@ -1564,19 +1676,89 @@ monitoring:
         }
     }
 
+    async generateKeysClientSide() {
+        // Fallback for demo mode/client side generation
+        // Uses global api helper if available, or simple random logic
+        if (api && api.generateMockBase64Key) {
+            return {
+                privateKey: api.generateMockBase64Key(),
+                publicKey: api.generateMockBase64Key()
+            };
+        }
+
+        // Basic fallback
+        const randomBytes = new Uint8Array(32);
+        window.crypto.getRandomValues(randomBytes);
+        const key = btoa(String.fromCharCode(...randomBytes));
+        return {
+            privateKey: key,
+            publicKey: btoa(String.fromCharCode(...new Uint8Array(32).map(() => Math.floor(Math.random() * 256))))
+        };
+    }
+
+    async generateUserKey(userId) {
+        if (!confirm('Сгенерировать новый ключ для пользователя? Старый ключ перестанет работать.')) {
+            return;
+        }
+
+        const btn = event.target.closest('button');
+        const originalHTML = btn ? btn.innerHTML : '';
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+        }
+
+        try {
+            // Generate new keys
+            let keys;
+            try {
+                keys = await api.generateKeys();
+            } catch (e) {
+                keys = await this.generateKeysClientSide();
+            }
+
+            if (keys && keys.privateKey) {
+                // Update user on server
+                const user = this.users.find(u => u.id == userId);
+                if (user) {
+                    // Update user object with new keys
+                    // Note: In a real app we might only send the public key to server if it's wireguard,
+                    // but here we simulate updating the "key" (token/private key)
+                    await api.updateUser(userId, {
+                        ...user,
+                        key: keys.privateKey,
+                        privateKey: keys.privateKey,
+                        publicKey: keys.publicKey
+                    });
+
+                    this.showSuccessMessage('Ключ успешно обновлен');
+                    await this.loadUsers();
+                }
+            }
+        } catch (error) {
+            console.error('Error generating key:', error);
+            alert('Ошибка генерации ключа: ' + error.message);
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = originalHTML;
+            }
+        }
+    }
+
     async editUser(id) {
-        const user = this.users.find(u => u.id === id);
+        const user = this.users.find(u => u.id == id);
         if (!user) {
             alert('Пользователь не найден');
             return;
         }
 
-        // Пока просто показываем конфигурацию клиента
-        // В будущем можно добавить модальное окно редактирования
-        this.showClientConfig(id);
+        // Используем модальное окно редактирования
+        this.showEditUserModal(id);
     }
 
     async deleteUser(id) {
+        console.log('App: deleteUser called with ID:', id);
         if (!confirm('Вы уверены, что хотите удалить этого пользователя?')) {
             return;
         }
@@ -1617,7 +1799,7 @@ monitoring:
     async loadAdblockStats() {
         try {
             const stats = await api.getAdblockStats();
-            
+
             // Обновляем статистику
             document.getElementById('adblockTotalBlocked').textContent = stats.total_blocked || 0;
             document.getElementById('adblockDNSBlocked').textContent = stats.dns_blocked || 0;
@@ -1764,7 +1946,7 @@ monitoring:
         if (navigator.clipboard) {
             navigator.clipboard.writeText(privateKey).then(() => {
                 this.showSuccessMessage('Ключ скопирован в буфер обмена!');
-                
+
                 // Показываем информацию о Quick Connect
                 const infoDiv = document.getElementById('quickConnectInfo');
                 const urlSpan = document.getElementById('quickConnectServerUrl');
@@ -1810,13 +1992,13 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
 
 Ключ можно скопировать из модального окна Quick Connect.
         `;
-        
+
         alert(instructions);
     }
 
     // Показать модальное окно Quick Connect для пользователя
     async showQuickConnectModal(userId) {
-        const user = this.users.find(u => u.id === userId);
+        const user = this.users.find(u => u.id == userId);
         if (!user || !user.privateKey) {
             alert('У пользователя нет ключа подключения');
             return;
@@ -1829,22 +2011,22 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
         }
 
         const privateKey = user.privateKey.trim();
-        
+
         // Получаем информацию о сервере из API
         let serverIP = 'YOUR_SERVER_IP';
         let serverPort = 51820;
         let serverPubKey = '';
-        
+
         try {
             const systemInfo = await api.getSystemInfo();
             serverIP = systemInfo.server_ip || systemInfo.serverIP || 'YOUR_SERVER_IP';
             serverPort = systemInfo.server_port || systemInfo.serverPort || 51820;
             serverPubKey = systemInfo.server_pub || systemInfo.serverPublicKey || '';
-            
+
             // Если IP не найден, пытаемся извлечь из hostname
             if (serverIP === 'YOUR_SERVER_IP' || !serverIP) {
                 const hostname = window.location.hostname;
-                if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1' && 
+                if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1' &&
                     !hostname.startsWith('192.168.') && !hostname.startsWith('10.')) {
                     serverIP = hostname;
                 }
@@ -1868,7 +2050,7 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
 
         // Показываем модальное окно
         modal.style.display = 'block';
-        
+
         // Закрытие по клику вне модального окна
         window.onclick = (event) => {
             if (event.target === modal) {
@@ -1895,7 +2077,7 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
         if (privateKey) {
             params.set('key', privateKey);
         }
-        
+
         // Формируем URL в формате whispera://server:port?pub=...&key=...
         const url = `whispera://${serverIP}:${serverPort}?${params.toString()}`;
         return url;
@@ -1936,7 +2118,7 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
 
     // Копировать ключ пользователя
     copyUserKey(userId) {
-        const user = this.users.find(u => u.id === userId);
+        const user = this.users.find(u => u.id == userId);
         if (!user || !user.privateKey) {
             alert('У пользователя нет ключа подключения');
             return;
@@ -1957,7 +2139,7 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
                 throw new Error('Не удалось сгенерировать ключи');
             }
 
-            const user = this.users.find(u => u.id === userId);
+            const user = this.users.find(u => u.id == userId);
             if (!user) {
                 throw new Error('Пользователь не найден');
             }
@@ -1971,7 +2153,7 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
 
             await api.updateUser(userId, updatedUser);
             this.showSuccessMessage('Ключ успешно сгенерирован и сохранён!');
-            
+
             // Перезагружаем список пользователей
             await this.loadUsers();
         } catch (error) {
@@ -2023,7 +2205,7 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
         const days = Math.floor(seconds / 86400);
         const hours = Math.floor((seconds % 86400) / 3600);
         const minutes = Math.floor((seconds % 3600) / 60);
-        
+
         if (days > 0) return `${days}д ${hours}ч`;
         if (hours > 0) return `${hours}ч ${minutes}м`;
         return `${minutes}м`;
@@ -2034,11 +2216,11 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
         try {
             const statusDiv = document.getElementById('certificateStatus');
             if (!statusDiv) return;
-            
+
             statusDiv.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Загрузка статуса...';
-            
+
             const status = await api.getCertificateStatus();
-            
+
             let statusHTML = '';
             if (status.letsencrypt_available) {
                 statusHTML = `
@@ -2073,7 +2255,7 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
                     </div>
                 `;
             }
-            
+
             statusDiv.innerHTML = statusHTML;
             statusDiv.className = 'info-box ' + (status.letsencrypt_available ? 'info-success' : status.certificate_exists ? 'info-info' : 'info-warning');
         } catch (error) {
@@ -2097,28 +2279,28 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
     async obtainLetsEncryptCert() {
         const domain = document.getElementById('letsencryptDomain')?.value.trim();
         const email = document.getElementById('letsencryptEmail')?.value.trim();
-        
+
         if (!domain) {
             this.showErrorMessage('Введите домен для Let\'s Encrypt');
             return;
         }
-        
+
         // Проверка: домен не должен быть IP адресом
         const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
         if (ipRegex.test(domain)) {
             this.showErrorMessage('Ошибка: Введите доменное имя (например, example.com), а не IP адрес. Let\'s Encrypt требует доменное имя.');
             return;
         }
-        
+
         if (!confirm(`Получить Let's Encrypt сертификат для домена ${domain}?\n\nУбедитесь, что:\n- DNS A запись указывает на этот сервер\n- Порты 80 и 443 открыты\n- Certbot установлен`)) {
             return;
         }
-        
+
         try {
             this.showSuccessMessage('Запрос на получение сертификата отправлен. Это может занять 1-2 минуты...');
-            
+
             const result = await api.obtainCertificate(domain, email || `admin@${domain}`);
-            
+
             if (result.success) {
                 this.showSuccessMessage('Получение сертификата запущено. Сервер будет временно остановлен на время генерации. Проверьте статус через 1-2 минуты.');
                 // Обновляем статус через 10 секунд
@@ -2128,7 +2310,7 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
             }
         } catch (error) {
             let errorMessage = 'Ошибка при получении сертификата: ';
-            
+
             // Парсим сообщение об ошибке
             if (error.message) {
                 const msg = error.message.toLowerCase();
@@ -2146,7 +2328,7 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
             } else {
                 errorMessage += String(error);
             }
-            
+
             this.showErrorMessage(errorMessage);
             console.error('Ошибка получения сертификата:', error);
         }
@@ -2156,12 +2338,12 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
         if (!confirm('Обновить Let\'s Encrypt сертификат?\n\nЭто может занять несколько минут.')) {
             return;
         }
-        
+
         try {
             this.showSuccessMessage('Запрос на обновление сертификата отправлен...');
-            
+
             const result = await api.renewCertificate();
-            
+
             if (result.success) {
                 this.showSuccessMessage('Обновление сертификата запущено. Проверьте статус через несколько минут.');
                 // Обновляем статус через 5 секунд
@@ -2174,6 +2356,454 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
             console.error('Ошибка обновления сертификата:', error);
         }
     }
+
+    // =============================================
+    // ROUTING PAGE METHODS
+    // =============================================
+
+    async loadRoutingRules() {
+        try {
+            const response = await api.getRoutingRules();
+            const rules = response.rules || [];
+            this.renderRoutingRulesTable(rules);
+        } catch (error) {
+            console.error('Error loading routing rules:', error);
+            this.showErrorMessage('Не удалось загрузить правила маршрутизации');
+        }
+    }
+
+    renderRoutingRulesTable(rules) {
+        const tbody = document.getElementById('routingRulesTableBody');
+        if (!tbody) return;
+
+        if (!rules || rules.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 2rem;">Нет правил маршрутизации</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = rules.map(rule => `
+            <tr>
+                <td><span class="badge badge-${rule.type === 'domain' ? 'blue' : 'purple'}">${rule.type || 'domain'}</span></td>
+                <td><code>${rule.condition || '-'}</code></td>
+                <td><strong>${rule.outbound || 'direct'}</strong></td>
+                <td>${rule.priority || 0}</td>
+                <td>
+                    <span class="badge ${rule.enabled ? 'badge-success' : 'badge-secondary'}">
+                        ${rule.enabled ? 'Включено' : 'Выключено'}
+                    </span>
+                </td>
+                <td>
+                    <button class="btn btn-sm btn-danger" onclick="app.deleteRoutingRule('${rule.id}')">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+    }
+
+    showAddRoutingRuleModal() {
+        const type = prompt('Выберите тип правила (domain, ip, port, protocol):', 'domain');
+        if (!type) return;
+
+        const condition = prompt('Введите условие (например: geosite:ru, geoip:cn, 80, tcp):', '');
+        if (!condition) return;
+
+        const outbound = prompt('Выберите outbound (direct, proxy, block):', 'direct');
+        if (!outbound) return;
+
+        const priority = parseInt(prompt('Приоритет (0-100, меньше = выше):', '10')) || 10;
+
+        this.addRoutingRule({
+            type: type,
+            condition: condition,
+            outbound: outbound,
+            priority: priority,
+            enabled: true
+        });
+    }
+
+    async addRoutingRule(rule) {
+        try {
+            await api.addRoutingRule(rule);
+            this.showSuccessMessage('Правило маршрутизации добавлено!');
+            await this.loadRoutingRules();
+        } catch (error) {
+            this.showErrorMessage('Ошибка добавления правила: ' + error.message);
+        }
+    }
+
+    async deleteRoutingRule(ruleId) {
+        if (!confirm('Удалить это правило маршрутизации?')) return;
+
+        try {
+            await api.deleteRoutingRule(ruleId);
+            this.showSuccessMessage('Правило удалено!');
+            await this.loadRoutingRules();
+        } catch (error) {
+            this.showErrorMessage('Ошибка удаления правила: ' + error.message);
+        }
+    }
+
+    // =============================================
+    // SUBSCRIPTIONS PAGE METHODS
+    // =============================================
+
+    async loadSubscriptions() {
+        try {
+            const response = await api.getSubscriptions();
+            const subscriptions = response.subscriptions || [];
+            this.renderSubscriptionsTable(subscriptions);
+        } catch (error) {
+            console.error('Error loading subscriptions:', error);
+            this.showErrorMessage('Не удалось загрузить подписки');
+        }
+    }
+
+    renderSubscriptionsTable(subscriptions) {
+        const tbody = document.getElementById('subscriptionsTableBody');
+        if (!tbody) return;
+
+        if (!subscriptions || subscriptions.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 2rem;">Нет подписок</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = subscriptions.map(sub => `
+            <tr>
+                <td><strong>${sub.name || '-'}</strong></td>
+                <td><code style="font-size: 0.85rem;">${this.truncateUrl(sub.url) || '-'}</code></td>
+                <td>${sub.interval || '-'}</td>
+                <td>${sub.lastUpdate ? new Date(sub.lastUpdate).toLocaleString() : 'Никогда'}</td>
+                <td>${sub.serverCount || 0}</td>
+                <td>
+                    <span class="badge ${sub.enabled ? 'badge-success' : 'badge-secondary'}">
+                        ${sub.enabled ? 'Активна' : 'Отключена'}
+                    </span>
+                </td>
+                <td>
+                    <div style="display: flex; gap: 0.25rem;">
+                        <button class="btn btn-sm btn-secondary" onclick="app.refreshSubscription('${sub.id}')" title="Обновить">
+                            <i class="fas fa-sync"></i>
+                        </button>
+                        <button class="btn btn-sm btn-${sub.enabled ? 'warning' : 'success'}" onclick="app.toggleSubscription('${sub.id}', ${!sub.enabled})" title="${sub.enabled ? 'Отключить' : 'Включить'}">
+                            <i class="fas fa-${sub.enabled ? 'pause' : 'play'}"></i>
+                        </button>
+                        <button class="btn btn-sm btn-danger" onclick="app.deleteSubscription('${sub.id}')" title="Удалить">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+    }
+
+    truncateUrl(url, maxLength = 40) {
+        if (!url) return '';
+        if (url.length <= maxLength) return url;
+        return url.substring(0, maxLength) + '...';
+    }
+
+    showAddSubscriptionModal() {
+        const name = prompt('Название подписки:', '');
+        if (!name) return;
+
+        const url = prompt('URL подписки:', '');
+        if (!url) return;
+
+        const interval = prompt('Интервал обновления (6h, 12h, 24h, 7d):', '24h');
+
+        this.addSubscription({
+            name: name,
+            url: url,
+            interval: interval || '24h',
+            enabled: true
+        });
+    }
+
+    async addSubscription(subscription) {
+        try {
+            await api.addSubscription(subscription);
+            this.showSuccessMessage('Подписка добавлена!');
+            await this.loadSubscriptions();
+        } catch (error) {
+            this.showErrorMessage('Ошибка добавления подписки: ' + error.message);
+        }
+    }
+
+    async refreshSubscription(subId) {
+        try {
+            await api.updateSubscription(subId, {});
+            this.showSuccessMessage('Подписка обновлена!');
+            await this.loadSubscriptions();
+        } catch (error) {
+            this.showErrorMessage('Ошибка обновления подписки: ' + error.message);
+        }
+    }
+
+    async toggleSubscription(subId, enabled) {
+        try {
+            await api.enableSubscription(subId, enabled);
+            this.showSuccessMessage(enabled ? 'Подписка включена!' : 'Подписка отключена!');
+            await this.loadSubscriptions();
+        } catch (error) {
+            this.showErrorMessage('Ошибка изменения статуса: ' + error.message);
+        }
+    }
+
+    async deleteSubscription(subId) {
+        if (!confirm('Удалить эту подписку?')) return;
+
+        try {
+            await api.deleteSubscription(subId);
+            this.showSuccessMessage('Подписка удалена!');
+            await this.loadSubscriptions();
+        } catch (error) {
+            this.showErrorMessage('Ошибка удаления подписки: ' + error.message);
+        }
+    }
+
+    async updateAllSubscriptions() {
+        try {
+            await api.updateAllSubscriptions();
+            this.showSuccessMessage('Все подписки обновлены!');
+            await this.loadSubscriptions();
+        } catch (error) {
+            this.showErrorMessage('Ошибка обновления подписок: ' + error.message);
+        }
+    }
+
+    // =============================================
+    // OUTBOUNDS PAGE METHODS
+    // =============================================
+
+    async loadOutbounds() {
+        try {
+            const response = await api.getOutbounds();
+            const outbounds = response.outbounds || [];
+            this.renderOutboundsTable(outbounds);
+        } catch (error) {
+            console.error('Error loading outbounds:', error);
+            this.showErrorMessage('Не удалось загрузить серверы');
+        }
+    }
+
+    renderOutboundsTable(outbounds) {
+        const tbody = document.getElementById('outboundsTableBody');
+        if (!tbody) return;
+
+        if (!outbounds || outbounds.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 2rem;">Нет серверов</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = outbounds.map(out => {
+            const latencyClass = out.latency < 50 ? 'success' : out.latency < 100 ? 'warning' : 'danger';
+            const availClass = out.availability > 99 ? 'success' : out.availability > 95 ? 'warning' : 'danger';
+
+            return `
+                <tr>
+                    <td><strong>${out.tag || '-'}</strong></td>
+                    <td><code>${out.address || '-'}</code></td>
+                    <td><span class="badge badge-blue">${out.protocol || out.type || '-'}</span></td>
+                    <td><span class="badge badge-${latencyClass}">${out.latency || 0} ms</span></td>
+                    <td><span class="badge badge-${availClass}">${out.availability || 0}%</span></td>
+                    <td>
+                        <span class="badge ${out.enabled ? 'badge-success' : 'badge-secondary'}">
+                            ${out.enabled ? 'Активен' : 'Отключен'}
+                        </span>
+                    </td>
+                    <td>
+                        <div style="display: flex; gap: 0.25rem;">
+                            ${out.type !== 'direct' && out.type !== 'blackhole' ? `
+                                <button class="btn btn-sm btn-secondary" onclick="app.editOutbound('${out.tag}')" title="Редактировать">
+                                    <i class="fas fa-edit"></i>
+                                </button>
+                                <button class="btn btn-sm btn-danger" onclick="app.deleteOutbound('${out.tag}')" title="Удалить">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            ` : '<span style="color: #9ca3af; font-size: 0.85rem;">Системный</span>'}
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    showAddOutboundModal() {
+        const tag = prompt('Тег сервера (уникальный идентификатор):', 'proxy-new');
+        if (!tag) return;
+
+        const address = prompt('Адрес сервера (host:port):', '');
+        if (!address) return;
+
+        const protocol = prompt('Протокол (whispera, vmess, vless, shadowsocks):', 'whispera');
+
+        this.addOutbound({
+            tag: tag,
+            type: protocol || 'whispera',
+            address: address,
+            protocol: protocol || 'whispera',
+            enabled: true
+        });
+    }
+
+    async addOutbound(outbound) {
+        try {
+            await api.addOutbound(outbound);
+            this.showSuccessMessage('Сервер добавлен!');
+            await this.loadOutbounds();
+        } catch (error) {
+            this.showErrorMessage('Ошибка добавления сервера: ' + error.message);
+        }
+    }
+
+    async editOutbound(tag) {
+        const address = prompt('Новый адрес сервера:', '');
+        if (!address) return;
+
+        try {
+            await api.updateOutbound(tag, { address: address });
+            this.showSuccessMessage('Сервер обновлен!');
+            await this.loadOutbounds();
+        } catch (error) {
+            this.showErrorMessage('Ошибка обновления сервера: ' + error.message);
+        }
+    }
+
+    async deleteOutbound(tag) {
+        if (!confirm(`Удалить сервер "${tag}"?`)) return;
+
+        try {
+            await api.deleteOutbound(tag);
+            this.showSuccessMessage('Сервер удален!');
+            await this.loadOutbounds();
+        } catch (error) {
+            this.showErrorMessage('Ошибка удаления сервера: ' + error.message);
+        }
+    }
+
+    // =============================================
+    // GEO PAGE METHODS
+    // =============================================
+
+    async loadGeoStatus() {
+        try {
+            const status = await api.getGeoStatus();
+
+            // Update status cards
+            const geoIPStatus = document.getElementById('geoIPStatus');
+            const geoSiteStatus = document.getElementById('geoSiteStatus');
+            const geoLastUpdate = document.getElementById('geoLastUpdate');
+
+            if (geoIPStatus) {
+                geoIPStatus.textContent = status.geoip?.loaded ?
+                    `${(status.geoip.entries || 0).toLocaleString()} записей` : 'Не загружена';
+            }
+            if (geoSiteStatus) {
+                geoSiteStatus.textContent = status.geosite?.loaded ?
+                    `${(status.geosite.entries || 0).toLocaleString()} записей` : 'Не загружена';
+            }
+            if (geoLastUpdate) {
+                geoLastUpdate.textContent = status.lastUpdate ?
+                    new Date(status.lastUpdate).toLocaleDateString() : 'Неизвестно';
+            }
+
+            // Update paths and sizes
+            const geoIPPath = document.getElementById('geoIPPath');
+            const geoSitePath = document.getElementById('geoSitePath');
+            const geoIPSize = document.getElementById('geoIPSize');
+            const geoSiteSize = document.getElementById('geoSiteSize');
+            const autoUpdateCheckbox = document.getElementById('geoAutoUpdateEnabled');
+
+            if (geoIPPath) geoIPPath.value = status.geoip?.path || '/etc/whispera/geoip.dat';
+            if (geoSitePath) geoSitePath.value = status.geosite?.path || '/etc/whispera/geosite.dat';
+            if (geoIPSize) geoIPSize.value = status.geoip?.size || '-';
+            if (geoSiteSize) geoSiteSize.value = status.geosite?.size || '-';
+            if (autoUpdateCheckbox) autoUpdateCheckbox.checked = status.autoUpdate !== false;
+
+        } catch (error) {
+            console.error('Error loading geo status:', error);
+            this.showErrorMessage('Не удалось загрузить статус Geo баз');
+        }
+    }
+
+    async updateGeoDatabases() {
+        if (!confirm('Загрузить обновленные Geo базы данных с сервера? Это может занять несколько минут.')) return;
+
+        try {
+            await api.updateGeoDatabases();
+            this.showSuccessMessage('Geo базы данных обновлены!');
+            await this.loadGeoStatus();
+        } catch (error) {
+            this.showErrorMessage('Ошибка обновления Geo баз: ' + error.message);
+        }
+    }
+
+    async reloadGeoDatabases() {
+        try {
+            await api.reloadGeoDatabases();
+            this.showSuccessMessage('Geo базы данных перезагружены!');
+            await this.loadGeoStatus();
+        } catch (error) {
+            this.showErrorMessage('Ошибка перезагрузки Geo баз: ' + error.message);
+        }
+    }
+
+    async updateGeoSettings() {
+        try {
+            const autoUpdate = document.getElementById('geoAutoUpdateEnabled')?.checked || false;
+
+            await api.updateGeoSettings({
+                autoUpdate: autoUpdate
+            });
+
+            this.showSuccessMessage('Настройки Geo сохранены!');
+        } catch (error) {
+            this.showErrorMessage('Ошибка сохранения настроек: ' + error.message);
+        }
+    }
+
+    // =============================================
+    // EDIT USER MODAL
+    // =============================================
+
+    showEditUserModal(userId) {
+        const user = this.users.find(u => u.id == userId);
+        if (!user) {
+            this.showErrorMessage('Пользователь не найден');
+            return;
+        }
+
+        // Create modal content dynamically or show existing modal
+        const username = prompt('Имя пользователя:', user.username || '');
+        if (username === null) return; // Cancelled
+
+        const trafficLimit = prompt('Лимит трафика (GB, 0 = безлимит):',
+            user.trafficLimit ? (user.trafficLimit / 1073741824).toFixed(2) : '0');
+        if (trafficLimit === null) return;
+
+        const expiryDate = prompt('Срок действия (YYYY-MM-DD, пусто = бессрочно):',
+            user.expiryDate ? user.expiryDate.split('T')[0] : '');
+
+        this.updateUserData(userId, {
+            username: username || user.username,
+            trafficLimit: trafficLimit ? parseFloat(trafficLimit) * 1073741824 : 0,
+            expiryDate: expiryDate || null
+        });
+    }
+
+    async updateUserData(userId, userData) {
+        try {
+            const user = this.users.find(u => u.id == userId);
+            if (!user) throw new Error('Пользователь не найден');
+
+            await api.updateUser(userId, { ...user, ...userData });
+            this.showSuccessMessage('Пользователь обновлен!');
+            await this.loadUsers();
+        } catch (error) {
+            this.showErrorMessage('Ошибка обновления пользователя: ' + error.message);
+        }
+    }
 }
 
 // Вспомогательная функция для копирования в буфер обмена
@@ -2181,7 +2811,7 @@ function copyToClipboard(elementId) {
     const element = document.getElementById(elementId);
     element.select();
     document.execCommand('copy');
-    
+
     // Визуальная обратная связь
     const btn = event.target.closest('button');
     const originalHTML = btn.innerHTML;
@@ -2195,8 +2825,20 @@ function copyToClipboard(elementId) {
 
 
 // Инициализация приложения
-let app;
-document.addEventListener('DOMContentLoaded', () => {
-    app = new WhisperaApp();
+// Инициализация приложения
+// Делаем app глобальным для доступа из onclick обработчиков в HTML
+window.onerror = function (msg, url, line, col, error) {
+    alert("GLOBAL ERROR: " + msg + "\nAt: " + url + ":" + line);
+};
+
+window.app = null;
+document.addEventListener('DOMContentLoaded', async () => {
+    console.log('DOMContentLoaded fired');
+    try {
+        window.app = new WhisperaApp();
+        console.log('App instantiated');
+    } catch (e) {
+        alert('CRITICAL: App instantiation failed: ' + e.message);
+    }
 });
 

@@ -1,7 +1,6 @@
 package ml
 
 import (
-	"log"
 	"sync"
 	"time"
 
@@ -56,7 +55,7 @@ func (ps *ProtocolSelector) SelectProtocol(networkConditions *NetworkConditions)
 	if ps.mlSystem != nil && ps.mlSystem.mlClient != nil {
 		response, err = ps.mlSystem.mlClient.PredictTraffic(testPacket, "protocol_selection", "outbound")
 		if err != nil {
-			log.Printf("[ProtocolSelector] ML prediction failed: %v, using default", err)
+			log.Warn("ML prediction failed: %v, using default", err)
 			return ps.getDefaultRecommendation(networkConditions), nil
 		}
 	} else {

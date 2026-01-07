@@ -6,14 +6,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	"whispera/internal/auth"
 	"whispera/internal/core/base"
 	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
+	"whispera/internal/modules/apiserver/handlers"
+	"whispera/internal/modules/dhcp"
+	"whispera/internal/network"
+	"whispera/internal/stats"
 )
 
 const (
@@ -63,6 +70,9 @@ type Server struct {
 	// Route handlers
 	mu       sync.RWMutex
 	handlers map[string]http.HandlerFunc
+
+	// Managers
+	mfaManager *auth.MFAManager
 }
 
 // New creates a new API server
@@ -75,10 +85,11 @@ func New(cfg *Config) (*Server, error) {
 	}
 
 	s := &Server{
-		Module:   base.NewModule(ModuleName, ModuleVersion, nil),
-		config:   cfg,
-		mux:      http.NewServeMux(),
-		handlers: make(map[string]http.HandlerFunc),
+		Module:     base.NewModule(ModuleName, ModuleVersion, nil),
+		config:     cfg,
+		mux:        http.NewServeMux(),
+		handlers:   make(map[string]http.HandlerFunc),
+		mfaManager: auth.NewMFAManager(),
 	}
 
 	// Register default routes
@@ -92,11 +103,27 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("GET /api/v1/health", s.handleHealth)
 	s.Handle("GET /api/v1/status", s.handleStatus)
 	s.Handle("GET /api/v1/modules", s.handleModules)
+	// Config routes
 	s.Handle("GET /api/v1/config", s.handleGetConfig)
+
+	// MFA routes
+	mfaHandler := handlers.NewMFAHandler(s.mfaManager)
+	s.Handle("POST /api/v1/auth/mfa/setup", mfaHandler.Setup)
+	s.Handle("POST /api/v1/auth/mfa/verify", mfaHandler.Verify)
+	s.Handle("POST /api/v1/auth/mfa/validate", mfaHandler.Validate)
+	s.Handle("POST /api/v1/auth/mfa/disable", mfaHandler.Disable)
 	s.Handle("POST /api/v1/config/reload", s.handleReloadConfig)
 	s.Handle("GET /api/v1/sessions", s.handleGetSessions)
 	s.Handle("DELETE /api/v1/sessions/{id}", s.handleDeleteSession)
 	s.Handle("GET /api/v1/stats", s.handleGetStats)
+	s.Handle("GET /api/v1/system/info", s.handleSystemInfo)
+	s.Handle("GET /api/v1/stats/traffic", s.handleTrafficStats)
+	s.Handle("GET /api/v1/stats/users", s.handleUserStats)
+
+	// DHCP endpoints
+	s.Handle("GET /api/v1/dhcp/status", s.handleDHCPStatus)
+	s.Handle("GET /api/v1/dhcp/leases", s.handleDHCPLeases)
+	s.Handle("DELETE /api/v1/dhcp/lease", s.handleDHCPRelease)
 }
 
 // Init initializes the API server
@@ -432,6 +459,146 @@ func (s *Server) handleGetStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.jsonOK(w, stats)
+}
+
+// handleSystemInfo returns server system information including external IP
+func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Detect external IP
+	externalIP, err := network.DetectServerIP(ctx)
+	if err != nil {
+		externalIP = "unknown"
+	}
+
+	// Get hostname
+	hostname, _ := os.Hostname()
+
+	// Build system info
+	info := map[string]interface{}{
+		"server_ip":     externalIP,
+		"serverIP":      externalIP, // Alias for frontend compatibility
+		"hostname":      hostname,
+		"os":            runtime.GOOS,
+		"arch":          runtime.GOARCH,
+		"go_version":    runtime.Version(),
+		"num_cpu":       runtime.NumCPU(),
+		"num_goroutine": runtime.NumGoroutine(),
+	}
+
+	// Add server port if available
+	if s.config != nil && s.config.ListenAddr != "" {
+		info["api_addr"] = s.config.ListenAddr
+	}
+
+	// Add module count if registry available
+	if s.registry != nil {
+		modules := s.registry.GetAll()
+		info["module_count"] = len(modules)
+	}
+
+	// Get network interfaces info
+	serverInfo, _ := network.GetServerInfo(ctx)
+	if serverInfo != nil {
+		info["interfaces"] = serverInfo.Interfaces
+		info["detected_at"] = serverInfo.DetectedAt
+	}
+
+	s.jsonOK(w, info)
+}
+
+// handleTrafficStats returns real traffic statistics
+func (s *Server) handleTrafficStats(w http.ResponseWriter, r *http.Request) {
+	globalStats := stats.GetGlobalStats()
+
+	s.jsonOK(w, map[string]interface{}{
+		"total_download":   globalStats.TotalBytesRx,
+		"total_upload":     globalStats.TotalBytesTx,
+		"total_packets_rx": globalStats.TotalPacketsRx,
+		"total_packets_tx": globalStats.TotalPacketsTx,
+		"active_users":     globalStats.ActiveUsers,
+		"uptime":           globalStats.Uptime,
+		"uptime_seconds":   globalStats.UptimeSeconds,
+		"history":          globalStats.History,
+	})
+}
+
+// handleUserStats returns per-user traffic statistics
+func (s *Server) handleUserStats(w http.ResponseWriter, r *http.Request) {
+	// Check for specific user ID in query
+	userID := r.URL.Query().Get("user_id")
+
+	if userID != "" {
+		// Return stats for specific user
+		userStats := stats.GetUserStats(userID)
+		if userStats == nil {
+			s.jsonError(w, http.StatusNotFound, "User not found")
+			return
+		}
+		s.jsonOK(w, userStats)
+		return
+	}
+
+	// Return all user stats
+	allStats := stats.GetAllUserStats()
+	s.jsonOK(w, map[string]interface{}{
+		"count": len(allStats),
+		"users": allStats,
+	})
+}
+
+// Global DHCP manager instance (will be set by main or module registry)
+var globalDHCPManager *dhcp.Manager
+
+// SetDHCPManager sets the DHCP manager for API handlers
+func SetDHCPManager(m *dhcp.Manager) {
+	globalDHCPManager = m
+}
+
+// handleDHCPStatus returns DHCP pool status
+func (s *Server) handleDHCPStatus(w http.ResponseWriter, r *http.Request) {
+	if globalDHCPManager == nil {
+		s.jsonError(w, http.StatusServiceUnavailable, "DHCP not initialized")
+		return
+	}
+
+	s.jsonOK(w, globalDHCPManager.GetStats())
+}
+
+// handleDHCPLeases returns all active leases
+func (s *Server) handleDHCPLeases(w http.ResponseWriter, r *http.Request) {
+	if globalDHCPManager == nil {
+		s.jsonError(w, http.StatusServiceUnavailable, "DHCP not initialized")
+		return
+	}
+
+	leases := globalDHCPManager.GetAllLeases()
+	s.jsonOK(w, map[string]interface{}{
+		"count":  len(leases),
+		"leases": leases,
+	})
+}
+
+// handleDHCPRelease releases an IP lease
+func (s *Server) handleDHCPRelease(w http.ResponseWriter, r *http.Request) {
+	if globalDHCPManager == nil {
+		s.jsonError(w, http.StatusServiceUnavailable, "DHCP not initialized")
+		return
+	}
+
+	clientID := r.URL.Query().Get("client_id")
+	if clientID == "" {
+		s.jsonError(w, http.StatusBadRequest, "client_id required")
+		return
+	}
+
+	if err := globalDHCPManager.ReleaseByClient(clientID); err != nil {
+		s.jsonError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	s.jsonOK(w, map[string]string{"message": "Lease released"})
 }
 
 // HealthCheck returns health status
