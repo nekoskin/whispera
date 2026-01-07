@@ -242,14 +242,14 @@ func (s *Server) buildHandler() http.Handler {
 	// Wrap with middleware
 	var handler http.Handler = rootHandler
 
-	// CORS middleware
-	if s.config.EnableCORS {
-		handler = s.corsMiddleware(handler)
-	}
-
-	// Auth middleware
+	// Auth middleware (Inner)
 	if s.config.AuthToken != "" {
 		handler = s.authMiddleware(handler)
+	}
+
+	// CORS middleware (Outer)
+	if s.config.EnableCORS {
+		handler = s.corsMiddleware(handler)
 	}
 
 	// Logging middleware
@@ -288,6 +288,12 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 // authMiddleware validates authentication
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only enforce auth on API routes
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// Skip auth for health endpoint
 		if strings.HasSuffix(r.URL.Path, "/health") {
 			next.ServeHTTP(w, r)
