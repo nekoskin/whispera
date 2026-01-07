@@ -212,8 +212,16 @@ func (r *registry) StartAll(ctx context.Context) error {
 			continue
 		}
 
-		entry.state = ModuleStateStarting
 		log.Printf("[Registry] Starting module: %s", name)
+
+		if entry.state == ModuleStateUninitialized {
+			if err := entry.module.Init(ctx, nil); err != nil {
+				return fmt.Errorf("failed to init module %q: %w", name, err)
+			}
+			entry.state = ModuleStateInitialized
+		}
+
+		entry.state = ModuleStateStarting
 
 		if err := entry.module.Start(); err != nil {
 			entry.state = ModuleStateError
