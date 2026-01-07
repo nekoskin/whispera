@@ -143,6 +143,7 @@ type APIConfig struct {
 	ListenAddr string `yaml:"listen_addr"`
 	AuthToken  string `yaml:"auth_token"`
 	WebRoot    string `yaml:"web_root"`
+	EnableCORS bool   `yaml:"enable_cors"`
 	TLSCert    string `yaml:"tls_cert"`
 	TLSKey     string `yaml:"tls_key"`
 }
@@ -202,6 +203,11 @@ func DefaultServerConfig() *ServerConfig {
 			Enabled:     true,
 			Profile:     "default",
 			ThreatLevel: 5,
+		},
+		API: APIConfig{
+			Enabled:    true,
+			ListenAddr: ":8080",
+			EnableCORS: true,
 		},
 		Metrics: MetricsConfig{
 			Enabled:    true,
