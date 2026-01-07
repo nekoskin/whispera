@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"flag"
+	"fmt"
 	"net"
 	"os"
 
@@ -60,7 +61,20 @@ var (
 )
 
 func main() {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[PANIC] Whispera Server: %v\n", r)
+			os.Exit(2)
+		}
+	}()
+
+	fmt.Println("[DEBUG] Whispera Server: main() started")
 	flag.Parse()
+	fmt.Printf("[DEBUG] Whispera Server: flags parsed, config=%s\n", *configFile)
+
+	if *debug {
+		logger.SetLevel(logger.LevelDebug)
+	}
 
 	if *printVersion {
 		log.Printf("Whispera Server v%s (built %s, commit %s)", Version, BuildTime, GitCommit)
@@ -95,8 +109,9 @@ func main() {
 	}
 
 	// Run the application
-	log.Println("Starting all modules...")
+	fmt.Println("[DEBUG] Whispera Server: starting lifecycle manager")
 	if err := manager.Run(); err != nil {
+		fmt.Printf("[ERROR] Whispera Server: application error: %v\n", err)
 		log.Fatalf("Application error: %v", err)
 	}
 
@@ -116,6 +131,7 @@ func registerFactories() {
 }
 
 func createModules(manager *lifecycle.Manager) error {
+	fmt.Println("[DEBUG] Whispera Server: createModules() started")
 	// 1. Config Provider
 	configProvider, err := modconfig.New(*configFile)
 	if err != nil {
@@ -128,11 +144,13 @@ func createModules(manager *lifecycle.Manager) error {
 	// Load configuration
 	var serverConfig *modconfig.ServerConfig
 	if *configFile != "" {
+		fmt.Printf("[DEBUG] Whispera Server: loading config from %s\n", *configFile)
 		if err := configProvider.Load(*configFile); err != nil {
 			log.Printf("⚠ Warning: Failed to load config file: %v, using defaults", err)
 		}
 		serverConfig = configProvider.GetConfig()
 	} else {
+		fmt.Println("[DEBUG] Whispera Server: using default config")
 		serverConfig = modconfig.DefaultServerConfig()
 	}
 
@@ -214,20 +232,24 @@ func createModules(manager *lifecycle.Manager) error {
 
 	// Set static keys from config
 	if serverConfig.Server.PrivateKey != "" {
+		fmt.Println("[DEBUG] Whispera Server: processing private key from config")
 		privKey, err := hex.DecodeString(serverConfig.Server.PrivateKey)
 		if err != nil {
+			fmt.Printf("[ERROR] Whispera Server: invalid hex in private key: %v\n", err)
 			log.Fatalf("Invalid private key in config: %v", err)
 		}
 		if len(privKey) != 32 {
+			fmt.Printf("[ERROR] Whispera Server: private key length is %d, expected 32\n", len(privKey))
 			log.Fatalf("Private key must be 32 bytes (hex encoded)")
 		}
 
 		pubKey, err := curve25519.X25519(privKey, curve25519.Basepoint)
 		if err != nil {
+			fmt.Printf("[ERROR] Whispera Server: failed to derive public key: %v\n", err)
 			log.Fatalf("Failed to derive public key: %v", err)
 		}
 
-		log.Printf("Loaded static key pair (Public: %x)", pubKey)
+		fmt.Printf("[DEBUG] Whispera Server: loaded static key pair (Public: %x)\n", pubKey)
 		handshakeHandler.SetStaticKeys(pubKey, privKey)
 	}
 

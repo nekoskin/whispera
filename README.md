@@ -1,18 +1,35 @@
 Важно что данный проект только для технически подготовленных пользователей и с обычным использованием лезть во внутрь не рекомендуется
 
 # Whispera
-
 VPN-туннель
-## Сборка и запуск
 
+## Quick Start (Linux)
+The easiest way to install Whispera on Linux is via the automated installer:
 ```bash
-# Сборка
-go build -o whispera-server.exe ./cmd/server
-go build -o whispera-client.exe ./cmd/client
+bash install.sh
+```
 
-# Сервер
-./whispera-server.exe -listen :51820
+### Management
+After installation, you can manage the server using the `whispera-mgmt` command:
+- `whispera-mgmt status`   - Check server status
+- `whispera-mgmt start`    - Start the service
+- `whispera-mgmt stop`     - Stop the service
+- `whispera-mgmt restart`  - Restart the service
+- `whispera-mgmt log`      - View live logs
+- `whispera-mgmt config`   - Edit configuration
 
-# Клиент
-./whispera-client.exe -server your-server.com:51820
+Configuration is stored in `/etc/whispera/config.yaml`.
+
+## Manual Build
+If you prefer to build from source manually:
+```bash
+# Build
+go build -o whispera-server ./cmd/server
+go build -o whispera-client ./cmd/client
+
+# Run Server
+./whispera-server -listen :51820
+
+# Run Client
+./whispera-client -server your-server.com:51820
 ```

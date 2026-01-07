@@ -25,7 +25,7 @@ print_logo() {
     echo "█   █ █ █ █ ▀▀█ █▀▀ █▀▀ █▀▀ █▀█"
     echo "█ █ █ █▀█ █   ▀▀█ █▀▀ █▀▀ █▀▀ █▀█"
     echo "▀▄▀▄▀ ▀ ▀ ▀   ▀▀▀ ▀   ▀▀▀ ▀   ▀ ▀"
-    echo ":: Whispera Installer :: (v1.0.0)"
+    echo ":: Whispera Installer :: (v2.0.0)"
     echo -e "${PLAIN}"
 }
 
@@ -253,7 +253,7 @@ case $1 in
     status) systemctl status whispera ;;
     log) journalctl -u whispera -f ;;
     config) nano /etc/whispera/config.yaml ;;
-    *) echo "Usage: whispera {start|stop|restart|status|log|config}" ;;
+    *) echo "Usage: whispera-mgmt {start|stop|restart|status|log|config}" ;;
 esac
 EOF
     chmod +x "$BIN_PATH/whispera-cli"
