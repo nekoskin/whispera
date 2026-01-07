@@ -38,11 +38,14 @@ class WhisperaAPI {
     // Check if server is available
     async checkServerConnection() {
         try {
-            const response = await fetch(`${this.baseURL}/health`, {
+            const response = await fetch(`${this.baseURL}/api/v1/health`, {
                 method: 'GET',
-                timeout: 3000
+                headers: {
+                    'Authorization': this.token ? `Bearer ${this.token}` : ''
+                }
             });
-            if (response.ok) {
+            // 200 or 401 means server is alive (401 just means auth required)
+            if (response.ok || response.status === 401) {
                 this.fallbackToDemo = false;
                 console.log('[Whispera] Connected to server at', this.baseURL);
             } else {
@@ -88,9 +91,10 @@ class WhisperaAPI {
             });
 
             if (response.status === 401) {
-                // Не авторизован - редирект на логин
+                // Не авторизован - сбрасываем токен, но НЕ перезагружаем страницу
+                // (перезагрузка вызовет бесконечный цикл)
                 this.setToken(null);
-                window.location.reload();
+                // Вместо reload - просто выбрасываем ошибку, app.js покажет экран логина
                 throw new Error('Unauthorized');
             }
 
