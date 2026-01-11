@@ -100,7 +100,11 @@ impl ConnectionKey {
                  transport: Some("auto".into()),
                  obfs: Some("stealth".into()),
                  name: None, server_tcp: None, server_ws: None, 
-                 enable_ml: Some(true), enable_fte: Some(true)
+                 enable_ml: Some(true), enable_fte: Some(true),
+                 kill_switch: None, allow_lan: None,
+                 asn_bypass: None, asn_strategy: None, tls_fingerprint: None, front_domain: None,
+                 dns_mode: None, dns_servers: None,
+                 obfs_level: None, threat_level: None,
              });
         }
         
@@ -228,6 +232,9 @@ fn connect_with_key(key: String, state: State<'_, VpnState>) -> Result<Connectio
         transport: transport.clone(),
         obfuscation: obfs.clone(),
         error: None,
+        kill_switch_active: false,
+        asn_bypass_enabled: false,
+        dns_mode: "auto".into(),
     };
     *state.status.lock().unwrap() = new_status.clone();
     Ok(new_status)

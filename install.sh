@@ -198,7 +198,7 @@ server:
 transport:
   udp:
     enabled: true
-    listen_addr: ":51820"
+    listen_addr: ":443"
   tcp:
     enabled: true
     listen_addr: ":4443"
@@ -293,6 +293,36 @@ EOF
     log_success "CLI wrapper installed (whispera-mgmt)"
 }
 
+setup_firewall() {
+    log_info "Setting up Firewall (UFW)..."
+    
+    if [[ "$RELEASE" == "ubuntu" ]] || [[ "$RELEASE" == "debian" ]]; then
+        # Install UFW if missing
+        if ! command -v ufw &>/dev/null; then
+            apt-get update >/dev/null
+            apt-get install -y ufw >/dev/null 2>&1
+        fi
+        
+        # Allow SSH to prevent lockout
+        ufw allow ssh
+        ufw allow 22/tcp
+        
+        # Whispera Ports
+        ufw allow 51820/udp  # Whispera UDP Transport
+        ufw allow 443/tcp    # HTTPS / Whispera Fallback
+        ufw allow 4443/tcp   # Whispera TCP Transport
+        ufw allow 8443/tcp   # Whispera WebSocket
+        ufw allow 8080/tcp   # Whispera API / Web UI
+
+        # Enable UFW non-interactively
+        ufw --force enable
+        
+        log_success "Firewall configured: Ports 51820/udp, 443, 4443, 8443, 8080 open"
+    else
+        log_warn "Firewall setup currently supports Ubuntu/Debian only. Please configure your firewall manually."
+    fi
+}
+
 # --- Main ---
 
 main() {
@@ -314,6 +344,7 @@ main() {
     fi
     
     install_cli_wrapper
+    setup_firewall
     setup_systemd
     
     echo ""

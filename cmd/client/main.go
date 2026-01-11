@@ -3,6 +3,8 @@ package main
 
 import (
 	"flag"
+	"io"
+	stdlog "log"
 	"net"
 	"os"
 	"os/signal"
@@ -31,10 +33,10 @@ var Version = "2.0.0"
 
 var (
 	configPath       = flag.String("config", "", "Path to configuration file")
-	serverAddr       = flag.String("server", "144.124.225.252:8443", "Server address (host:port)")
+	serverAddr       = flag.String("server", "212.192.246.108:443", "Server address (host:port)")
 	socksAddr        = flag.String("socks", "127.0.0.1:10800", "SOCKS5 listen address for hev-socks5-tunnel")
 	connKey          = flag.String("key", "", "Connection key (whispera://...)")
-	transport        = flag.String("transport", "auto", "Transport mode: auto|tcp|udp")
+	transport        = flag.String("transport", "udp", "Transport mode: auto|tcp|udp")
 	obfsLevel        = flag.Int("obfs-level", 5, "Obfuscation threat level (0-10)")
 	asnBypass        = flag.Bool("asn-bypass", false, "Enable ASN bypass for VPN/datacenter IP evasion")
 	tlsFingerprint   = flag.String("tls-fingerprint", "chrome", "TLS fingerprint for ASN bypass: chrome, firefox, safari, ios, android")
@@ -45,24 +47,33 @@ var (
 func main() {
 	flag.Parse()
 
+	// Setup file logging
+	logFile, err := os.OpenFile("whispera-client.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err == nil {
+		// Write to both file and stdout
+		multiWriter := io.MultiWriter(os.Stdout, logFile)
+		stdlog.SetOutput(multiWriter)
+		defer logFile.Close()
+	}
+	stdlog.Printf("Whispera Client v%s starting...", Version)
+
 	// Load config from various sources
 	var cfg *config.ClientConfig
-	var err error
 
 	// Priority: connection key > config file > command line flags
 	if *connKey != "" {
 		// Parse connection key
 		key, err := config.ParseConnectionKey(*connKey)
 		if err != nil {
-			log.Fatalf("Failed to parse connection key: %v", err)
+			stdlog.Fatalf("Failed to parse connection key: %v", err)
 		}
 		cfg = key.ToClientConfig()
-		log.Printf("Loaded config from key: %s", key.Name)
-		log.Printf("Server: %s (transport: %s, obfuscation: %s)", key.GetPrimaryServer(), key.Transport, key.ObfsPreset)
+		stdlog.Printf("Loaded config from key: %s", key.Name)
+		stdlog.Printf("Server: %s (transport: %s, obfuscation: %s)", key.GetPrimaryServer(), key.Transport, key.ObfsPreset)
 	} else if *configPath != "" {
 		cfg, err = config.LoadClient(*configPath)
 		if err != nil {
-			log.Fatalf("Failed to load config: %v", err)
+			stdlog.Fatalf("Failed to load config: %v", err)
 		}
 	} else {
 		cfg = &config.ClientConfig{
@@ -78,16 +89,16 @@ func main() {
 
 	// Validate server address
 	if cfg.Server == "" && cfg.ServerTCP == "" {
-		log.Fatalf("No server address specified. Use -server, -key, or -config")
+		stdlog.Fatalf("No server address specified. Use -server, -key, or -config")
 	}
 
-	log.Printf("Starting Whispera Client v%s", Version)
-	log.Printf("Server: %s", cfg.Server)
+	stdlog.Printf("Starting Whispera Client v%s", Version)
+	stdlog.Printf("Server: %s", cfg.Server)
 	if cfg.ServerTCP != "" {
-		log.Printf("TCP Fallback: %s", cfg.ServerTCP)
+		stdlog.Printf("TCP Fallback: %s", cfg.ServerTCP)
 	}
 	if cfg.ObfsPreset != "" {
-		log.Printf("Obfuscation: %s", cfg.ObfsPreset)
+		stdlog.Printf("Obfuscation: %s", cfg.ObfsPreset)
 	}
 
 	// Lifecycle manager
@@ -135,8 +146,9 @@ func main() {
 
 	// SOCKS5 Server for HevTunnel (replaces internal TUN)
 	socksMod, _ := socks5.New(&socks5.Config{
-		ListenAddr: *socksAddr,
-		Debug:      true,
+		ListenAddr:    *socksAddr,
+		Debug:         true,
+		VPNServerAddr: cfg.Server, // Pass VPN server address for routing
 	})
 	lc.Register(socksMod)
 
@@ -172,7 +184,7 @@ func main() {
 	})
 
 	if asnBypassEnabled {
-		log.Printf("ASN bypass enabled (fingerprint: %s)", asnBypassFingerprint)
+		stdlog.Printf("ASN bypass enabled (fingerprint: %s)", asnBypassFingerprint)
 	}
 
 	// Inject dependencies: Transport(nil/SOCKS), Handshake, DataPlane(nil), Crypto
@@ -187,11 +199,11 @@ func main() {
 
 	// Start
 	if err := lc.Start(); err != nil {
-		log.Fatalf("Failed to start: %v", err)
+		stdlog.Fatalf("Failed to start: %v", err)
 	}
 
 	// Connect tunnel to VPN server
-	log.Printf("Connecting to VPN server: %s", serverAddress)
+	stdlog.Printf("Connecting to VPN server: %s", serverAddress)
 
 	// Create Kill Switch manager (but don't activate yet)
 	var ks *killswitch.KillSwitch
@@ -203,16 +215,16 @@ func main() {
 			AllowDNS: true,
 		})
 		if err != nil {
-			log.Printf("WARNING: Failed to create kill switch: %v", err)
+			stdlog.Printf("WARNING: Failed to create kill switch: %v", err)
 		}
 	}
 
 	if err := tunnelMod.Connect(ctx); err != nil {
-		log.Printf("WARNING: Failed to connect to VPN server: %v", err)
-		log.Printf("Running in local proxy mode (traffic NOT encrypted)")
-		log.Printf("HevTunnel NOT started to prevent routing loop")
+		stdlog.Printf("WARNING: Failed to connect to VPN server: %v", err)
+		stdlog.Printf("Running in local proxy mode (traffic NOT encrypted)")
+		stdlog.Printf("HevTunnel NOT started to prevent routing loop")
 	} else {
-		log.Printf("Connected to VPN server successfully")
+		stdlog.Printf("Connected to VPN server successfully")
 
 		// Set VPN server IP for route configuration
 		// This ensures the VPN server traffic doesn't go through TUN (avoiding loop)
@@ -220,7 +232,7 @@ func main() {
 		var vpnPort int = 8443
 		if host, portStr, err := net.SplitHostPort(serverAddress); err == nil {
 			os.Setenv("WHISPERA_VPN_SERVER", host)
-			log.Printf("VPN server IP for routing: %s", host)
+			stdlog.Printf("VPN server IP for routing: %s", host)
 			vpnServerIP = net.ParseIP(host)
 			if p, _ := net.LookupPort("udp", portStr); p > 0 {
 				vpnPort = p
@@ -230,24 +242,24 @@ func main() {
 		// Start HevTunnel now that tunnel is connected
 		// All traffic will now go through the encrypted tunnel
 		if err := socksMod.StartHevTunnel(); err != nil {
-			log.Printf("WARNING: Failed to start HevTunnel: %v", err)
+			stdlog.Printf("WARNING: Failed to start HevTunnel: %v", err)
 		} else {
-			log.Printf("HevTunnel started - all traffic routed through VPN")
+			stdlog.Printf("HevTunnel started - all traffic routed through VPN")
 
 			// Activate Kill Switch AFTER HevTunnel is running
 			// This ensures VPN traffic is allowed before blocking other traffic
 			if ks != nil && vpnServerIP != nil {
 				ks.SetVPNServer(vpnServerIP, vpnPort)
 				if err := ks.Enable(); err != nil {
-					log.Printf("WARNING: Failed to enable kill switch: %v", err)
+					stdlog.Printf("WARNING: Failed to enable kill switch: %v", err)
 				} else {
-					log.Printf("Kill Switch ENABLED - traffic will NOT leak if VPN drops")
+					stdlog.Printf("Kill Switch ENABLED - traffic will NOT leak if VPN drops")
 				}
 			}
 		}
 	}
 
-	log.Printf("SOCKS5 proxy listening on %s", *socksAddr)
+	stdlog.Printf("SOCKS5 proxy listening on %s", *socksAddr)
 	log.Println("Obfuscation: FTE + Marionette + ML enabled")
 
 	// Handle signals

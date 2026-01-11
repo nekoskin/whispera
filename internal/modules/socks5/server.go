@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	stdlog "log"
 	"net"
 	"os"
 	"os/exec"
@@ -35,10 +36,11 @@ type TunnelRelay interface {
 
 // Config holds module configuration
 type Config struct {
-	ListenAddr string
-	Username   string
-	Password   string
-	Debug      bool
+	ListenAddr    string
+	Username      string
+	Password      string
+	Debug         bool
+	VPNServerAddr string // VPN server address for routing (e.g., "212.192.246.108:443")
 }
 
 // DefaultConfig returns default configuration
@@ -91,6 +93,9 @@ type Server struct {
 
 	// Process
 	cmd *exec.Cmd
+
+	// Cached gateway (detected before TUN changes routing)
+	cachedGateway string
 
 	mu sync.RWMutex
 }
@@ -156,7 +161,7 @@ func (s *Server) Start() error {
 	// to avoid routing loops. Call StartHevTunnel() explicitly when ready.
 	// if err := s.startHevTunnel(); err != nil {
 	// 	s.SetHealthy(false, fmt.Sprintf("Failed to start HevTunnel: %v", err))
-	// 	fmt.Printf("[SOCKS5] WARNING: Failed to start HevTunnel: %v\n", err)
+	// 	stdlog.Printf("[SOCKS5] WARNING: Failed to start HevTunnel: %v\n", err)
 	// }
 
 	s.SetHealthy(true, fmt.Sprintf("Listening on %s", s.config.ListenAddr))
@@ -229,6 +234,11 @@ func (s *Server) startHevTunnel() error {
 		return nil // Already running
 	}
 
+	// CRITICAL: Cache the default gateway BEFORE starting HevTunnel
+	// HevTunnel will change the routing table, so we need to detect the gateway first!
+	s.cachedGateway = s.getDefaultGateway()
+	stdlog.Printf("[SOCKS5] Cached default gateway: %s\n", s.cachedGateway)
+
 	// Locate binary - check multiple paths for Tauri/standalone
 	cwd, _ := os.Getwd()
 	execPath, _ := os.Executable()
@@ -271,24 +281,27 @@ func (s *Server) startHevTunnel() error {
 	// Let's rely on standard path but escaping check.
 	hevLogPathEscaped := strings.ReplaceAll(hevLogPath, "\\", "\\\\")
 
+	// CRITICAL: MTU must be 1280 to avoid fragmentation issues with TLS Client Hello
+	// Also ensure connect-timeout is reasonable and read-write-timeout is set
 	configContent := fmt.Sprintf(`tunnel:
-  name: "Whispera"
-  ipv4: "10.0.85.1"
-  ipv6: "fd00::1"
-  mtu: 1400
+  name: Whispera
+  ipv4: 10.0.85.1
+  ipv6: 'fd00::1'
+  mtu: 1280
 
 socks5:
   port: %d
-  address: "%s"
-  udp: "udp"
-  tcp: "tcp"
-  pipeline: false
+  address: %s
+  udp: udp
+  tcp: tcp
 
 misc:
-  log-file: "%s"
-  log-level: "debug"
+  task-stack-size: 81920
+  connect-timeout: 5000
+  read-write-timeout: 60000
+  log-file: %s
+  log-level: debug
   limit-nofile: 65535
-  connect-timeout: 10000
 `, getPort(s.config.ListenAddr), getHost(s.config.ListenAddr), hevLogPathEscaped)
 
 	configPath := filepath.Join(os.TempDir(), "whispera-hev-config.yml")
@@ -308,10 +321,20 @@ misc:
 	}
 
 	s.cmd = cmd
-	fmt.Printf("[SOCKS5] HevTunnel started (PID: %d) from %s\n", cmd.Process.Pid, binPath)
+	stdlog.Printf("[SOCKS5] HevTunnel started (PID: %d) from %s\n", cmd.Process.Pid, binPath)
 
-	// Wait for TUN interface to be ready
-	time.Sleep(2 * time.Second)
+	// Wait for TUN interface to be ready and hev to connect to SOCKS5
+	// This also ensures our SOCKS5 server has time to accept the connection
+	time.Sleep(3 * time.Second)
+
+	// Verify SOCKS5 server is still listening
+	testConn, err := net.DialTimeout("tcp", s.config.ListenAddr, 2*time.Second)
+	if err != nil {
+		logger.Warn("SOCKS5 server may not be ready: %v", err)
+	} else {
+		testConn.Close()
+		logger.Info("SOCKS5 server verified at %s", s.config.ListenAddr)
+	}
 
 	// Check if process is still running
 	if s.cmd.ProcessState != nil && s.cmd.ProcessState.Exited() {
@@ -319,7 +342,9 @@ misc:
 	}
 
 	// Configure routes
+	stdlog.Printf("[SOCKS5] About to call configureRoutes()...\n")
 	s.configureRoutes()
+	stdlog.Printf("[SOCKS5] configureRoutes() completed\n")
 
 	return nil
 }
@@ -327,25 +352,46 @@ misc:
 // configureRoutes sets up routing to send traffic through the TUN interface
 // while excluding the VPN server IP to prevent routing loops
 func (s *Server) configureRoutes() {
+	stdlog.Printf("[SOCKS5] Configuring routes...\n")
 	logger.Info("Configuring routes...")
 
-	// Get the VPN server IP from tunnel
+	// Get VPN server IP from config
 	s.mu.RLock()
-	tunnel := s.tunnel
+	_ = s.tunnel // Keep reference check but don't use
 	s.mu.RUnlock()
 
 	var vpnServerIP string
-	if tunnel != nil {
-		// Try to get server address from tunnel config
-		vpnServerIP = os.Getenv("WHISPERA_VPN_SERVER")
+	stdlog.Printf("[SOCKS5] VPNServerAddr from config: %s\n", s.config.VPNServerAddr)
+	if s.config.VPNServerAddr != "" {
+		// Parse IP from config (host:port format)
+		host, _, err := net.SplitHostPort(s.config.VPNServerAddr)
+		if err != nil {
+			// Maybe just IP without port
+			host = s.config.VPNServerAddr
+		}
+		if net.ParseIP(host) != nil {
+			vpnServerIP = host
+		}
 	}
+	if vpnServerIP == "" {
+		// Fallback to environment variable
+		vpnServerIP = os.Getenv("WHISPERA_VPN_SERVER")
+		stdlog.Printf("[SOCKS5] VPN IP from env: %s\n", vpnServerIP)
+	}
+	stdlog.Printf("[SOCKS5] Final VPN Server IP: %s\n", vpnServerIP)
 
-	// 1. Auto-detect Default Gateway
-	defaultGateway := s.getDefaultGateway()
+	// 1. Use cached gateway (detected BEFORE HevTunnel changed routing table)
+	defaultGateway := s.cachedGateway
 	if defaultGateway == "" {
+		// Fallback to detecting (might not work if TUN already changed routes)
+		defaultGateway = s.getDefaultGateway()
+	}
+	stdlog.Printf("[SOCKS5] Using gateway: %s\n", defaultGateway)
+	if defaultGateway == "" {
+		stdlog.Printf("[SOCKS5] ERROR: Could not detect default gateway! Routes cannot be configured.\n")
 		logger.Error("Could not detect default gateway! Routing functionality may be limited.")
 	} else {
-		logger.Info("Auto-detected Default Gateway: %s", defaultGateway)
+		logger.Info("Using Default Gateway: %s", defaultGateway)
 	}
 
 	// TUN interface settings
@@ -355,16 +401,46 @@ func (s *Server) configureRoutes() {
 	// 2. Add route for VPN server through Physical Gateway
 	// route add <VPN_IP> mask 255.255.255.255 <GATEWAY> metric 1
 	if vpnServerIP != "" && defaultGateway != "" {
+		stdlog.Printf("[SOCKS5] Adding route for VPN server %s via gateway %s\n", vpnServerIP, defaultGateway)
 		logger.Info("Adding route for VPN server %s via gateway %s", vpnServerIP, defaultGateway)
 		// Delete potential existing route first
 		exec.Command("route", "delete", vpnServerIP).Run()
 
 		cmd := exec.Command("route", "add", vpnServerIP, "mask", "255.255.255.255", defaultGateway, "metric", "1")
 		if out, err := cmd.CombinedOutput(); err != nil {
+			stdlog.Printf("[SOCKS5] Failed to add VPN route: %v %s\n", err, string(out))
 			logger.Error("Failed to add VPN route: %v %s", err, string(out))
+		} else {
+			stdlog.Printf("[SOCKS5] VPN route added successfully\n")
 		}
 	} else {
+		stdlog.Printf("[SOCKS5] WARNING: Skipping VPN server route (VPN IP=%s, Gateway=%s)\n", vpnServerIP, defaultGateway)
 		logger.Warn("Skipping VPN server route (missing VPN IP or Gateway)")
+	}
+
+	// Force MTU to 1280 for VPN tunnel to avoid fragmentation of large TLS Client Hello packets
+	// IMPORTANT: Interface name must match the name in hev-socks5-tunnel config ("Whispera")
+	cmd := exec.Command("netsh", "interface", "ipv4", "set", "subinterface", tunName, fmt.Sprintf("mtu=%d", 1280), "store=active")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		logger.Warn("Failed to set MTU (non-critical): %v, output: %s", err, string(out))
+	} else {
+		logger.Info("MTU set to 1280 for %s", tunName)
+	}
+
+	// Add explicit routes for VPN server to go through physical gateway
+	// to avoid routing loops
+	gateway := s.getDefaultGateway()
+	if gateway != "" && s.config.ListenAddr != "" {
+		host := getHost(s.config.ListenAddr)
+		if host != "" {
+			// Check if host is IP
+			if net.ParseIP(host) != nil {
+				logger.Info("Adding static route for VPN server %s via gateway %s", host, gateway)
+				exec.Command("route", "add", host, "mask", "255.255.255.255", gateway, "metric", "1").Run()
+			} else {
+				// Resolve domain to IP (omitted for simplicity, SOCKS server usually connects via IP or main stack resolves)
+			}
+		}
 	}
 
 	// 3. Force Interface Metric for Whispera to 1
@@ -529,7 +605,7 @@ func (s *Server) handleProxyRequest(conn net.Conn, targetAddr string, targetPort
 	// This prevents multicast/local traffic from creating suspicious patterns
 	if s.shouldBypassTunnel(targetAddr, targetPort) {
 		if s.config.Debug {
-			fmt.Printf("[SOCKS5] Bypassing tunnel for: %s:%d\n", targetAddr, targetPort)
+			stdlog.Printf("[SOCKS5] Bypassing tunnel for: %s:%d\n", targetAddr, targetPort)
 		}
 		return s.directConnect(conn, fmt.Sprintf("%s:%d", targetAddr, targetPort))
 	}
@@ -641,13 +717,13 @@ func (s *Server) relayThroughTunnel(conn net.Conn, targetAddr string, targetPort
 	if err := s.tunnel.Send(frameData); err != nil {
 		atomic.AddUint64(&s.connectFailed, 1)
 		if s.config.Debug {
-			fmt.Printf("[SOCKS5] ERROR: Failed to send CONNECT frame: %v\n", err)
+			stdlog.Printf("[SOCKS5] ERROR: Failed to send CONNECT frame: %v\n", err)
 		}
 		return fmt.Errorf("failed to send CONNECT frame: %w", err)
 	}
 
 	if s.config.Debug {
-		fmt.Printf("[SOCKS5] Sent CONNECT frame streamID=%d to %s:%d\n", streamID, targetAddr, targetPort)
+		stdlog.Printf("[SOCKS5] Sent CONNECT frame streamID=%d to %s:%d\n", streamID, targetAddr, targetPort)
 	}
 
 	// Wait for CONNECT_OK or CONNECT_FAIL
@@ -665,7 +741,7 @@ func (s *Server) relayThroughTunnel(conn net.Conn, targetAddr string, targetPort
 	atomic.AddUint64(&s.connectSuccess, 1)
 
 	if s.config.Debug {
-		fmt.Printf("[SOCKS5] Connection established streamID=%d\n", streamID)
+		stdlog.Printf("[SOCKS5] Connection established streamID=%d\n", streamID)
 	}
 
 	// Register active stream
@@ -750,7 +826,7 @@ func (s *Server) receiveFrames() {
 		frame, err := relay.Decode(buf[:n])
 		if err != nil {
 			if s.config.Debug {
-				fmt.Printf("[SOCKS5] Failed to decode frame: %v\n", err)
+				stdlog.Printf("[SOCKS5] Failed to decode frame: %v\n", err)
 			}
 			continue
 		}
@@ -775,7 +851,7 @@ func (s *Server) handleIncomingFrame(frame *relay.Frame) {
 		// Keep-alive response, ignore
 	default:
 		if s.config.Debug {
-			fmt.Printf("[SOCKS5] Unknown frame type: %s\n", relay.FrameTypeName(frame.Type))
+			stdlog.Printf("[SOCKS5] Unknown frame type: %s\n", relay.FrameTypeName(frame.Type))
 		}
 	}
 }
@@ -819,7 +895,7 @@ func (s *Server) handleData(frame *relay.Frame) {
 		_, err := conn.Write(frame.Payload)
 		if err != nil {
 			if s.config.Debug {
-				fmt.Printf("[SOCKS5] Failed to write to client streamID=%d: %v\n", frame.StreamID, err)
+				stdlog.Printf("[SOCKS5] Failed to write to client streamID=%d: %v\n", frame.StreamID, err)
 			}
 		} else {
 			atomic.AddUint64(&s.bytesRelayed, uint64(len(frame.Payload)))
@@ -841,7 +917,7 @@ func (s *Server) handleClose(frame *relay.Frame) {
 	}
 
 	if s.config.Debug {
-		fmt.Printf("[SOCKS5] Stream closed by server streamID=%d\n", frame.StreamID)
+		stdlog.Printf("[SOCKS5] Stream closed by server streamID=%d\n", frame.StreamID)
 	}
 }
 

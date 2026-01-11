@@ -56,13 +56,34 @@ type Stream struct {
 
 // NewStream creates a new stream
 func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, clientAddr net.Addr, onFrameWithAddr func(*Frame, net.Addr) error, dialer proxy.Dialer) *Stream {
+	// Deep copy clientAddr to prevent memory corruption issues
+	var safeAddr net.Addr
+	if clientAddr != nil {
+		switch a := clientAddr.(type) {
+		case *net.UDPAddr:
+			safeAddr = &net.UDPAddr{
+				IP:   append(net.IP(nil), a.IP...),
+				Port: a.Port,
+				Zone: a.Zone,
+			}
+		case *net.TCPAddr:
+			safeAddr = &net.TCPAddr{
+				IP:   append(net.IP(nil), a.IP...),
+				Port: a.Port,
+				Zone: a.Zone,
+			}
+		default:
+			safeAddr = clientAddr
+		}
+	}
+
 	s := &Stream{
 		ID:              id,
 		Protocol:        proto,
 		Profile:         profile,
 		TargetAddr:      addr,
 		TargetPort:      port,
-		ClientAddr:      clientAddr,
+		ClientAddr:      safeAddr,
 		onFrameWithAddr: onFrameWithAddr,
 		incoming:        make(chan []byte, 256),
 		outgoing:        make(chan []byte, 256),
