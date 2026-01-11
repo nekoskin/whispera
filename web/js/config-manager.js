@@ -70,8 +70,8 @@ class ConfigManager {
         return {
             server: {
                 ip: this.detectServerIP(),
-                port: 51820,
-                tcpPort: 4443,
+                port: 443,
+                tcpPort: 443,
                 wsPort: 8080,
                 ws2Port: 8443,
                 publicKey: ''
@@ -163,8 +163,8 @@ class ConfigManager {
         const marionetteProfile = user.marionetteProfile || this.config.obfuscation.defaultMarionette || 'browser';
 
         // Определение портов на основе профиля
-        let port = this.config.server.port || 51820;
-        let tcpPort = this.config.server.tcpPort || 4443;
+        let port = this.config.server.port || 443;
+        let tcpPort = this.config.server.tcpPort || 443;
         let wsPort = this.config.server.wsPort || 8080;
         let ws2Port = this.config.server.ws2Port || 8443;
 
