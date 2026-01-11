@@ -294,8 +294,8 @@ class WhisperaApp {
 
             // Базовая валидация диапазона
             for (const port of ports) {
-                if (port.value && (port.value < 1024 || port.value > 65535)) {
-                    alert(`${port.name} порт должен быть в диапазоне 1024-65535`);
+                if (port.value && (port.value < 443 || port.value > 65535)) {
+                    alert(`${port.name} порт должен быть в диапазоне 443-65535`);
                     return;
                 }
             }
@@ -1222,13 +1222,13 @@ monitoring:
         }
 
         const port = parseInt(input.value);
-        if (port < 1024 || port > 65535) {
+        if (port < 443 || port > 65535) {
             if (statusEl) {
                 statusEl.className = 'port-status port-error';
                 statusEl.innerHTML = '<i class="fas fa-times-circle"></i>';
             }
             if (helpEl) {
-                helpEl.innerHTML = '<span style="color: var(--danger-color);">Порт должен быть в диапазоне 1024-65535</span>';
+                helpEl.innerHTML = '<span style="color: var(--danger-color);">Порт должен быть в диапазоне 443-65535</span>';
             }
             input.classList.add('input-error');
             return;
@@ -1325,7 +1325,7 @@ monitoring:
         }
 
         try {
-            const udpPort = parseInt(document.getElementById('settingsUdpPort')?.value) || 51820;
+            const udpPort = parseInt(document.getElementById('settingsUdpPort')?.value) || 443;
             const tcpPort = parseInt(document.getElementById('settingsTcpPort')?.value) || 4443;
             const wsPort = parseInt(document.getElementById('settingsWsPort')?.value) || 8080;
             const ws2Port = parseInt(document.getElementById('settingsWs2Port')?.value) || 8443;

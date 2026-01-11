@@ -308,8 +308,9 @@ setup_firewall() {
         ufw allow 22/tcp
         
         # Whispera Ports
-        ufw allow 51820/udp  # Whispera UDP Transport
+        ufw allow 51820/udp  # Whispera UDP Transport (Legacy)
         ufw allow 443/tcp    # HTTPS / Whispera Fallback
+        ufw allow 443/udp    # Whispera UDP Transport (New)
         ufw allow 4443/tcp   # Whispera TCP Transport
         ufw allow 8443/tcp   # Whispera WebSocket
         ufw allow 8080/tcp   # Whispera API / Web UI

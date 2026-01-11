@@ -958,8 +958,8 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 	keyData := map[string]interface{}{
 		"v":          1,
 		"name":       req.Name,
-		"server":     fmt.Sprintf("%s:51820", serverIP), // UDP (primary)
-		"server_tcp": fmt.Sprintf("%s:443", serverIP),   // TCP fallback
+		"server":     fmt.Sprintf("%s:443", serverIP), // UDP (primary)
+		"server_tcp": fmt.Sprintf("%s:443", serverIP), // TCP fallback
 		"psk":        keys.PrivateKey,
 		"pub":        keys.PublicKey,
 		"obfs":       req.Obfs,

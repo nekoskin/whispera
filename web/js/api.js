@@ -500,7 +500,7 @@ class WhisperaAPI {
     async deleteUser(id) {
         return this.request('/api/users/delete', {
             method: 'POST',
-            body: JSON.stringify({ id: id })
+            body: JSON.stringify({ id: parseInt(id) })
         });
     }
 

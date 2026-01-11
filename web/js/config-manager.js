@@ -79,8 +79,8 @@ class ConfigManager {
 
     detectServerIP() {
         const hostname = window.location.hostname;
-        if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1' && 
-            !hostname.startsWith('192.168.') && !hostname.startsWith('10.') && 
+        if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1' &&
+            !hostname.startsWith('192.168.') && !hostname.startsWith('10.') &&
             !hostname.startsWith('172.16.')) {
             return hostname;
         }
@@ -141,14 +141,14 @@ class ConfigManager {
         const serverIP = customSettings.serverIP || this.config.server.ip || this.detectServerIP();
         let serverPub = customSettings.serverPub || this.config.server.publicKey || 'YOUR_SERVER_PUBLIC_KEY';
         serverPub = this.normalizeKey(serverPub, 64);
-        
+
         let clientPrivateKey = user.privateKey || 'CLIENT_PRIVATE_KEY';
         clientPrivateKey = this.normalizeKey(clientPrivateKey, 64);
-        
+
         // Автоматическая оптимизация на основе профиля пользователя
         const obfsProfile = user.obfsProfile || this.config.obfuscation.defaultProfile || 'http2';
         const marionetteProfile = user.marionetteProfile || this.config.obfuscation.defaultMarionette || 'browser';
-        
+
         // Определение портов на основе профиля
         let port = this.config.server.port || 51820;
         let tcpPort = this.config.server.tcpPort || 4443;
@@ -230,8 +230,8 @@ monitoring:
 
         if (config.server && config.server.port) {
             const port = parseInt(config.server.port);
-            if (port < 1024 || port > 65535) {
-                errors.push('Порт должен быть в диапазоне 1024-65535');
+            if (port < 443 || port > 65535) {
+                errors.push('Порт должен быть в диапазоне 443-65535');
             }
         }
 
