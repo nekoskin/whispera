@@ -171,7 +171,7 @@ func DefaultServerConfig() *ServerConfig {
 	return &ServerConfig{
 		Server: ServerSettings{
 			Name:         "whispera-server",
-			ListenAddr:   ":51820",
+			ListenAddr:   ":443",
 			TUNName:      "tun0",
 			MTU:          1420,
 			Workers:      8,
@@ -186,7 +186,7 @@ func DefaultServerConfig() *ServerConfig {
 				Workers       int    `yaml:"workers"`
 			}{
 				Enabled:       true,
-				ListenAddr:    ":51820",
+				ListenAddr:    ":443",
 				MaxPacketSize: 65535,
 				BufferSize:    4096,
 				Workers:       8,
