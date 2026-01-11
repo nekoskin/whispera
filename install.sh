@@ -70,10 +70,9 @@ install_dependencies() {
             CMD_INSTALL="yum install -y"
             ;;
         ubuntu|debian)
-            log_info "Updating system and installing security tools..."
-            apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
-            DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban whois
+            log_info "Installing security tools..."
+            apt-get update >/dev/null
+            apt-get install -y fail2ban whois
             systemctl enable fail2ban
             systemctl start fail2ban
             
@@ -323,7 +322,7 @@ setup_firewall() {
         # Enable UFW non-interactively
         ufw --force enable
         
-        log_success "Firewall configured: Ports 51820/udp, 443, 4443, 8443, 8080 open"
+        log_success "Firewall configured: 443, 4443, 8443, 8080 open"
     else
         log_warn "Firewall setup currently supports Ubuntu/Debian only. Please configure your firewall manually."
     fi
@@ -360,6 +359,17 @@ main() {
     local SERVER_IP=$(get_public_ip)
     echo -e "  Web Interface:  ${GREEN}http://${SERVER_IP}:8080${PLAIN}"
     echo ""
+
+    if [[ "$RELEASE" == "ubuntu" ]] || [[ "$RELEASE" == "debian" ]]; then
+        read -p "Do you want to update system packages now? [y/N] " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+             log_info "Updating system packages..."
+             apt-get update
+             DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+             log_success "System updated!"
+        fi
+    fi
 }
 
 main "$@"
