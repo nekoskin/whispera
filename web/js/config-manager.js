@@ -30,8 +30,8 @@ class ConfigManager {
             const info = await api.getSystemInfo();
             const serverSettings = {
                 ip: info.server_ip || this.detectServerIP(),
-                port: info.server_port || 51820,
-                tcpPort: info.tcp_port || 4443,
+                port: info.server_port || 443,
+                tcpPort: info.tcp_port || 443,
                 wsPort: info.ws_port || 8080,
                 ws2Port: info.ws2_port || 8443,
                 publicKey: info.server_pub || info.serverPublicKey
