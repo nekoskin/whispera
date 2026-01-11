@@ -47,7 +47,7 @@ var (
 func main() {
 	flag.Parse()
 
-	// Setup file logging
+	// Setup file loggingc:\Users\art\AppData\Local\Packages\MicrosoftWindows.Client.Core_cw5n1h2txyewy\TempState\ScreenClip\{1238D042-C415-40B7-BD41-94AB3E3105CA}.png
 	logFile, err := os.OpenFile("whispera-client.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err == nil {
 		// Write to both file and stdout

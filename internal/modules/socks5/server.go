@@ -245,12 +245,18 @@ func (s *Server) startHevTunnel() error {
 	execDir := filepath.Dir(execPath)
 
 	searchPaths := []string{
+		// Hardcoded path for user environment
+		filepath.Join("c:\\Whispera-main\\client-package-tauri\\src-tauri\\target\\debug\\core\\hev-socks5-tunnel\\hev-socks5-tunnel.exe"),
+
 		// Tauri bundled resources
 		filepath.Join(execDir, "core", "hev-socks5-tunnel", "hev-socks5-tunnel.exe"),
 		filepath.Join(execDir, "resources", "core", "hev-socks5-tunnel", "hev-socks5-tunnel.exe"),
 		// Development paths
 		filepath.Join(cwd, "core", "hev-socks5-tunnel", "hev-socks5-tunnel.exe"),
 		filepath.Join(cwd, "src-tauri", "core", "hev-socks5-tunnel", "hev-socks5-tunnel.exe"),
+		filepath.Join(cwd, "src-tauri", "target", "debug", "core", "hev-socks5-tunnel", "hev-socks5-tunnel.exe"),
+		filepath.Join(execDir, "..", "..", "core", "hev-socks5-tunnel", "hev-socks5-tunnel.exe"),
+
 		// Bin directory (Tauri sidecar location)
 		filepath.Join(execDir, "bin", "hev-socks5-tunnel.exe"),
 		filepath.Join(cwd, "src-tauri", "bin", "hev-socks5-tunnel.exe"),
@@ -292,8 +298,8 @@ func (s *Server) startHevTunnel() error {
 socks5:
   port: %d
   address: %s
-  udp: udp
-  tcp: tcp
+  udp: 'udp'
+  pipeline: false
 
 misc:
   task-stack-size: 81920
@@ -304,9 +310,13 @@ misc:
   limit-nofile: 65535
 `, getPort(s.config.ListenAddr), getHost(s.config.ListenAddr), hevLogPathEscaped)
 
-	configPath := filepath.Join(os.TempDir(), "whispera-hev-config.yml")
+	configPath := filepath.Join(filepath.Dir(binPath), "hev-config.yml")
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
-		return fmt.Errorf("failed to write hev config: %w", err)
+		// Fallback to temp if we can't write to bin dir
+		configPath = filepath.Join(os.TempDir(), "whispera-hev-config.yml")
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			return fmt.Errorf("failed to write hev config: %w", err)
+		}
 	}
 
 	// Start Process
@@ -459,30 +469,36 @@ func (s *Server) configureRoutes() {
 	// route add 128.0.0.0 mask 128.0.0.0 10.0.85.1 metric 1
 	logger.Info("Adding TUN routes...")
 
-	var routeArgs [][]string
 	if tunIndex > 0 {
-		// Use IF index if available (more reliable)
-		routeArgs = [][]string{
-			{"route", "add", "0.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1", "if", fmt.Sprintf("%d", tunIndex)},
-			{"route", "add", "128.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1", "if", fmt.Sprintf("%d", tunIndex)},
-		}
-	} else {
-		routeArgs = [][]string{
-			{"route", "add", "0.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1"},
-			{"route", "add", "128.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1"},
-		}
-	}
+		idxStr := fmt.Sprintf("%d", tunIndex)
 
-	for _, args := range routeArgs {
-		// Cleanup old
-		exec.Command("route", "delete", args[2]).Run()
-
-		cmd := exec.Command(args[0], args[1:]...)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			logger.Error("Failed to add TUN route %s: %v %s", args[2], err, string(out))
+		// 0.0.0.0/1
+		exec.Command("route", "delete", "0.0.0.0", "mask", "128.0.0.0").Run()
+		cmd1 := exec.Command("route", "add", "0.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1", "if", idxStr)
+		if out, err := cmd1.CombinedOutput(); err != nil {
+			logger.Error("Failed to add TUN route 0.0.0.0/1: %v %s", err, string(out))
 		} else {
-			logger.Info("Added TUN route: %s", strings.Join(args, " "))
+			logger.Info("Added TUN route 0.0.0.0/1 via IF %s", idxStr)
 		}
+
+		// 128.0.0.0/1
+		exec.Command("route", "delete", "128.0.0.0", "mask", "128.0.0.0").Run()
+		cmd2 := exec.Command("route", "add", "128.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1", "if", idxStr)
+		if out, err := cmd2.CombinedOutput(); err != nil {
+			logger.Error("Failed to add TUN route 128.0.0.0/1: %v %s", err, string(out))
+		} else {
+			logger.Info("Added TUN route 128.0.0.0/1 via IF %s", idxStr)
+		}
+
+	} else {
+		// Fallback
+		logger.Warn("TUN Interface Index not found. Attempting to add routes without explicit interface index.")
+
+		exec.Command("route", "delete", "0.0.0.0", "mask", "128.0.0.0").Run()
+		exec.Command("route", "add", "0.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1").Run()
+
+		exec.Command("route", "delete", "128.0.0.0", "mask", "128.0.0.0").Run()
+		exec.Command("route", "add", "128.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1").Run()
 	}
 
 	// IPv6 Leak Protection (Minimal)

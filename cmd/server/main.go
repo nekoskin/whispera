@@ -43,7 +43,7 @@ var (
 // Command line flags
 var (
 	configFile     = flag.String("config", "", "Path to configuration file")
-	listenAddr     = flag.String("listen", ":51820", "UDP listen address")
+	listenAddr     = flag.String("listen", "", "UDP listen address (default from config)")
 	apiAddr        = flag.String("api", ":8080", "API server listen address")
 	metricsAddr    = flag.String("metrics", ":9090", "Metrics server listen address")
 	debug          = flag.Bool("debug", false, "Enable debug logging")

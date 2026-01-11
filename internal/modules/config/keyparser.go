@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -30,8 +31,45 @@ type ConnectionKey struct {
 
 // ParseConnectionKey parses a whispera:// or wpn:// connection key
 func ParseConnectionKey(key string) (*ConnectionKey, error) {
-	// Remove protocol prefix
+	// Remove leading whitespace
 	key = strings.TrimSpace(key)
+
+	// Check for URL format first (contains params)
+	// Example: whispera://IP:PORT?key=...&pub=...
+	if strings.HasPrefix(key, "whispera://") && strings.Contains(key, "?") {
+		// Parse as URL
+		u, err := url.Parse(key)
+		if err != nil {
+			return nil, fmt.Errorf("invalid URL key format: %w", err)
+		}
+
+		ck := &ConnectionKey{
+			Version:    1,
+			Server:     u.Host,
+			Transport:  "auto",
+			ObfsPreset: "default",
+			EnableML:   true,
+			EnableFTE:  true,
+		}
+
+		q := u.Query()
+		ck.PSK = q.Get("key")
+		ck.ServerPub = q.Get("pub")
+
+		if val := q.Get("obfs"); val != "" {
+			ck.ObfsPreset = val
+		}
+		if val := q.Get("transport"); val != "" {
+			ck.Transport = val
+		}
+		if val := q.Get("name"); val != "" {
+			ck.Name = val
+		}
+
+		return ck, nil
+	}
+
+	// Legacy/Standard format: Base64 JSON blob
 	key = strings.TrimPrefix(key, "whispera://")
 	key = strings.TrimPrefix(key, "wpn://")
 

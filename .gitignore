@@ -15,7 +15,6 @@
 
 # Tauri / Frontend
 client-package-tauri/src-tauri/target/
-client-package-tauri/src-tauri/src/main.rs
 node_modules/
 
 # Logs
