@@ -14,9 +14,6 @@ echo "Updating Whispera..."
 
 cd "$WORK_DIR" || exit 1
 
-echo "Pulling latest changes..."
-git pull origin main
-
 echo "Building server..."
 export PATH=$PATH:/usr/local/go/bin
 go build -trimpath -ldflags "-w -s" -o whispera-server ./cmd/server
@@ -28,8 +25,13 @@ fi
 
 echo "Stopping service..."
 systemctl stop whispera
+sleep 2
 
 echo "Updating binary..."
+# Backup old binary to avoid "Text file busy"
+if [[ -f "$BIN_PATH/whispera" ]]; then
+    mv "$BIN_PATH/whispera" "$BIN_PATH/whispera.old"
+fi
 cp whispera-server "$BIN_PATH/whispera"
 chmod +x "$BIN_PATH/whispera"
 

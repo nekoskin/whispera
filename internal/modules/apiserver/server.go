@@ -22,6 +22,7 @@ import (
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
 	"whispera/internal/modules/apiserver/handlers"
+	"whispera/internal/modules/config"
 	"whispera/internal/modules/dhcp"
 	"whispera/internal/network"
 	"whispera/internal/stats"
@@ -954,12 +955,46 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Detect ports from config
+	udpPort := "443"
+	tcpPort := "443"
+
+	if s.registry != nil {
+		if configMod, ok := s.registry.Get("config.provider"); ok {
+			// type assertions to get config
+			type ConfigProvider interface {
+				GetConfig() *config.ServerConfig
+			}
+			if provider, ok := configMod.(ConfigProvider); ok {
+				cfg := provider.GetConfig()
+				if cfg != nil {
+					if cfg.Transport.UDP.Enabled {
+						_, port, err := net.SplitHostPort(cfg.Transport.UDP.ListenAddr)
+						if err == nil {
+							udpPort = port
+						} else if strings.HasPrefix(cfg.Transport.UDP.ListenAddr, ":") {
+							udpPort = cfg.Transport.UDP.ListenAddr[1:]
+						}
+					}
+					if cfg.Transport.TCP.Enabled {
+						_, port, err := net.SplitHostPort(cfg.Transport.TCP.ListenAddr)
+						if err == nil {
+							tcpPort = port
+						} else if strings.HasPrefix(cfg.Transport.TCP.ListenAddr, ":") {
+							tcpPort = cfg.Transport.TCP.ListenAddr[1:]
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Build key data
 	keyData := map[string]interface{}{
 		"v":          1,
 		"name":       req.Name,
-		"server":     fmt.Sprintf("%s:443", serverIP), // UDP (primary)
-		"server_tcp": fmt.Sprintf("%s:443", serverIP), // TCP fallback
+		"server":     fmt.Sprintf("%s:%s", serverIP, udpPort), // UDP (primary)
+		"server_tcp": fmt.Sprintf("%s:%s", serverIP, tcpPort), // TCP fallback
 		"psk":        keys.PrivateKey,
 		"pub":        keys.PublicKey,
 		"obfs":       req.Obfs,
