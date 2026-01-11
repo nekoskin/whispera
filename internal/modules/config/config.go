@@ -530,8 +530,13 @@ func (p *Provider) watchConfigFile() {
 // SaveConfig saves the current configuration to a file
 func (p *Provider) SaveConfig(path string) error {
 	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.saveConfig(path)
+}
+
+// saveConfig saves the current configuration to a file (internal, no lock)
+func (p *Provider) saveConfig(path string) error {
 	cfg := p.config
-	p.mu.RUnlock()
 
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
@@ -547,6 +552,27 @@ func (p *Provider) SaveConfig(path string) error {
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
+
+	return nil
+}
+
+// Update updates the configuration safely and saves it
+func (p *Provider) Update(fn func(*ServerConfig)) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	oldConfig := *p.config // shallow copy for comparison logic if needed
+	fn(p.config)
+
+	if p.configPath != "" {
+		if err := p.saveConfig(p.configPath); err != nil {
+			return fmt.Errorf("failed to save config: %w", err)
+		}
+	}
+
+	// Notify watchers of potential changes
+	// We pass pointers to the actual current config and the copy of old
+	p.notifyChanges(&oldConfig, p.config)
 
 	return nil
 }

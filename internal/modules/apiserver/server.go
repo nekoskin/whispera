@@ -123,6 +123,7 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/v1/auth/mfa/verify", mfaHandler.Verify)
 	s.Handle("POST /api/v1/auth/mfa/validate", mfaHandler.Validate)
 	s.Handle("POST /api/v1/auth/mfa/disable", mfaHandler.Disable)
+	s.Handle("POST /api/v1/config/update", s.handleUpdateConfig)
 	s.Handle("POST /api/v1/config/reload", s.handleReloadConfig)
 	s.Handle("GET /api/v1/sessions", s.handleGetSessions)
 	s.Handle("DELETE /api/v1/sessions/{id}", s.handleDeleteSession)
@@ -525,6 +526,79 @@ func (s *Server) handleReloadConfig(w http.ResponseWriter, r *http.Request) {
 
 	s.PublishEvent(events.EventTypeConfigReloaded, nil)
 	s.jsonOK(w, map[string]string{"message": "Configuration reloaded"})
+}
+
+func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	if s.registry == nil {
+		s.jsonError(w, http.StatusInternalServerError, "Registry not available")
+		return
+	}
+
+	var req struct {
+		Server struct {
+			IP      string `json:"ip"`
+			Port    int    `json:"port"`
+			TCPPort int    `json:"tcpPort"`
+			WSPort  int    `json:"wsPort"`
+			WS2Port int    `json:"ws2Port"`
+		} `json:"server"`
+		Obfuscation struct {
+			DefaultProfile    string `json:"defaultProfile"`
+			DefaultMarionette string `json:"defaultMarionette"`
+			AutoProfile       bool   `json:"autoProfile"`
+		} `json:"obfuscation"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Get config provider
+	module, ok := s.registry.Get("config.provider")
+	if !ok {
+		s.jsonError(w, http.StatusInternalServerError, "Config provider not found")
+		return
+	}
+
+	cfgProvider, ok := module.(*config.Provider)
+	if !ok {
+		s.jsonError(w, http.StatusInternalServerError, "Invalid config provider type")
+		return
+	}
+
+	err := cfgProvider.Update(func(cfg *config.ServerConfig) {
+		// Update ports if provided
+		if req.Server.Port > 0 {
+			cfg.Transport.UDP.ListenAddr = fmt.Sprintf(":%d", req.Server.Port)
+			// Also update main server listen addr as it usually matches UDP
+			cfg.Server.ListenAddr = cfg.Transport.UDP.ListenAddr
+		}
+		if req.Server.TCPPort > 0 {
+			cfg.Transport.TCP.ListenAddr = fmt.Sprintf(":%d", req.Server.TCPPort)
+		}
+		if req.Server.WSPort > 0 {
+			cfg.Transport.WebSocket.ListenAddr = fmt.Sprintf(":%d", req.Server.WSPort)
+		}
+		// WS2Port is usually handled by XHTTP or another field, assuming XHTTP for now or ignore if not present in struct
+		// Looking at config.go, there is XHTTP but no explicit "WS2".
+		// We'll map it to XHTTP if possible or just ignore for now if not clear.
+		// Re-checking config.go... XHTTP has ListenAddr.
+		if req.Server.WS2Port > 0 {
+			cfg.Transport.XHTTP.ListenAddr = fmt.Sprintf(":%d", req.Server.WS2Port)
+		}
+
+		if req.Obfuscation.DefaultProfile != "" {
+			cfg.Obfuscation.Profile = req.Obfuscation.DefaultProfile
+		}
+	})
+
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to update config: "+err.Error())
+		return
+	}
+
+	s.jsonOK(w, map[string]string{"message": "Configuration updated"})
 }
 
 func (s *Server) handleGetSessions(w http.ResponseWriter, r *http.Request) {

@@ -363,8 +363,10 @@ class WhisperaApp {
                 }
             }
 
-            // Можно добавить сохранение на сервер через API
-            // await api.updateConfig(config);
+            // Сохранение на сервер через API
+            if (typeof configManager !== 'undefined' && configManager.config) {
+                await api.updateConfig(configManager.config);
+            }
 
             this.showSuccessMessage('Настройки сохранены успешно!');
         } catch (error) {

@@ -474,6 +474,13 @@ class WhisperaAPI {
         return this.request('/api/system/reload', { method: 'POST' });
     }
 
+    async updateConfig(config) {
+        return this.request('/api/v1/config/update', {
+            method: 'POST',
+            body: JSON.stringify(config)
+        });
+    }
+
     // Users API
     async getUsers() {
         return this.request('/api/users');
