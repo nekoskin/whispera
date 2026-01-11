@@ -358,18 +358,7 @@ main() {
     echo -e "  Config file:    ${GREEN}$CONF_PATH/config.yaml${PLAIN}"
     local SERVER_IP=$(get_public_ip)
     echo -e "  Web Interface:  ${GREEN}http://${SERVER_IP}:8080${PLAIN}"
-    echo ""
-
-    if [[ "$RELEASE" == "ubuntu" ]] || [[ "$RELEASE" == "debian" ]]; then
-        read -p "Do you want to update system packages now? [y/N] " -n 1 -r
-        echo ""
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-             log_info "Updating system packages..."
-             apt-get update
-             DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
-             log_success "System updated!"
-        fi
-    fi
+    echo -e "Update dependencies: apt-get update"
 }
 
 main "$@"
