@@ -15,8 +15,7 @@
 
 # Tauri / Frontend
 client-package-tauri/src-tauri/target/
-client-package-tauri/src-tauri/bin/*.exe
-client-package-tauri/src-tauri/bin/whispera-*
+client-package-tauri/src-tauri/bin/
 client-package-tauri/node_modules/
 client-package-tauri/dist/
 node_modules/
