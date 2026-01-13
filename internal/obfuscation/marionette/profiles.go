@@ -164,9 +164,23 @@ func (m *Marionette) initRussianServiceProfiles() {
 }
 
 func (m *Marionette) addRussianServiceRules(service string) {
-	// Implementation from marionette_profiles_init.go
-	// Since this was previously just a placeholder or minimal logic,
-	// we keep it as is or expand if needed.
+	// Add rule to force traffic wrapping for Russian services to bypass DPI
+	m.Rules = append(m.Rules, types.ObfuscationRule{
+		Name:     "rule_" + service + "_protocol",
+		Priority: 10,
+		Enabled:  true,
+		Condition: types.Condition{
+			Field:    "packet_count",
+			Operator: ">=",
+			Value:    0,
+		},
+		Action: types.Action{
+			Type: "obfuscate_traffic",
+			Parameters: map[string]interface{}{
+				"level": 5, // Triggers protocol headers wrapping
+			},
+		},
+	})
 }
 
 // --- Rules (formerly marionette_rules.go) ---

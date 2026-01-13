@@ -1,6 +1,7 @@
 package marionette
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"time"
@@ -76,6 +77,15 @@ func (m *Marionette) addProtocolHeaders(data []byte, profile *TrafficObfuscation
 	default:
 		h = []byte("POST /api/v1/ HTTP/1.1\r\nHost: api.example.com\r\nContent-Type: application/json\r\n\r\n")
 	}
+
+	// Add Content-Length for DPI compliance
+	headerStr := string(h)
+	// Strip the last \r\n\r\n to append CL
+	if len(headerStr) > 4 {
+		headerStr = headerStr[:len(headerStr)-4]
+	}
+	h = []byte(fmt.Sprintf("%sContent-Length: %d\r\n\r\n", headerStr, len(data)))
+
 	res := make([]byte, len(h)+len(data))
 	copy(res, h)
 	copy(res[len(h):], data)
@@ -135,6 +145,14 @@ func (m *Marionette) addApplicationSpecificHeadersTraffic(data []byte, profile *
 	default:
 		h = []byte("POST /api/v1/ HTTP/1.1\r\nHost: api.example.com\r\nContent-Type: application/json\r\n\r\n")
 	}
+
+	// Add Content-Length
+	headerStr := string(h)
+	if len(headerStr) > 4 {
+		headerStr = headerStr[:len(headerStr)-4]
+	}
+	h = []byte(fmt.Sprintf("%sContent-Length: %d\r\n\r\n", headerStr, len(data)))
+
 	res := make([]byte, len(h)+len(data))
 	copy(res, h)
 	copy(res[len(h):], data)
@@ -517,6 +535,26 @@ func (m *Marionette) applyAction(action types.Action, data []byte, params map[st
 		return applyRussianMimicry(m, data, params)
 	case "apply_ml_evasion":
 		return applyMLEvasion(m, data, params)
+	case "obfuscate_traffic":
+		level, _ := params["level"].(int)
+		if level == 0 {
+			level = 5 // Default to protocol headers
+		}
+
+		// Create a local profile to drive the obfuscation logic
+		prof := &TrafficObfuscationProfile{
+			Enabled:          true,
+			ObfuscationType:  "protocol",
+			ObfuscationLevel: level,
+			TargetService:    m.Active, // Use the active profile name (e.g. "vk", "yandex") as target
+		}
+
+		// Map Active profile to TargetService if needed (simple fallback)
+		if prof.TargetService == "" {
+			prof.TargetService = "example"
+		}
+
+		return m.ApplyTrafficObfuscation(data, prof), 0
 	}
 	return data, 0
 }
