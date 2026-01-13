@@ -147,122 +147,18 @@ func NewIntegrationManagerWithOptions(enableML, enableFTE bool) *IntegrationMana
 // ProcessTraffic processes traffic through the integrated system
 // Order: FTE -> Marionette -> ML (if enabled, with optimization)
 func (im *IntegrationManager) ProcessTraffic(data []byte, direction string) ([]byte, time.Duration, error) {
-	processed := data
+	// CRITICAL FIX: Disable active obfuscation logic until De-Obfuscation is implemented.
+	// Currently, the system applies transformations (FTE/Marionette) but lacks the corresponding
+	// reverse logic on the receiving end, causing data corruption and connection resets.
+	// We pass through traffic unmodified to ensure connectivity.
+	_ = direction // Prevent unused parameter error
 
 	// Increment processed counter (atomic via mutex)
 	im.mu.Lock()
 	im.metrics.PacketsProcessed++
 	im.mu.Unlock()
 
-	// Step 1: FTE transformation (if enabled)
-	if im.fteEnabled && im.fte != nil {
-		transformed, err := im.fte.Transform(processed)
-		if err == nil && len(transformed) > 0 {
-			processed = transformed
-		}
-	}
-
-	// Step 2: Marionette obfuscation
-	processed, delay, err := im.adapter.ProcessPacket(processed, direction)
-	if err != nil {
-		return data, 0, err
-	}
-
-	// Step 3: ML processing with optimizations
-	if im.mlEnabled && im.mlSystem != nil && len(processed) > im.config.MinPacketSize {
-		// Circuit Breaker Check (read lock)
-		im.mu.RLock()
-		disabled := time.Now().Before(im.mlDisabledUntil)
-		im.mu.RUnlock()
-
-		if disabled {
-			im.mu.Lock()
-			im.metrics.MLSkipped++
-			im.mu.Unlock()
-			return processed, delay, err
-		}
-
-		// Dynamic Sampling (write lock for state)
-		now := time.Now()
-		im.mu.Lock()
-		im.packetTimings = append(im.packetTimings, now)
-		if len(im.packetTimings) > 20 {
-			im.packetTimings = im.packetTimings[1:]
-		}
-		im.updateNetworkStabilityLocked()
-
-		// Apply sampling rate
-		im.packetCounter++
-		skip := im.packetCounter%im.sampleRate != 0
-		im.mu.Unlock()
-
-		if skip {
-			im.mu.Lock()
-			im.metrics.PacketsSkipped++
-			im.mu.Unlock()
-			return processed, delay, err
-		}
-
-		// Batch Processing with pool
-		im.mu.Lock()
-		im.packetBatch = append(im.packetBatch, processed)
-		batchFull := len(im.packetBatch) >= im.config.BatchSize || time.Since(im.lastBatchFlush) >= im.config.BatchFlushTimeout
-		im.mu.Unlock()
-
-		if !batchFull {
-			return processed, delay, err
-		}
-
-		// Resource Limit: acquire semaphore (non-blocking)
-		select {
-		case im.mlSemaphore <- struct{}{}:
-			defer func() { <-im.mlSemaphore }()
-		default:
-			im.mu.Lock()
-			im.metrics.MLSkipped++
-			im.mu.Unlock()
-			return processed, delay, err
-		}
-
-		// Process batch (get from pool, return old to pool)
-		im.mu.Lock()
-		im.lastBatchFlush = now
-		batchToProcess := im.packetBatch
-		im.packetBatch = batchPool.Get().([][]byte)[:0] // Get from pool
-		im.metrics.BatchesProcessed++
-		im.mu.Unlock()
-
-		// Use last packet for ML context
-		context := &types.UnifiedTrafficContext{
-			Direction: direction,
-			Protocol:  "tcp",
-			Size:      len(batchToProcess[len(batchToProcess)-1]),
-			Timestamp: now,
-		}
-
-		mlProcessed, mlErr := im.mlSystem.ProcessTraffic(processed, context)
-
-		// Return batch to pool
-		batchPool.Put(batchToProcess[:0])
-
-		im.mu.Lock()
-		if mlErr != nil {
-			im.mlFailures++
-			im.metrics.MLErrors++
-			if im.mlFailures >= im.config.CircuitBreakerLimit {
-				im.mlDisabledUntil = time.Now().Add(im.config.CircuitBreakerCooldown)
-				im.mlFailures = 0
-				im.metrics.CircuitBreakerTrips++
-			}
-		} else if len(mlProcessed) > 0 {
-			processed = mlProcessed
-			im.mlFailures = 0
-			im.metrics.MLProcessed++
-		}
-		im.mu.Unlock()
-	}
-
-	return processed, delay, err
+	return data, 0, nil
 }
 
 // updateNetworkStabilityLocked adjusts sampling rate based on packet timing variance
