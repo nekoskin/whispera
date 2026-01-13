@@ -72,6 +72,7 @@ func NewMarionette() *Marionette {
 	m.initDefaultRules()
 
 	// Initialize and start Chaff Generator (Fake Traffic)
+	// Initialize and start Chaff Generator (Fake Traffic)
 	m.Chaff = NewChaffGenerator()
 	m.Chaff.Start()
 
@@ -145,6 +146,12 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 		behaviorEngine.TransitionState()
 	}
 
+	// Filter out Local Network Discovery (mDNS, SSDP, etc.)
+	// These obscure the traffic analysis and shouldn't be routed over the VPN
+	if isLocalDiscovery(data) {
+		return nil, 0, nil
+	}
+
 	m.Mutex.Lock()
 	m.updateStateInProcess(data, direction)
 	rules := m.Rules
@@ -156,17 +163,21 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 		m.triggerAsyncAnalysis()
 	}
 
-	// REVERT: Sending raw TLS handshake bypasses the VPN protocol wrapper/headers.
-	// The Server expects an obfuscated/wrapped frame (e.g. HTTP POST).
-	// Sending raw TLS causes the Server to reject the packet, resulting in TCP RST.
-	// To support "Pure TLS" for real traffic, we would need to implement a 'TLS Wrapper' profile
-	// that encapsulates the packet in a TLS Record, rather than sending it raw.
-	// For now, we restore normal obfuscation to ensure connectivity.
-	if isTLSHandshake(data) {
-		return data, behavioralDelay, nil
+	// DEBUG LOGGING
+	isHandshake := isTLSHandshake(data)
+	isAppData := isTLSApplicationData(data)
+	if len(data) > 0 && data[0] == 0x16 {
+		// Log potential TLS Handshakes
+		// fmt.Printf("DEBUG: Packet len=%d, Byte0=%x, Handshake=%v\n", len(data), data[0], isHandshake)
 	}
 
-	if isTLSApplicationData(data) {
+	if isHandshake {
+		// fmt.Println("DEBUG: TLS Handshake Detected! Returning RAW.")
+		// return data, behavioralDelay, nil // Commented out to enforce obfuscation and prevent RSTs
+	}
+
+	if isAppData {
+		// fmt.Println("DEBUG: TLS Application Data Detected! Returning RAW.")
 		return data, behavioralDelay, nil
 	}
 
@@ -340,6 +351,7 @@ func (m *Marionette) triggerAsyncAnalysis() {
 	}()
 }
 
+// SetThreatLevel sets the current threat level
 // SetThreatLevel sets the current threat level
 func (m *Marionette) SetThreatLevel(level int) {
 	m.Mutex.Lock()

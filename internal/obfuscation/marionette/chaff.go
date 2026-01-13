@@ -2,9 +2,8 @@ package marionette
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
-	"math/big"
+	"math/rand"
 	"net"
 	"time"
 
@@ -27,13 +26,16 @@ func NewChaffGenerator() *ChaffGenerator {
 	return &ChaffGenerator{
 		Enabled: true,
 		Targets: []string{
-			"vk.com:443", // VK Video
-			"kinopoisk.ru:443",
-			"wink.ru:443",
+			"www.google.com:443",
+			"www.microsoft.com:443",
+			"ya.ru:443",
+			"vk.com:443",
+			"dzen.ru:443",
+			"www.cloudflare.com:443",
 		},
-		Interval:    3 * time.Second, // Create noise every few seconds
-		Variance:    2 * time.Second,
-		Concurrency: 1, // Keep it light to avoid bandwidth drain
+		Interval:    5 * time.Second, // Slower interval to be less annoying
+		Variance:    3 * time.Second,
+		Concurrency: 2, // Slightly more concurrent to mask better
 	}
 }
 
@@ -67,8 +69,10 @@ func (cg *ChaffGenerator) loop() {
 			return
 		case <-ticker.C:
 			// Add randomization to the interval
-			longRand, _ := rand.Int(rand.Reader, big.NewInt(int64(cg.Variance)))
-			time.Sleep(time.Duration(longRand.Int64()))
+			// Add randomization to the interval
+			// Use Int63n for a positive random duration
+			jitter := rand.Int63n(int64(cg.Variance))
+			time.Sleep(time.Duration(jitter))
 
 			cg.spawnChaff()
 		}
@@ -77,8 +81,9 @@ func (cg *ChaffGenerator) loop() {
 
 func (cg *ChaffGenerator) spawnChaff() {
 	// Pick random target
-	idx, _ := rand.Int(rand.Reader, big.NewInt(int64(len(cg.Targets))))
-	target := cg.Targets[idx.Int64()]
+	// Pick random target
+	idx := rand.Intn(len(cg.Targets))
+	target := cg.Targets[idx]
 
 	// 1. Establish TCP connection
 	conn, err := net.DialTimeout("tcp", target, 5*time.Second)
@@ -87,11 +92,23 @@ func (cg *ChaffGenerator) spawnChaff() {
 	}
 	defer conn.Close()
 
-	// 2. Perform TLS Handshake (mimicking a browser)
+	// 2. Perform TLS Handshake (mimicking various browsers)
+	// Randomize the fingerprint to avoid static signature detection
+	var helloID utls.ClientHelloID
+	r := rand.Intn(3)
+	switch r {
+	case 0:
+		helloID = utls.HelloChrome_Auto
+	case 1:
+		helloID = utls.HelloFirefox_Auto
+	case 2:
+		helloID = utls.HelloIOS_Auto
+	}
+
 	uConn := utls.UClient(conn, &utls.Config{
 		ServerName:         splitHost(target),
 		InsecureSkipVerify: true, // We don't care about the cert for chaff
-	}, utls.HelloChrome_Auto)
+	}, helloID)
 
 	// Set deadline for handshake
 	uConn.SetDeadline(time.Now().Add(5 * time.Second))
@@ -100,15 +117,34 @@ func (cg *ChaffGenerator) spawnChaff() {
 		return
 	}
 
-	// 3. Send some random application data (HTTP-like) or just close
-	// sending data makes it look more like a real short session
-	req := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\nConnection: close\r\n\r\n", splitHost(target))
-	uConn.Write([]byte(req))
+	// 3. Send realistic Application Data (HTTP GET)
+	// Using standard browser headers to elicit a real 200/301 response
+	headers := fmt.Sprintf(
+		"GET / HTTP/1.1\r\n"+
+			"Host: %s\r\n"+
+			"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"+
+			"Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8\r\n"+
+			"Accept-Language: en-US,en;q=0.9,ru;q=0.8\r\n"+
+			"Connection: close\r\n"+
+			"\r\n",
+		splitHost(target))
 
-	// Short read to simulate waiting for response
-	buf := make([]byte, 1024)
-	uConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	uConn.Read(buf)
+	uConn.Write([]byte(headers))
+
+	// 4. "Mirror" the response (Read until EOF or timeout)
+	// This ensures we actually receive the server's answer
+	buf := make([]byte, 4096)
+	uConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	// Read response to simulate real download
+	for {
+		_, err := uConn.Read(buf)
+		if err != nil {
+			break
+		}
+		// In a real scenario, we might discard `n` bytes
+		// Just creating traffic flow here
+	}
 
 	// Connection closes via defer
 }
