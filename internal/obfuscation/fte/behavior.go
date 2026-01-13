@@ -297,31 +297,14 @@ func (fte *FTE) generateRealisticPadding(index, dataLen int) byte {
 func (fte *FTE) applyTimingPatternObfuscation(data []byte) []byte { return data }
 
 func (fte *FTE) applyStatisticalMasking(data []byte) []byte {
-	profile := fte.getProfile()
-	if profile == nil || !profile.Fingerprint.StatisticalMasking {
-		return data
-	}
-	noiseLevel := profile.Fingerprint.EntropyProfile.StatisticalNoise
-	if noiseLevel > 0 {
-		for i := range data {
-			if secureRandFloat64() < noiseLevel {
-				data[i] = byte((int(data[i]) + secureRandInt(256)) % 256)
-			}
-		}
-	}
+	// SAFEGUARD: Disabled destructive payload modification.
+	// Random bit-flipping corrupts encrypted TCP streams.
 	return data
 }
 
 func (fte *FTE) applyEntropyAntiAnalysis(data []byte) []byte {
-	profile := fte.getProfile()
-	if profile == nil || !profile.Fingerprint.EntropyProfile.AntiEntropy {
-		return data
-	}
-	currentEntropy := fte.calculateEntropy(data)
-	targetEntropy := profile.Fingerprint.EntropyProfile.TargetEntropy
-	if math.Abs(currentEntropy-targetEntropy) > profile.Fingerprint.EntropyProfile.EntropyVariance {
-		data = fte.adjustEntropy(data, targetEntropy)
-	}
+	// SAFEGUARD: Disabled destructive payload modification.
+	// Randomizing bytes to adjust entropy corrupts the stream.
 	return data
 }
 

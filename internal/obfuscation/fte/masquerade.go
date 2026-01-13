@@ -26,11 +26,13 @@ func (fte *FTE) ApplyProtocolMasquerading(data []byte) []byte {
 	}
 	masq := profile.Fingerprint.ProtocolMasquerading
 
-	// CRITICAL FIX: Do not apply ANY obfuscation to TLS handshakes!
-	// Modifying headers, size, or timing of the ClientHello will break the handshake.
-	if isTLSHandshake(data) {
-		return data
-	}
+	// CRITICAL FIX: Reverting TLS handshake bypass.
+	// FTE applies symmetric obfuscation (XOR/headers) that the Server expects.
+	// Sending raw TLS causes the Server to misinterpret/corrupt the data upon deobfuscation.
+	// Since we fixed the destructive actions in utils.go, normal obfuscation is safe.
+	// if isTLSHandshake(data) {
+	// 	 return data
+	// }
 
 	if masq.HeaderSpoofing {
 		data = fte.applyHeaderSpoofing(data, masq)

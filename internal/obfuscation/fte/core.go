@@ -75,12 +75,12 @@ func isFTETLSHandshake(data []byte) bool {
 // Transform applies FTE camouflage
 // CRITICAL: TLS handshake packets are passed through unmodified to prevent RST
 func (fte *FTE) Transform(data []byte) ([]byte, error) {
-	// CRITICAL: Never modify TLS handshake packets!
-	// Modifying ClientHello/ServerHello will corrupt the TLS handshake
-	// and cause the server to send RST (connection reset)
-	if isFTETLSHandshake(data) {
-		return data, nil
-	}
+	// CRITICAL: We must apply obfuscation (XOR/Wrapping) because the Server expects it.
+	// Since we fixed the destructive 'utils.go' and 'behavior.go', this obfuscation is now safe and reversible.
+
+	// if isFTETLSHandshake(data) {
+	// 	 return data, nil
+	// }
 
 	fte.mutex.RLock()
 	active := fte.active
@@ -91,43 +91,40 @@ func (fte *FTE) Transform(data []byte) ([]byte, error) {
 		return data, nil
 	}
 
-	// targetSize := fte.calculateTargetSize(profile)
-	// obfuscated := fte.resizeToTarget(data, targetSize)
-	// formatted := fte.applyFormat(obfuscated, profile)
+	targetSize := fte.calculateTargetSize(profile)
+	obfuscated := fte.resizeToTarget(data, targetSize)
+	formatted := fte.applyFormat(obfuscated, profile)
 
 	// Apply timing obfuscation (if enabled in profile)
-	// formatted = fte.applyTimingObfuscation(formatted)
+	formatted = fte.applyTimingObfuscation(formatted)
 
-	// EMERGENCY FIX: Return data unmodified to prevent corruption of direct traffic
-	return data, nil
+	fte.mutex.Lock()
+	fte.updateState(targetSize)
+	fte.mutex.Unlock()
 
-	// fte.mutex.Lock()
-	// fte.updateState(targetSize)
-	// fte.mutex.Unlock()
+	if fte.reinforcementLearning != nil {
+		state := fte.GetProtocolState()
+		if state == "" {
+			state = "connected"
+		}
+		action := fte.reinforcementLearning.SelectAction(state)
+		formatted = fte.applyReinforcementAction(formatted, action)
+	}
 
-	// if fte.reinforcementLearning != nil {
-	// 	state := fte.GetProtocolState()
-	// 	if state == "" {
-	// 		state = "connected"
-	// 	}
-	// 	action := fte.reinforcementLearning.SelectAction(state)
-	// 	formatted = fte.applyReinforcementAction(formatted, action)
-	// }
-
-	// SAFEGUARD: Disabled destructive payload modification (XOR masking).
-	// formatted, _ = fte.ApplyRealDPIEvasion(formatted, active)
+	// Enable payload modification (XOR masking) - Server expects this!
+	formatted, _ = fte.ApplyRealDPIEvasion(formatted, active)
 
 	// Apply behavioral variations
-	// switch active {
-	// case "vk":
-	// 	formatted = fte.applyVKBehavioralPatterns(formatted)
-	// case ProfileYandexFTE:
-	// 	formatted = fte.applyYandexBehavioralPatterns(formatted)
-	// case ProfileMailruFTE:
-	// 	formatted = fte.applyMailruBehavioralPatterns(formatted)
-	// }
+	switch active {
+	case "vk":
+		formatted = fte.applyVKBehavioralPatterns(formatted)
+	case ProfileYandexFTE:
+		formatted = fte.applyYandexBehavioralPatterns(formatted)
+	case ProfileMailruFTE:
+		formatted = fte.applyMailruBehavioralPatterns(formatted)
+	}
 
-	// return formatted, nil
+	return formatted, nil
 }
 
 // ProcessPacket handles higher level packet processing
