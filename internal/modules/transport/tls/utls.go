@@ -35,7 +35,7 @@ func (c *UTLSConfig) Dial(ctx context.Context, addr string) (net.Conn, error) {
 
 	fingerprint, ok := fingerprintMap[c.Fingerprint]
 	if !ok {
-		fingerprint = &utls.HelloChrome_Auto // Default to Chrome
+		fingerprint = &utls.HelloRandomized // Default to Random to improve evasion
 	}
 
 	uconn := utls.UClient(conn, &utls.Config{
@@ -56,7 +56,7 @@ func (c *UTLSConfig) Dial(ctx context.Context, addr string) (net.Conn, error) {
 func (c *UTLSConfig) WrapConn(conn net.Conn, addr string) (net.Conn, error) {
 	fingerprint, ok := fingerprintMap[c.Fingerprint]
 	if !ok {
-		fingerprint = &utls.HelloChrome_Auto
+		fingerprint = &utls.HelloRandomized
 	}
 
 	uconn := utls.UClient(conn, &utls.Config{

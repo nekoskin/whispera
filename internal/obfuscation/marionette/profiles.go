@@ -173,16 +173,22 @@ func (m *Marionette) addRussianServiceRules(service string) {
 
 func (m *Marionette) initDefaultRules() {
 	m.Rules = append(m.Rules, types.ObfuscationRule{
-		Name:     "rule_default_1",
+		Name:     "rule_default_timing",
 		Priority: 5,
 		Enabled:  true,
 		Condition: types.Condition{
-			Field:    "size",
+			Field:    "packet_count",
 			Operator: ">",
-			Value:    1400,
+			Value:    0,
 		},
 		Action: types.Action{
-			Type: "shape_size",
+			Type: "shape_timing",
+			Parameters: map[string]interface{}{
+				"method":        "exponential",
+				"min_interval":  10,
+				"max_interval":  100,
+				"mean_interval": 50,
+			},
 		},
 	})
 }

@@ -552,11 +552,6 @@ func (m *Marionette) applyJA3Evasion(data []byte) []byte {
 		result := make([]byte, len(fingerprint))
 		copy(result, fingerprint)
 
-		// Add slight randomization to avoid exact matching
-		if len(result) > 4 {
-			result[len(result)-1] = byte(m.generateRealisticRandom(256))
-			result[len(result)-2] = byte(m.generateRealisticRandom(256))
-		}
 		return result
 	}
 
@@ -584,11 +579,6 @@ func (m *Marionette) applyJA4Evasion(data []byte) []byte {
 		result := make([]byte, len(fingerprint))
 		copy(result, fingerprint)
 
-		// Add slight randomization to last bytes
-		if len(result) > 4 {
-			result[len(result)-1] = byte(m.generateRealisticRandom(256))
-			result[len(result)-2] = byte(m.generateRealisticRandom(256))
-		}
 		return result
 	}
 

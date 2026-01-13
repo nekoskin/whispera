@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
+	_ "net/http/pprof" // Register pprof handlers
 	"os"
 
 	"golang.org/x/crypto/curve25519"
@@ -50,6 +52,7 @@ var (
 	debug          = flag.Bool("debug", false, "Enable debug logging")
 	printVersion   = flag.Bool("version", false, "Print version and exit")
 	validateConfig = flag.Bool("validate-config", false, "Validate configuration and exit")
+	pprofAddr      = flag.String("pprof", "localhost:6060", "Pprof server listen address")
 )
 
 // Global module references for packet handler
@@ -73,6 +76,14 @@ func main() {
 	fmt.Println("[DEBUG] Whispera Server: main() started")
 	flag.Parse()
 	fmt.Printf("[DEBUG] Whispera Server: flags parsed, config=%s\n", *configFile)
+
+	// Start pprof server
+	go func() {
+		fmt.Printf("[DEBUG] Starting pprof server on %s\n", *pprofAddr)
+		if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
+			fmt.Printf("[WARN] Failed to start pprof server: %v\n", err)
+		}
+	}()
 
 	if *debug {
 		logger.SetLevel(logger.LevelDebug)
@@ -308,9 +319,20 @@ func createModules(manager *lifecycle.Manager) error {
 		return err
 	}
 	// Set transport callback so relay can send responses back to clients
+	// Set transport callback so relay can send responses back to clients
 	relayServer.SetTransport(func(data []byte, addr net.Addr) error {
+		// Apply obfuscation if enabled (CRITICAL FIX: Client expects obfuscated traffic)
+		payload := data
+		if globalObfuscator != nil {
+			obfuscated, _, err := globalObfuscator.Process(data, interfaces.DirectionOutbound)
+			if err != nil {
+				return fmt.Errorf("failed to obfuscate relay frame: %w", err)
+			}
+			payload = obfuscated
+		}
+
 		if globalUDPTransport != nil {
-			_, err := globalUDPTransport.WriteTo(data, addr)
+			_, err := globalUDPTransport.WriteTo(payload, addr)
 			return err
 		}
 		return nil
@@ -430,7 +452,9 @@ func handlePacket(data []byte, addr net.Addr) {
 	sess, ok := globalSessionMgr.GetSessionByAddr(addr)
 	if !ok {
 		if *debug {
-			log.Printf("[Packet] No session for %v, dropping packet", addr)
+			// Enhanced debugging for "No session" issue
+			log.Printf("[Packet] No session for %v (Total sessions: %d), dropping packet",
+				addr, globalSessionMgr.Count())
 		}
 		return
 	}

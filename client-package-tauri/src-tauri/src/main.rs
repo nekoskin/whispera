@@ -321,31 +321,53 @@ fn connect(key: String) -> Result<ConnectResult, String> {
     
     println!("Whispera: Server IP: {}, Gateway: {}", server_ip, gateway);
     
-    // Get paths
+    // Get paths - try multiple locations for dev and release modes
     let exe_dir = std::env::current_exe()
         .map(|p| p.parent().unwrap().to_path_buf())
         .map_err(|e| format!("Failed to get exe path: {}", e))?;
     
-    let bin_dir = exe_dir.join("bin");
+    // In dev mode, exe is in target/debug, bin is in src-tauri/bin
+    // In release mode, bin is next to the exe
+    let possible_bin_dirs = vec![
+        exe_dir.join("bin"),                                          // Release mode
+        exe_dir.join("..").join("..").join("bin"),                   // Dev mode (target/debug -> src-tauri/bin)
+        exe_dir.join("..").join("..").join("..").join("src-tauri").join("bin"), // Alternative dev path
+        std::path::PathBuf::from("C:\\Whispera-main\\client-package-tauri\\src-tauri\\bin"), // Absolute fallback
+    ];
     
-    // Try both naming conventions
-    let go_client_path = if bin_dir.join("whispera-go-client-x86_64-pc-windows-msvc.exe").exists() {
-        bin_dir.join("whispera-go-client-x86_64-pc-windows-msvc.exe")
-    } else {
-        bin_dir.join("whispera-go-client.exe")
-    };
+    let mut bin_dir = exe_dir.join("bin");
+    let mut go_client_path = bin_dir.join("whispera-go-client.exe");
+    
+    // Find the correct bin directory
+    for dir in &possible_bin_dirs {
+        let client1 = dir.join("whispera-go-client-x86_64-pc-windows-msvc.exe");
+        let client2 = dir.join("whispera-go-client.exe");
+        
+        if client1.exists() {
+            bin_dir = dir.clone();
+            go_client_path = client1;
+            break;
+        } else if client2.exists() {
+            bin_dir = dir.clone();
+            go_client_path = client2;
+            break;
+        }
+    }
     
     let hev_tunnel_path = bin_dir.join("hev-socks5-tunnel.exe");
     let config_path = bin_dir.join("client_config.yaml");
     let hev_config_path = bin_dir.join("hev-config.yml");
     
+    println!("Whispera: Binary dir: {:?}", bin_dir);
+    println!("Whispera: Client path: {:?}", go_client_path);
+    
     // Check if binaries exist
     if !go_client_path.exists() {
-        return Err(format!("Go client not found: {:?}", go_client_path));
+        return Err(format!("Go client not found: {:?}. Make sure to build with: go build -o client-package-tauri/src-tauri/bin/whispera-go-client.exe ./cmd/client", go_client_path));
     }
     
-    // Use SOCKS5 port
-    let socks_port: u16 = 1080;
+    // Use SOCKS5 port - Go client default is 10800
+    let socks_port: u16 = 10800;
     let tun_gateway = "10.0.85.1".to_string();
     
     // Generate configs
@@ -359,16 +381,24 @@ fn connect(key: String) -> Result<ConnectResult, String> {
     
     println!("Whispera: Starting Go client...");
     
-    // Start Go client
+    // Create log file for Go client output
+    let log_path = bin_dir.join("whispera-client.log");
+    let log_file = fs::File::create(&log_path)
+        .map_err(|e| format!("Failed to create log file: {}", e))?;
+    let log_file_err = log_file.try_clone()
+        .map_err(|e| format!("Failed to clone log file: {}", e))?;
+    
+    // Start Go client with logs going to file
     let go_client = Command::new(&go_client_path)
         .args(&["-config", config_path.to_str().unwrap(), "-key", &key])
         .current_dir(&bin_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(log_file)
+        .stderr(log_file_err)
         .spawn()
         .map_err(|e| format!("Failed to start Go client: {}", e))?;
     
     println!("Whispera: Go client started with PID: {}", go_client.id());
+    println!("Whispera: Logs saved to: {:?}", log_path);
     
     // Wait a bit for client to initialize
     std::thread::sleep(std::time::Duration::from_secs(2));
