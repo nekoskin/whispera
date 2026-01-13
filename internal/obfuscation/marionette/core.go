@@ -162,15 +162,13 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 	// To support "Pure TLS" for real traffic, we would need to implement a 'TLS Wrapper' profile
 	// that encapsulates the packet in a TLS Record, rather than sending it raw.
 	// For now, we restore normal obfuscation to ensure connectivity.
-	/*
-		 if isTLSHandshake(data) {
-			 return data, behavioralDelay, nil
-		 }
+	if isTLSHandshake(data) {
+		return data, behavioralDelay, nil
+	}
 
-		 if isTLSApplicationData(data) {
-			 return data, behavioralDelay, nil
-		 }
-	*/
+	if isTLSApplicationData(data) {
+		return data, behavioralDelay, nil
+	}
 
 	// Apply Obfuscation to ALL outbound packets (except Handshakes)
 	processed := data
