@@ -42,7 +42,7 @@ type Config struct {
 // DefaultConfig returns default QUIC configuration
 func DefaultConfig() *Config {
 	return &Config{
-		ListenAddr:          ":443",
+		ListenAddr:          ":8443",
 		MaxStreams:          100,
 		MaxIdleTimeout:      30 * time.Second,
 		KeepAlivePeriod:     15 * time.Second,

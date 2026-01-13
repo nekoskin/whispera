@@ -77,25 +77,32 @@ func (m *Marionette) applyProtocolObfuscation(data []byte, profile *TrafficObfus
 		// Prepend Fake Client Hello (SNI=high reputation domain)
 		// XTLS/REALITY strategy: Use a domain that usually resolves to a large cloud (CDNs).
 		// We avoid iterating random small domains to prevent SNI/IP mismatches if the server falls back.
-		snis := []string{
-			// Global high-reputation
-			"www.microsoft.com",
-			"www.google.com",
-			"www.twitch.tv",
 
-			// Russian services (Popular & High Bandwidth)
-			"vk.com",
-			"dzen.ru",
-			"www.ozon.ru",
-			"www.wildberries.ru",
-			"rutube.ru",
-			"yandex.ru",
-			"mail.ru",
-			"disk.yandex.ru",
-			"ok.ru",
-			"www.gosuslugi.ru",
+		// Check for custom SNI in profile
+		sni := profile.SNI
+
+		if sni == "" {
+			snis := []string{
+				// Global high-reputation (CDNs & Big Tech)
+				"www.microsoft.com",
+				"www.google.com",
+				"www.samsung.com",
+				"www.apple.com",
+				"code.jquery.com",
+				"www.twitch.tv",
+				"ajax.googleapis.com",
+
+				// Russian services (Popular & High Bandwidth)
+				"vk.com",
+				"dzen.ru",
+				"www.ozon.ru",
+				"www.wildberries.ru",
+				"rutube.ru",
+				"yandex.ru",
+				"disk.yandex.ru",
+			}
+			sni = snis[m.Rand.Intn(len(snis))]
 		}
-		sni := snis[m.Rand.Intn(len(snis))]
 		// This header mimics a standard Chrome Client Hello
 		fakeHello := m.generateFakeClientHello(sni)
 
@@ -516,13 +523,12 @@ func (m *Marionette) generateFakeClientHello(sni string) []byte {
 	idx += 2
 	copy(ksExt[idx:], keyShareData)
 
-	// 4. Supported Versions (TLS 1.3, TLS 1.2)
+	// 4. Supported Versions (TLS 1.3 Only for Strict Mode)
 	svExt := []byte{
 		0x00, 0x2b, // Type: supported_versions
-		0x00, 0x05, // Len
-		0x04,       // Versions List Len
+		0x00, 0x03, // Len
+		0x02,       // Versions List Len
 		0x03, 0x04, // TLS 1.3
-		0x03, 0x03, // TLS 1.2
 	}
 
 	// 5. Signature Algorithms
@@ -712,6 +718,10 @@ func (m *Marionette) applyAction(action types.Action, data []byte, params map[st
 			ObfuscationType:  "protocol",
 			ObfuscationLevel: level,
 			TargetService:    m.Active, // Use the active profile name (e.g. "vk", "yandex") as target
+		}
+
+		if sni, ok := params["sni"].(string); ok {
+			prof.SNI = sni
 		}
 
 		// Map Active profile to TargetService if needed (simple fallback)

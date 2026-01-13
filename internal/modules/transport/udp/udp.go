@@ -32,7 +32,7 @@ type Config struct {
 // DefaultConfig returns default UDP configuration
 func DefaultConfig() *Config {
 	return &Config{
-		ListenAddr:    ":443",
+		ListenAddr:    ":8443",
 		MaxPacketSize: 1350, // Reduced to prevent IP fragmentation issues
 		ReadTimeout:   0,    // No timeout by default
 		WriteTimeout:  10 * time.Second,

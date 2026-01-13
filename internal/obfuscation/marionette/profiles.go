@@ -186,6 +186,7 @@ func (m *Marionette) addRussianServiceRules(service string) {
 // --- Rules (formerly marionette_rules.go) ---
 
 func (m *Marionette) initDefaultRules() {
+	// Default Timing Rule
 	m.Rules = append(m.Rules, types.ObfuscationRule{
 		Name:     "rule_default_timing",
 		Priority: 5,
@@ -202,6 +203,28 @@ func (m *Marionette) initDefaultRules() {
 				"min_interval":  10,
 				"max_interval":  100,
 				"mean_interval": 50,
+			},
+		},
+	})
+
+	// CRITICAL: Default Protocol Rule (Catch-All)
+	// This ensures that ALL traffic (Discord, Twitch, Google, etc.) matches a rule
+	// and gets wrapped in the fake TLS layer. Without this, traffic falls through
+	// and is sent as raw TCP/TLS, leading to SNI detection and RST.
+	m.Rules = append(m.Rules, types.ObfuscationRule{
+		Name:     "rule_default_protocol",
+		Priority: 10, // Must be >= 7 to pass the filter in ProcessPacket
+		Enabled:  true,
+		Condition: types.Condition{
+			Field:    "packet_count", // Always true
+			Operator: ">=",
+			Value:    0,
+		},
+		Action: types.Action{
+			Type: "obfuscate_traffic",
+			Parameters: map[string]interface{}{
+				"level": 5, // Level 5 triggers addProtocolHeaders (Fake TLS Wrapper)
+				"sni":   "www.microsoft.com",
 			},
 		},
 	})

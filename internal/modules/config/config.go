@@ -216,7 +216,7 @@ func DefaultServerConfig() *ServerConfig {
 				Workers       int    `yaml:"workers"`
 			}{
 				Enabled:       true,
-				ListenAddr:    ":443",
+				ListenAddr:    ":8443",
 				MaxPacketSize: 65535,
 				BufferSize:    4096,
 				Workers:       8,

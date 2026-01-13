@@ -91,6 +91,7 @@ type TrafficObfuscationProfile struct {
 	TimingRandomization bool   `json:"timing_randomization"`
 	SizeRandomization   bool   `json:"size_randomization"`
 	TargetService       string `json:"target_service"`
+	SNI                 string `json:"sni"`
 }
 
 // SystemMetrics alias

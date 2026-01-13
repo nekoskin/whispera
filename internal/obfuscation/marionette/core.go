@@ -91,35 +91,6 @@ func (m *Marionette) SetUTLSConn(conn *utls.UConn) {
 	m.UTLSConn = conn
 }
 
-// isTLSHandshake checks if the data is a TLS handshake packet that should NOT be modified
-// TLS record: byte 0 = content type (0x16 = handshake, 0x17 = application data)
-// If we modify TLS handshake packets, the server will send RST because it can't parse them
-func isTLSHandshake(data []byte) bool {
-	if len(data) < 5 {
-		return false
-	}
-	contentType := data[0]
-	// TLS versions: 0x0301 (TLS 1.0), 0x0302 (TLS 1.1), 0x0303 (TLS 1.2/1.3)
-	majorVersion := data[1]
-	minorVersion := data[2]
-
-	// Check for TLS handshake (0x16) or change cipher spec (0x14) or alert (0x15)
-	isTLSContentType := contentType == 0x16 || contentType == 0x14 || contentType == 0x15
-	// Check for valid TLS version
-	isValidVersion := majorVersion == 0x03 && (minorVersion >= 0x01 && minorVersion <= 0x04)
-
-	return isTLSContentType && isValidVersion
-}
-
-// isTLSApplicationData checks if the data is TLS application data (0x17)
-// Application data CAN be obfuscated because it's already encrypted
-func isTLSApplicationData(data []byte) bool {
-	if len(data) < 5 {
-		return false
-	}
-	return data[0] == 0x17 && data[1] == 0x03 && (data[2] >= 0x01 && data[2] <= 0x04)
-}
-
 // ProcessPacket applies obfuscation rules to a packet with ML analysis
 // Now integrates with BehaviorEngine for realistic traffic timing
 func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.Duration, error) {
@@ -163,25 +134,7 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 		m.triggerAsyncAnalysis()
 	}
 
-	// DEBUG LOGGING
-	isHandshake := isTLSHandshake(data)
-	isAppData := isTLSApplicationData(data)
-	if len(data) > 0 && data[0] == 0x16 {
-		// Log potential TLS Handshakes
-		// fmt.Printf("DEBUG: Packet len=%d, Byte0=%x, Handshake=%v\n", len(data), data[0], isHandshake)
-	}
-
-	if isHandshake {
-		// fmt.Println("DEBUG: TLS Handshake Detected! Returning RAW.")
-		// return data, behavioralDelay, nil // Commented out to enforce obfuscation and prevent RSTs
-	}
-
-	if isAppData {
-		// fmt.Println("DEBUG: TLS Application Data Detected! Returning RAW.")
-		return data, behavioralDelay, nil
-	}
-
-	// Apply Obfuscation to ALL outbound packets (except Handshakes)
+	// Apply Obfuscation to ALL outbound packets
 	processed := data
 	canObfuscate := true
 
