@@ -74,8 +74,27 @@ func (m *Marionette) applyProtocolObfuscation(data []byte, profile *TrafficObfus
 	// Note: PacketCount is incremented in ProcessPacket BEFORE calling applyAction/applyProtocolObfuscation.
 	// So for the first packet, count is 1.
 	if count == 1 {
-		// Prepend Fake Client Hello (SNI=random russian video service)
-		snis := []string{"rutube.ru", "vk.com", "kinopoisk.ru", "dzen.ru", "okko.tv", "premier.one", "wink.ru"}
+		// Prepend Fake Client Hello (SNI=high reputation domain)
+		// XTLS/REALITY strategy: Use a domain that usually resolves to a large cloud (CDNs).
+		// We avoid iterating random small domains to prevent SNI/IP mismatches if the server falls back.
+		snis := []string{
+			// Global high-reputation
+			"www.microsoft.com",
+			"www.google.com",
+			"www.twitch.tv",
+
+			// Russian services (Popular & High Bandwidth)
+			"vk.com",
+			"dzen.ru",
+			"www.ozon.ru",
+			"www.wildberries.ru",
+			"rutube.ru",
+			"yandex.ru",
+			"mail.ru",
+			"disk.yandex.ru",
+			"ok.ru",
+			"www.gosuslugi.ru",
+		}
 		sni := snis[m.Rand.Intn(len(snis))]
 		// This header mimics a standard Chrome Client Hello
 		fakeHello := m.generateFakeClientHello(sni)
@@ -449,35 +468,88 @@ func (m *Marionette) applySequenceObfuscationTraffic(data []byte, _ *TrafficObfu
 // --- HTTPS Masquerade Helpers ---
 
 func (m *Marionette) generateFakeClientHello(sni string) []byte {
-	// Minimal TLS 1.2/1.3 Client Hello Construction
-	// Record Header (5 bytes)
-	// Handshake Header (4 bytes)
-	// Client Hello Body ...
+	// Construct a realistic TLS 1.3 Client Hello (Simulating Chrome)
+	// Structure:
+	// 1. Handshake Header
+	// 2. Client Hello Body:
+	//    - Legacy Version (0x0303)
+	//    - Random (32)
+	//    - Session ID (32)
+	//    - Cipher Suites (Modern 1.3 + 1.2 Fallback)
+	//    - Compression (0x00)
+	//    - Extensions (SNI, SupportedVersions, KeyShare, SigAlgs, etc.)
 
-	// Extensions
+	// --- Extensions Construction ---
+
+	// 1. SNI Extension
 	sniContent := []byte(sni)
-	sniLen := len(sniContent)
-
-	// SNI Extension: Type(00 00) + Len(2) + ListLen(2) + Type(1) + NameLen(2) + Name
-	sniExtLen := 5 + sniLen
+	sniExtLen := 5 + len(sniContent)
 	sniExt := make([]byte, 4+sniExtLen)
-	sniExt[0], sniExt[1] = 0x00, 0x00 // Extension Type: SNI
+	sniExt[0], sniExt[1] = 0x00, 0x00 // Type: server_name
 	sniExt[2], sniExt[3] = byte(sniExtLen>>8), byte(sniExtLen)
-	sniExt[4], sniExt[5] = byte((sniExtLen-2)>>8), byte(sniExtLen-2) // Server Name List Length
-	sniExt[6] = 0x00                                                 // Name Type: Host Name
-	sniExt[7], sniExt[8] = byte(sniLen>>8), byte(sniLen)
+	sniExt[4], sniExt[5] = byte((sniExtLen-2)>>8), byte(sniExtLen-2)
+	sniExt[6] = 0x00 // Name Type: host_name
+	sniExt[7], sniExt[8] = byte(len(sniContent)>>8), byte(len(sniContent))
 	copy(sniExt[9:], sniContent)
 
-	// Random Random (32 bytes)
+	// 2. Supported Groups (Curve25519, secp256r1)
+	groups := []byte{0x00, 0x1d, 0x00, 0x17, 0x00, 0x18} // X25519, P-256, P-384
+	sgExt := make([]byte, 4+2+len(groups))
+	sgExt[0], sgExt[1] = 0x00, 0x0a // Type: supported_groups
+	sgExt[2], sgExt[3] = 0x00, byte(2+len(groups))
+	sgExt[4], sgExt[5] = 0x00, byte(len(groups))
+	copy(sgExt[6:], groups)
+
+	// 3. Key Share (for TLS 1.3 1-RTT) - Fake X25519 key
+	keyShareData := make([]byte, 32)
+	m.Rand.Read(keyShareData)
+	ksContentLen := 2 + 2 + 2 + 32 // GroupListLen(2) + Group(2) + KeyLen(2) + Key(32)
+	ksExt := make([]byte, 4+ksContentLen)
+	ksExt[0], ksExt[1] = 0x00, 0x33 // Type: key_share
+	ksExt[2], ksExt[3] = byte(ksContentLen>>8), byte(ksContentLen)
+	idx := 4
+	ksExt[idx], ksExt[idx+1] = byte((ksContentLen-2)>>8), byte(ksContentLen-2) // ClientKeyShareList Len
+	idx += 2
+	ksExt[idx], ksExt[idx+1] = 0x00, 0x1d // Group: X25519
+	idx += 2
+	ksExt[idx], ksExt[idx+1] = 0x00, 0x20 // Key Len: 32
+	idx += 2
+	copy(ksExt[idx:], keyShareData)
+
+	// 4. Supported Versions (TLS 1.3, TLS 1.2)
+	svExt := []byte{
+		0x00, 0x2b, // Type: supported_versions
+		0x00, 0x05, // Len
+		0x04,       // Versions List Len
+		0x03, 0x04, // TLS 1.3
+		0x03, 0x03, // TLS 1.2
+	}
+
+	// 5. Signature Algorithms
+	saExt := []byte{
+		0x00, 0x0d, // Type: signature_algorithms
+		0x00, 0x08, // Len
+		0x00, 0x06, // List Len
+		0x04, 0x03, // ecdsa_secp256r1_sha256
+		0x08, 0x04, // rsa_pss_rsae_sha256
+		0x04, 0x01, // rsa_pkcs1_sha256
+	}
+
+	// Combine Extensions (Order typically: SNI, SigAlgs, Groups, Versions, KeyShare, Padding)
+	extensions := []byte{}
+	extensions = append(extensions, sniExt...)
+	extensions = append(extensions, saExt...)
+	extensions = append(extensions, sgExt...)
+	extensions = append(extensions, svExt...)
+	extensions = append(extensions, ksExt...)
+
+	// Handshake Body
 	random := make([]byte, 32)
-	// Fill with random data
 	m.Rand.Read(random)
-
-	// Session ID (32 bytes)
 	sessionID := make([]byte, 32)
-	m.Rand.Read(sessionID)
+	m.Rand.Read(sessionID) // For REALITY, this ID often contains the auth tag
 
-	// Cipher Suites (GREASE + common)
+	// Modern Ciphers (TLS 1.3 + GCM)
 	ciphers := []byte{
 		0x13, 0x01, // TLS_AES_128_GCM_SHA256
 		0x13, 0x02, // TLS_AES_256_GCM_SHA384
@@ -485,55 +557,41 @@ func (m *Marionette) generateFakeClientHello(sni string) []byte {
 		0xc0, 0x2b, // ECDHE-ECDSA-AES128-GCM-SHA256
 		0xc0, 0x2f, // ECDHE-RSA-AES128-GCM-SHA256
 	}
-	cipherLen := len(ciphers)
 
-	// Compression Methods (1 byte: 00)
-	compression := []byte{0x01, 0x00}
+	compression := []byte{0x01, 0x00} // Null compression
 
-	// Handshake Body
-	// Version (TLS 1.2: 03 03)
-	// Random (32)
-	// Session ID Len (1) + Session ID (32)
-	// Cipher Suites Len (2) + Suites
-	// Compression Len (1) + Methods
-	// Extensions Len (2) + Extensions (SNI + others)
+	bodyLen := 2 + 32 + 1 + 32 + 2 + len(ciphers) + len(compression) + 2 + len(extensions)
 
-	extLen := len(sniExt)
+	handshake := make([]byte, 4+bodyLen)
+	handshake[0] = 0x01 // Type: Client Hello
+	handshake[1] = 0x00
+	handshake[2] = byte(bodyLen >> 8)
+	handshake[3] = byte(bodyLen)
 
-	handshakeBodyLen := 2 + 32 + 1 + 32 + 2 + cipherLen + 2 + extLen
-
-	handshake := make([]byte, 4+handshakeBodyLen)
-	handshake[0] = 0x01 // Handshake Type: Client Hello
-	handshake[1] = 0x00 // Length High
-	handshake[2] = byte(handshakeBodyLen >> 8)
-	handshake[3] = byte(handshakeBodyLen)
-
-	// Write Body
-	idx := 4
-	handshake[idx], handshake[idx+1] = 0x03, 0x03
-	idx += 2 // Version
+	idx = 4
+	handshake[idx], handshake[idx+1] = 0x03, 0x03 // Legacy Version (TLS 1.2)
+	idx += 2
 	copy(handshake[idx:], random)
 	idx += 32
-	handshake[idx] = 32
+	handshake[idx] = 32 // Session ID Len
 	idx++
 	copy(handshake[idx:], sessionID)
 	idx += 32
-	handshake[idx], handshake[idx+1] = byte(cipherLen>>8), byte(cipherLen)
+	handshake[idx], handshake[idx+1] = byte(len(ciphers)>>8), byte(len(ciphers))
 	idx += 2
 	copy(handshake[idx:], ciphers)
-	idx += cipherLen
+	idx += len(ciphers)
 	copy(handshake[idx:], compression)
+	idx += len(compression)
+	handshake[idx], handshake[idx+1] = byte(len(extensions)>>8), byte(len(extensions))
 	idx += 2
-	handshake[idx], handshake[idx+1] = byte(extLen>>8), byte(extLen)
-	idx += 2
-	copy(handshake[idx:], sniExt)
-	idx += len(sniExt)
+	copy(handshake[idx:], extensions)
 
-	// Wrap in TLS Record
+	// Wrap in TLS Record (Type 0x16)
 	recordLen := len(handshake)
 	record := make([]byte, 5+recordLen)
-	record[0] = 0x16                  // Content Type: Handshake
-	record[1], record[2] = 0x03, 0x01 // Version: TLS 1.0 (Record layer often 1.0 for Hello)
+	record[0] = 0x16
+	record[1], record[2] = 0x03, 0x01 // Record Layer Version (TLS 1.0)
 	record[3], record[4] = byte(recordLen>>8), byte(recordLen)
 	copy(record[5:], handshake)
 

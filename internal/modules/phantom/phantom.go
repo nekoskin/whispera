@@ -503,36 +503,18 @@ func (h *Handler) proxyToDestination(clientConn net.Conn, clientHello []byte) {
 	<-done
 }
 
-// dialDestination connects to the destination server with browser fingerprint
+// dialDestination connects to the destination server (TCP only)
+// Correct Logic: detailed "Stealing" works by forwarding the *Client's* Hello packet.
+// We must NOT perform a handshake here, otherwise we double-encrypt and fail.
 func (h *Handler) dialDestination() (net.Conn, error) {
-	// Extract host from dest
-	host, _, err := net.SplitHostPort(h.config.Dest)
-	if err != nil {
-		host = h.config.Dest
-	}
-
-	// Dial TCP
+	// Dial TCP to the target (e.g., cloudflare.com:443)
 	tcpConn, err := net.DialTimeout("tcp", h.config.Dest, 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
 
-	// Wrap with uTLS for realistic fingerprint
-	tlsConfig := &utls.Config{
-		ServerName:         host,
-		InsecureSkipVerify: false,
-	}
-
-	fingerprint := h.getFingerprint()
-	uconn := utls.UClient(tcpConn, tlsConfig, *fingerprint)
-
-	// Perform handshake
-	if err := uconn.Handshake(); err != nil {
-		tcpConn.Close()
-		return nil, err
-	}
-
-	return uconn, nil
+	// Return the raw TCP connection so we can pipe the client's handshake through it
+	return tcpConn, nil
 }
 
 // getFingerprint returns the uTLS fingerprint
