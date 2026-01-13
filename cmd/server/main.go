@@ -474,15 +474,22 @@ func handlePacket(data []byte, addr net.Addr) {
 	if len(payload) >= 8 && globalRelay != nil {
 		// Check if frame type is valid relay protocol (0x01-0x08)
 		frameType := payload[2]
+		// Stricter check to avoid collision with TLS/VPN traffic
+		// Relay frames: [StreamID:2][Type:1][Flags:1][Length:4][Payload...]
+		// We verify that the Length field matches the remaining data size
 		if frameType >= 0x01 && frameType <= 0x08 {
-			// Process through relay server - this handles CONNECT, DATA, etc.
-			// Note: We pass the DEOBFUSCATED payload
-			if err := globalRelay.ProcessFrame(payload, sess, addr); err != nil {
-				if *debug {
-					log.Printf("[Packet] Relay error: %v", err)
+			dataLen := uint32(payload[4])<<24 | uint32(payload[5])<<16 | uint32(payload[6])<<8 | uint32(payload[7])
+			// Allow some buffer, but if claimed length is way larger than packet, it's likely not a relay frame
+			if int(dataLen) <= len(payload)-8 {
+				// Process through relay server - this handles CONNECT, DATA, etc.
+				// Note: We pass the DEOBFUSCATED payload
+				if err := globalRelay.ProcessFrame(payload, sess, addr); err != nil {
+					if *debug {
+						log.Printf("[Packet] Relay error: %v", err)
+					}
 				}
+				return
 			}
-			return
 		}
 	}
 
