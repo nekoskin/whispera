@@ -53,14 +53,16 @@ func (m *Marionette) applyProtocolObfuscation(data []byte, profile *TrafficObfus
 	if len(data) == 0 {
 		return data
 	}
-	if profile.ObfuscationLevel > 3 {
-		data = m.addProtocolHeaders(data, profile)
-	}
+	// Apply inner layers first (Data patterns, Timing)
 	if profile.ObfuscationLevel > 5 {
 		data = m.addProtocolDataPatterns(data, profile)
 	}
 	if profile.ObfuscationLevel > 7 {
 		data = m.addProtocolTimingPatterns(data, profile)
+	}
+	// Apply headers LAST (Outer layer) to ensure valid HTTP look
+	if profile.ObfuscationLevel > 3 {
+		data = m.addProtocolHeaders(data, profile)
 	}
 	return data
 }
@@ -121,14 +123,16 @@ func (m *Marionette) applyApplicationObfuscation(data []byte, profile *TrafficOb
 	if len(data) == 0 {
 		return data
 	}
-	if profile.ObfuscationLevel > 3 {
-		data = m.addApplicationSpecificHeadersTraffic(data, profile)
-	}
+	// Apply inner layers first
 	if profile.ObfuscationLevel > 5 {
 		data = m.addApplicationSpecificDataPatterns(data, profile)
 	}
 	if profile.ObfuscationLevel > 7 {
 		data = m.addApplicationSpecificTimingPatterns(data, profile)
+	}
+	// Apply headers LAST (Outer layer)
+	if profile.ObfuscationLevel > 3 {
+		data = m.addApplicationSpecificHeadersTraffic(data, profile)
 	}
 	return data
 }
