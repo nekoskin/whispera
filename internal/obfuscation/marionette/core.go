@@ -215,6 +215,33 @@ func (m *Marionette) Deobfuscate(data []byte) ([]byte, time.Duration, error) {
 		}
 	}
 
+	// 2. Check for Fake Client Hello (0x16 = Handshake)
+	// If we receive a fake Client Hello, we must discard it.
+	// But check if there is 0x17 (Data) immediately following it in the buffer.
+	if data[0] == 0x16 && data[1] == 0x03 {
+		// Calculate length of this handshake record
+		length := int(data[3])<<8 | int(data[4])
+		recordLen := 5 + length
+
+		if len(data) == recordLen {
+			// Just a fake handshake, nothing else. Return empty/keep-alive?
+			// The server might drop empty packets, but it shouldn't error.
+			// Return empty slice to signal "processed but no payload"
+			return []byte{}, 0, nil
+		}
+
+		if len(data) > recordLen {
+			// There is more data after the handshake. It is likely the 0x17 record.
+			// Let's recurse or just process the next chunk.
+			// Strip the handshake and check the next byte
+			remaining := data[recordLen:]
+			if remaining[0] == 0x17 {
+				// Recursively deobfuscate the remaining part (which is 0x17 wrapped)
+				return m.Deobfuscate(remaining)
+			}
+		}
+	}
+
 	// 2. HTTP Header Stripping (Legacy / HTTP Profiles)
 	// Basic HTTP Header Stripping (for vk, yandex, etc. profiles)
 	// We look for the double CRLF (\r\n\r\n) which separates headers from body

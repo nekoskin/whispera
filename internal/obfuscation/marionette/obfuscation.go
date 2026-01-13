@@ -59,10 +59,34 @@ func (m *Marionette) applyProtocolObfuscation(data []byte, profile *TrafficObfus
 	if profile.ObfuscationLevel > 7 {
 		data = m.addProtocolTimingPatterns(data, profile)
 	}
-	// Apply headers LAST (Outer layer) to ensure valid HTTP look
+	// Apply headers LAST (Outer layer) to ensure valid HTTP/TLS look
 	if profile.ObfuscationLevel > 3 {
 		data = m.addProtocolHeaders(data, profile)
 	}
+
+	// HTTPS MASQUERADE: Inject Fake Client Hello on the VERY FIRST packet.
+	// This makes the connection start look like a real TLS Handshake to google.com.
+	// We only do this once per connection session.
+	m.Mutex.RLock()
+	count := m.State.PacketCount
+	m.Mutex.RUnlock()
+
+	// Note: PacketCount is incremented in ProcessPacket BEFORE calling applyAction/applyProtocolObfuscation.
+	// So for the first packet, count is 1.
+	if count == 1 {
+		// Prepend Fake Client Hello (SNI=random russian video service)
+		snis := []string{"rutube.ru", "vk.com", "kinopoisk.ru", "dzen.ru", "okko.tv", "premier.one", "wink.ru"}
+		sni := snis[m.Rand.Intn(len(snis))]
+		// This header mimics a standard Chrome Client Hello
+		fakeHello := m.generateFakeClientHello(sni)
+
+		// Create a new buffer: [Fake Hello] + [Real Data (already wrapped in AppData)]
+		res := make([]byte, len(fakeHello)+len(data))
+		copy(res, fakeHello)
+		copy(res[len(fakeHello):], data)
+		return res
+	}
+
 	return data
 }
 
@@ -420,6 +444,100 @@ func (m *Marionette) applySequenceObfuscationTraffic(data []byte, _ *TrafficObfu
 		res[i] = b ^ byte(i%256)
 	}
 	return res
+}
+
+// --- HTTPS Masquerade Helpers ---
+
+func (m *Marionette) generateFakeClientHello(sni string) []byte {
+	// Minimal TLS 1.2/1.3 Client Hello Construction
+	// Record Header (5 bytes)
+	// Handshake Header (4 bytes)
+	// Client Hello Body ...
+
+	// Extensions
+	sniContent := []byte(sni)
+	sniLen := len(sniContent)
+
+	// SNI Extension: Type(00 00) + Len(2) + ListLen(2) + Type(1) + NameLen(2) + Name
+	sniExtLen := 5 + sniLen
+	sniExt := make([]byte, 4+sniExtLen)
+	sniExt[0], sniExt[1] = 0x00, 0x00 // Extension Type: SNI
+	sniExt[2], sniExt[3] = byte(sniExtLen>>8), byte(sniExtLen)
+	sniExt[4], sniExt[5] = byte((sniExtLen-2)>>8), byte(sniExtLen-2) // Server Name List Length
+	sniExt[6] = 0x00                                                 // Name Type: Host Name
+	sniExt[7], sniExt[8] = byte(sniLen>>8), byte(sniLen)
+	copy(sniExt[9:], sniContent)
+
+	// Random Random (32 bytes)
+	random := make([]byte, 32)
+	// Fill with random data
+	m.Rand.Read(random)
+
+	// Session ID (32 bytes)
+	sessionID := make([]byte, 32)
+	m.Rand.Read(sessionID)
+
+	// Cipher Suites (GREASE + common)
+	ciphers := []byte{
+		0x13, 0x01, // TLS_AES_128_GCM_SHA256
+		0x13, 0x02, // TLS_AES_256_GCM_SHA384
+		0x13, 0x03, // TLS_CHACHA20_POLY1305_SHA256
+		0xc0, 0x2b, // ECDHE-ECDSA-AES128-GCM-SHA256
+		0xc0, 0x2f, // ECDHE-RSA-AES128-GCM-SHA256
+	}
+	cipherLen := len(ciphers)
+
+	// Compression Methods (1 byte: 00)
+	compression := []byte{0x01, 0x00}
+
+	// Handshake Body
+	// Version (TLS 1.2: 03 03)
+	// Random (32)
+	// Session ID Len (1) + Session ID (32)
+	// Cipher Suites Len (2) + Suites
+	// Compression Len (1) + Methods
+	// Extensions Len (2) + Extensions (SNI + others)
+
+	extLen := len(sniExt)
+
+	handshakeBodyLen := 2 + 32 + 1 + 32 + 2 + cipherLen + 2 + extLen
+
+	handshake := make([]byte, 4+handshakeBodyLen)
+	handshake[0] = 0x01 // Handshake Type: Client Hello
+	handshake[1] = 0x00 // Length High
+	handshake[2] = byte(handshakeBodyLen >> 8)
+	handshake[3] = byte(handshakeBodyLen)
+
+	// Write Body
+	idx := 4
+	handshake[idx], handshake[idx+1] = 0x03, 0x03
+	idx += 2 // Version
+	copy(handshake[idx:], random)
+	idx += 32
+	handshake[idx] = 32
+	idx++
+	copy(handshake[idx:], sessionID)
+	idx += 32
+	handshake[idx], handshake[idx+1] = byte(cipherLen>>8), byte(cipherLen)
+	idx += 2
+	copy(handshake[idx:], ciphers)
+	idx += cipherLen
+	copy(handshake[idx:], compression)
+	idx += 2
+	handshake[idx], handshake[idx+1] = byte(extLen>>8), byte(extLen)
+	idx += 2
+	copy(handshake[idx:], sniExt)
+	idx += len(sniExt)
+
+	// Wrap in TLS Record
+	recordLen := len(handshake)
+	record := make([]byte, 5+recordLen)
+	record[0] = 0x16                  // Content Type: Handshake
+	record[1], record[2] = 0x03, 0x01 // Version: TLS 1.0 (Record layer often 1.0 for Hello)
+	record[3], record[4] = byte(recordLen>>8), byte(recordLen)
+	copy(record[5:], handshake)
+
+	return record
 }
 
 // --- Padding Logic (formerly marionette_padding.go) ---

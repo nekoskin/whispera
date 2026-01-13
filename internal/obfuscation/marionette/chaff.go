@@ -27,12 +27,9 @@ func NewChaffGenerator() *ChaffGenerator {
 	return &ChaffGenerator{
 		Enabled: true,
 		Targets: []string{
-			"www.google.com:443",
-			"www.microsoft.com:443",
-			"www.apple.com:443",
-			"www.cloudflare.com:443",
-			"aws.amazon.com:443",
-			"www.instagram.com:443",
+			"vk.com:443", // VK Video
+			"kinopoisk.ru:443",
+			"wink.ru:443",
 		},
 		Interval:    3 * time.Second, // Create noise every few seconds
 		Variance:    2 * time.Second,
