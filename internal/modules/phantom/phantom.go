@@ -526,11 +526,37 @@ func (h *Handler) isAllowedSNI(sni string) bool {
 
 // authenticateClient validates Phantom auth data using REALITY-like SessionID HMAC
 func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bool) {
+	// DEV MODE: If no private key is configured, ALLOW ALL
+	if len(h.privateKey) == 0 {
+		return "dev-user", true
+	}
+
 	if len(clientRandom) != 32 || len(sessionID) != 32 {
 		return "", false
 	}
 
+	// auth: Verify if SessionID == HMAC(SharedSecret, "whispera-session-id")
+	// We treat ClientRandom as the Client's Ephemeral Public Key (X25519)
 
+	// Compute shared secret: X25519(ServerPriv, ClientPub)
+	// ClientPub is clientRandom
+	sharedSecret, err := curve25519.X25519(h.privateKey, clientRandom)
+	if err != nil {
+		return "", false
+	}
+
+	// Calculate expected SessionID
+	mac := hmac.New(sha256.New, sharedSecret)
+	mac.Write([]byte("whispera-session-id"))
+	expected := mac.Sum(nil)
+
+	// Use constant time comparison
+	if hmac.Equal(sessionID, expected[:32]) {
+		return "default", true
+	}
+
+	return "", false
+}
 
 // authenticateClientLegacy validates legacy Phantom auth extension data
 func (h *Handler) authenticateClientLegacy(authData []byte) (string, bool) {
