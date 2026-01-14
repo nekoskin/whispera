@@ -179,7 +179,8 @@ func main() {
 	phantomEnabled := false
 	phantomSNI := "cloudflare.com" // Default SNI
 	phantomShortId := ""
-	phantomServerPubKey := ""
+	// Default Public Key corresponding to the static Private Key in server config
+	phantomServerPubKey := "8c3c09a6c00e9bf762cc44d38c94912887cec1951904992243f48abe20fa3506"
 
 	if cfg.Phantom != nil && cfg.Phantom.Enabled {
 		phantomEnabled = true
