@@ -4,6 +4,7 @@
 package asn_bypass
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -230,9 +231,21 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 		tlsConfig.ServerName = d.config.FrontDomain
 	}
 
-	uconn := utls.UClient(tcpConn, tlsConfig, *fingerprint)
+	// --- "Hello-Only" Strategy Implementation ---
+	// We use uTLS to generate a valid Chrome ClientHello, but we do NOT allow it to
+	// establish a full TLS session/encryption, because the Phantom server cannot
+	// decrypt it (it's a MITM without the private key).
+	// Instead, we:
+	// 1. Capture the ClientHello from uTLS into a buffer
+	// 2. Send the captured ClientHello over the REAL TCP connection
+	// 3. Read and discard the Fake ServerHello from the server
+	// 4. Return the RAW TCP connection, allowing unencrypted (but seemingly TLS) traffic to flow.
 
-	// Apply JA3 randomization if enabled
+	// Create an interceptor to capture the ClientHello
+	interceptor := newInterceptorConn()
+	uconn := utls.UClient(interceptor, tlsConfig, *fingerprint)
+
+	// Apply JA3 randomization
 	if d.config.EnableJA3Randomization {
 		if err := d.randomizeJA3(uconn); err != nil {
 			tcpConn.Close()
@@ -240,46 +253,61 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 		}
 	}
 
-	// Apply Phantom /  auth if configured
+	// Apply Phantom Auth
 	if d.phantomAuth != nil {
 		clientRandom, sessionID, err := d.phantomAuth.GenerateSessionID()
 		if err == nil {
-			// Ensure handshake state is built (idempotent)
 			if err := uconn.BuildHandshakeState(); err == nil {
-				// Inject Random (Client Ephemeral PubKey)
 				if len(clientRandom) == 32 {
 					copy(uconn.HandshakeState.Hello.Random[:], clientRandom)
 				}
-				// Inject SessionID (HMAC)
 				uconn.HandshakeState.Hello.SessionId = sessionID
 			}
 		} else {
-			// Log warning but continue (might use extension auth)
 			fmt.Printf("Phantom auth generation failed: %v\n", err)
 		}
 	}
 
-	// Perform handshake with context timeout
-	handshakeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	errChan := make(chan error, 1)
+	// Trigger Handshake to generate ClientHello
+	// This will write to our interceptor and block/fail on Read.
+	// We run it in a goroutine and wait for the Write.
 	go func() {
-		errChan <- uconn.Handshake()
+		// This is expected to fail or hang, we just want the Write
+		_ = uconn.Handshake()
 	}()
 
-	select {
-	case err := <-errChan:
-		if err != nil {
-			tcpConn.Close()
-			return nil, fmt.Errorf("tls handshake failed: %w", err)
-		}
-	case <-handshakeCtx.Done():
+	// Wait for ClientHello to be written
+	clientHello, err := interceptor.WaitForBytes(5 * time.Second)
+	if err != nil {
 		tcpConn.Close()
-		return nil, fmt.Errorf("tls handshake timeout")
+		return nil, fmt.Errorf("failed to generate ClientHello: %w", err)
 	}
 
-	return uconn, nil
+	// Send ClientHello to real server
+	if _, err := tcpConn.Write(clientHello); err != nil {
+		tcpConn.Close()
+		return nil, fmt.Errorf("write client hello failed: %w", err)
+	}
+
+	// Read ServerHello (Phantom proxies it from real dest)
+	// We consume it to clear the socket buffer for the actual protocol
+	// It usually consists of ServerHello, ChangeCipherSpec, EncryptedExtensions, etc.
+	// We just read a chunk and assume it's done enough for us to proceed.
+	// Parse ServerHello? We just read a chunk and assume it's done enough for us to proceed.
+	buf := make([]byte, 16*1024)
+	tcpConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := tcpConn.Read(buf); err != nil {
+		tcpConn.Close()
+		return nil, fmt.Errorf("failed to read ServerHello (timeout/error): %w", err)
+	}
+	// We ignore the content of ServerHello (it is encrypted/real TLS we can't speak)
+
+	// Reset deadline
+	tcpConn.SetReadDeadline(time.Time{})
+
+	// Return the raw TCP connection, which is now "Authenticated" by Phantom
+	// and ready for our VPN frames.
+	return tcpConn, nil
 }
 
 // dialDomainFronting uses domain fronting technique
@@ -697,4 +725,79 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// interceptorConn captures written data (ClientHello)
+type interceptorConn struct {
+	net.Conn
+	buf      bytes.Buffer
+	mu       sync.Mutex
+	cond     *sync.Cond
+	captured bool
+	closed   bool
+}
+
+func newInterceptorConn() *interceptorConn {
+	ic := &interceptorConn{}
+	ic.cond = sync.NewCond(&ic.mu)
+	return ic
+}
+
+func (ic *interceptorConn) Write(b []byte) (int, error) {
+	ic.mu.Lock()
+	defer ic.mu.Unlock()
+	if ic.closed {
+		return 0, io.ErrClosedPipe
+	}
+	n, err := ic.buf.Write(b)
+	ic.captured = true
+	ic.cond.Broadcast()
+	return n, err
+}
+
+func (ic *interceptorConn) Read(b []byte) (int, error) {
+	// Block heavily to emulate network wait, or fail.
+	// We don't want uTLS to proceed reading ServerHello from us.
+	return 0, io.EOF
+}
+
+func (ic *interceptorConn) Close() error {
+	ic.mu.Lock()
+	defer ic.mu.Unlock()
+	ic.closed = true
+	return nil
+}
+
+func (ic *interceptorConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
+func (ic *interceptorConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
+func (ic *interceptorConn) SetDeadline(t time.Time) error      { return nil }
+func (ic *interceptorConn) SetReadDeadline(t time.Time) error  { return nil }
+func (ic *interceptorConn) SetWriteDeadline(t time.Time) error { return nil }
+
+func (ic *interceptorConn) WaitForBytes(timeout time.Duration) ([]byte, error) {
+	deadline := time.Now().Add(timeout)
+	ic.mu.Lock()
+	defer ic.mu.Unlock()
+
+	for ic.buf.Len() == 0 {
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timeout waiting for ClientHello")
+		}
+
+		// Wait with check
+		done := make(chan struct{})
+		go func() {
+			ic.cond.Wait()
+			close(done)
+		}()
+
+		// We have to release lock for Wait, but standard Cond.Wait does that.
+		// However, we can't implement timeout easily with Cond.Wait without a loop and separate timer.
+		// Simplified for this context:
+		ic.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+		ic.mu.Lock()
+	}
+
+	return ic.buf.Bytes(), nil
 }

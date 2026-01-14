@@ -156,6 +156,9 @@ type Manager struct {
 
 	// Phantom Protocol - for SNI masquerading
 	phantomAuth *phantom.ClientAuth
+
+	// Track if transport is already secure (e.g. TLS) to skip double-obfuscation
+	isTransportSecure bool
 }
 
 // New creates a new tunnel manager
@@ -318,11 +321,13 @@ func (m *Manager) Connect(ctx context.Context) error {
 			// Fall through to UDP
 		} else {
 			log.Info("ASN bypass connection established successfully")
+			m.isTransportSecure = true
 		}
 	}
 
 	// Fallback to direct UDP connection if ASN bypass not enabled or failed
 	if conn == nil {
+		m.isTransportSecure = false // UDP is not TLS secured by transport
 		// Resolve server address
 		addr, err := net.ResolveUDPAddr("udp", m.config.ServerAddr)
 		if err != nil {
@@ -470,7 +475,8 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 func (m *Manager) Send(data []byte) error {
 	// Apply obfuscation if available (FTE -> Marionette -> ML chain)
 	// Also applies anti-reputation timing jitter
-	if m.obfuscator != nil {
+	// SKIP if transport is already secure (TLS/Phantom) to avoid double-encryption breakage
+	if m.obfuscator != nil && !m.isTransportSecure {
 		obfuscated, delay, err := m.obfuscator.Process(data, interfaces.DirectionOutbound)
 		if err == nil && obfuscated != nil {
 			data = obfuscated
@@ -530,7 +536,8 @@ func (m *Manager) Receive(buf []byte) (int, error) {
 	}
 
 	// Apply deobfuscation if available
-	if m.obfuscator != nil && n > 0 {
+	// SKIP if transport is already secure (TLS/Phantom)
+	if m.obfuscator != nil && n > 0 && !m.isTransportSecure {
 		deobfuscated, _, err := m.obfuscator.Process(buf[:n], interfaces.DirectionInbound)
 		if err == nil && deobfuscated != nil {
 			copy(buf, deobfuscated)

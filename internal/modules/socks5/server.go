@@ -641,8 +641,16 @@ func (s *Server) stopHevTunnel() {
 
 // handleProxyRequest is the callback from the SOCKS5 server when a connection is made
 func (s *Server) handleProxyRequest(conn net.Conn, targetAddr string, targetPort uint16) error {
+	// Check for multicast/broadcast junk to silently drop
+	// This prevents log spam from SSDP/NetBIOS/etc
+	if s.isJunkTraffic(targetAddr, targetPort) {
+		if s.config.Debug {
+			// stdlog.Printf("[SOCKS5] Silently dropping junk traffic to %s:%d\n", targetAddr, targetPort)
+		}
+		return nil
+	}
+
 	// Filter traffic that should NOT go through VPN tunnel
-	// This prevents multicast/local traffic from creating suspicious patterns
 	if s.shouldBypassTunnel(targetAddr, targetPort) {
 		if s.config.Debug {
 			stdlog.Printf("[SOCKS5] Bypassing tunnel for: %s:%d\n", targetAddr, targetPort)
@@ -702,6 +710,41 @@ func (s *Server) shouldBypassTunnel(addr string, port uint16) bool {
 		if ip4[0] == 192 && ip4[1] == 168 {
 			return true
 		}
+	}
+
+	return false
+}
+
+// isJunkTraffic identifies traffic that should be silently dropped (multicast, SSDP, etc)
+func (s *Server) isJunkTraffic(addr string, port uint16) bool {
+	// SSDP
+	if port == 1900 {
+		return true
+	}
+	// NetBIOS / LLMNR
+	if port == 137 || port == 138 || port == 5355 {
+		return true
+	}
+	// MDNS
+	if port == 5353 {
+		return true
+	}
+
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return false
+	}
+
+	// Multicast range (224.0.0.0 to 239.255.255.255)
+	if ip4 := ip.To4(); ip4 != nil {
+		if ip4[0] >= 224 && ip4[0] <= 239 {
+			return true
+		}
+	}
+
+	// Broadcast
+	if ip.Equal(net.IPv4bcast) {
+		return true
 	}
 
 	return false
