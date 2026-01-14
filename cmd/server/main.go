@@ -75,6 +75,12 @@ func main() {
 
 	fmt.Println("[DEBUG] Whispera Server: main() started")
 	flag.Parse()
+
+	// Default to config.yaml if not specified to allow persistence
+	if *configFile == "" {
+		*configFile = "config.yaml"
+	}
+
 	fmt.Printf("[DEBUG] Whispera Server: flags parsed, config=%s\n", *configFile)
 
 	// Start pprof server
@@ -171,6 +177,8 @@ func createModules(manager *lifecycle.Manager) error {
 	// Apply command line overrides
 	if *listenAddr != "" {
 		serverConfig.Transport.UDP.ListenAddr = *listenAddr
+		// Sync Server ListenAddr (TCP/Phantom) to match UDP if flag provided
+		serverConfig.Server.ListenAddr = *listenAddr
 	}
 	if *apiAddr != "" {
 		serverConfig.API.ListenAddr = *apiAddr

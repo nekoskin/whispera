@@ -2,10 +2,10 @@
 # Protocol: Whispera v1 (WLESS)
 
 listen:
-  udp: ":51820"
-  tcp: ":443"
-  websocket: ":443"
-  quic: ":443"
+  udp: ":8443"
+  tcp: ":8443"
+  websocket: ":8443"
+  quic: ":8443"
 
 # TLS Configuration
 tls:
@@ -91,9 +91,7 @@ phantom:
   
   # Allowed SNI values that clients can use
   # Should match the dest server or related domains
-  server_names:
-    - "cloudflare.com"
-    - "www.cloudflare.com"
+  server_names: []
   
   # x25519 private key for client authentication (hex encoded)
   # Generate with: ./whispera-server x25519
