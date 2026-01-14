@@ -33,7 +33,7 @@ var Version = "2.0.0"
 
 var (
 	configPath       = flag.String("config", "", "Path to configuration file")
-	serverAddr       = flag.String("server", "212.192.246.108:443", "Server address (host:port)")
+	serverAddr       = flag.String("server", "212.192.246.108:8443", "Server address (host:port)")
 	socksAddr        = flag.String("socks", "127.0.0.1:10800", "SOCKS5 listen address for hev-socks5-tunnel")
 	connKey          = flag.String("key", "", "Connection key (whispera://...)")
 	transport        = flag.String("transport", "udp", "Transport mode: auto|tcp|udp")
