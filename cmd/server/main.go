@@ -11,6 +11,7 @@ import (
 	"net/http"
 	_ "net/http/pprof" // Register pprof handlers
 	"os"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/curve25519"
@@ -424,33 +425,168 @@ func createModules(manager *lifecycle.Manager) error {
 			MaxTimeDiff: serverConfig.Phantom.MaxTimeDiff,
 			Fingerprint: serverConfig.Phantom.Fingerprint,
 			OnAuthenticated: func(conn net.Conn, clientID string) {
-				// Handle authenticated Whispera client
+				// Handle authenticated Whispera client with full Relay Protocol support
 				log.Printf("Phantom: Authenticated client %s from %s", clientID, conn.RemoteAddr())
 
-				// Keep connection alive and drain buffer to prevent blocking/RST
-				// This ensures the handshake success is verified and connection stays stable
-				go func() {
-					defer conn.Close()
-					buf := make([]byte, 16384) // 16KB buffer
-					for {
-						// Set generous timeout
-						conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
-						n, err := conn.Read(buf)
-						if err != nil {
-							if err != io.EOF {
-								log.Printf("Phantom: Connection closed for %s: %v", clientID, err)
-							} else {
-								log.Printf("Phantom: Client %s disconnected", clientID)
-							}
-							return
+				// Map to track active streams: StreamID -> net.Conn
+				streams := make(map[uint16]net.Conn)
+				var streamsMu sync.Mutex
+				var writeLock sync.Mutex // Serialize writes to the main tunnel connection
+
+				// Helper to write frames safely to the tunnel
+				sendFrame := func(f *relay.Frame) error {
+					data, err := f.Encode()
+					if err != nil {
+						return err
+					}
+					writeLock.Lock()
+					defer writeLock.Unlock()
+					// Set write deadline to avoid blocking forever if client hangs
+					conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+					_, err = conn.Write(data)
+					// Disable deadline
+					conn.SetWriteDeadline(time.Time{})
+					return err
+				}
+
+				defer func() {
+					streamsMu.Lock()
+					for _, s := range streams {
+						s.Close()
+					}
+					streamsMu.Unlock()
+					conn.Close()
+					log.Printf("Phantom: Tunnel closed for client %s", clientID)
+				}()
+
+				// Main read loop for the tunnel
+				for {
+					// Read frame from client
+					// We use a zero deadline for reading from the main tunnel to keep it open
+					conn.SetReadDeadline(time.Time{})
+					f, err := relay.ReadFrame(conn)
+					if err != nil {
+						if err != io.EOF {
+							log.Printf("Phantom: Tunnel read error for %s: %v", clientID, err)
 						}
-						// Log reception implies successful channel
-						// TODO: Inject 'buf[:n]' into globalDataPlane/Relay once TCP framing is defined
+						return
+					}
+
+					if *debug {
+						// log.Printf("Phantom: Received frame %s stream=%d len=%d", relay.FrameTypeName(f.Type), f.StreamID, len(f.Payload))
+					}
+
+					switch f.Type {
+					case relay.FrameConnect:
+						// Handle Connect Request
+						payload, err := relay.DecodeConnectPayload(f.Payload)
+						if err != nil {
+							log.Printf("Phantom: Invalid CONNECT payload from %s: %v", clientID, err)
+							sendFrame(relay.NewConnectFailFrame(f.StreamID, "Invalid payload"))
+							continue
+						}
+
+						target := fmt.Sprintf("%s:%d", payload.Addr, payload.Port)
+						network := "tcp"
+						if payload.Protocol == relay.ProtoUDP {
+							network = "udp"
+						}
+
 						if *debug {
-							log.Printf("Phantom: Received %d bytes from %s (Data Plane pending)", n, clientID)
+							log.Printf("Phantom: Client %s connecting to %s (%s) via Stream %d", clientID, target, network, f.StreamID)
+						}
+
+						// Dial the target
+						// TODO: Use router/outbound policy here
+						rConn, err := net.DialTimeout(network, target, 10*time.Second)
+						if err != nil {
+							log.Printf("Phantom: Failed to dial %s: %v", target, err)
+							sendFrame(relay.NewConnectFailFrame(f.StreamID, err.Error()))
+							continue
+						}
+
+						// Store connection
+						streamsMu.Lock()
+						streams[f.StreamID] = rConn
+						streamsMu.Unlock()
+
+						// Send CONNECT_OK
+						if err := sendFrame(relay.NewConnectOKFrame(f.StreamID)); err != nil {
+							rConn.Close()
+							continue
+						}
+
+						// Start Async Reader for this stream (Target -> Client)
+						go func(sid uint16, rc net.Conn) {
+							defer rc.Close()
+							// Close frame is sent in the error handling block
+
+							// 32KB buffer for relaying
+							buf := make([]byte, 32*1024)
+							for {
+								rc.SetReadDeadline(time.Now().Add(5 * time.Minute)) // Idle timeout for target
+								n, err := rc.Read(buf)
+								if n > 0 {
+									// Splitting large reads (if any) is handled by NewDataFrame usually,
+									// but MaxPayloadLen is 65535, so 32KB fits safely.
+									if err := sendFrame(relay.NewDataFrame(sid, buf[:n])); err != nil {
+										log.Printf("Phantom: Failed to send data frame to client: %v", err)
+										return // Tunnel broken
+									}
+								}
+								if err != nil {
+									if err != io.EOF {
+										// log.Printf("Phantom: Stream %d remote read error: %v", sid, err)
+									}
+									// Send Close frame to client
+									sendFrame(relay.NewCloseFrame(sid))
+
+									streamsMu.Lock()
+									delete(streams, sid)
+									streamsMu.Unlock()
+									return
+								}
+							}
+						}(f.StreamID, rConn)
+
+					case relay.FrameData:
+						streamsMu.Lock()
+						rc, ok := streams[f.StreamID]
+						streamsMu.Unlock()
+						if ok {
+							rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
+							_, err := rc.Write(f.Payload)
+							rc.SetWriteDeadline(time.Time{})
+							if err != nil {
+								log.Printf("Phantom: Failed to write to target stream %d: %v", f.StreamID, err)
+								// Close will happen on read error or next loop
+							}
+						}
+
+					case relay.FrameClose:
+						streamsMu.Lock()
+						rc, ok := streams[f.StreamID]
+						delete(streams, f.StreamID)
+						streamsMu.Unlock()
+						if ok {
+							rc.Close()
+							if *debug {
+								log.Printf("Phantom: Stream %d closed by client", f.StreamID)
+							}
+						}
+
+					case relay.FramePing:
+						sendFrame(relay.NewPongFrame())
+
+					case relay.FrameUDPData:
+						// Handle UDP packets (e.g. DNS)
+						// TODO: Implement UDP NAT/Session handling
+						// For now, logging
+						if *debug {
+							log.Printf("Phantom: Received UDP Frame (not fully implemented)")
 						}
 					}
-				}()
+				}
 			},
 		})
 		if err != nil {
