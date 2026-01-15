@@ -9,6 +9,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -202,7 +203,9 @@ type Manager struct {
 	isTransportSecure bool
 
 	// List of Russian SNIs for rotation
-	russianSNIs []string
+	russianSNIs  []string
+	currentSNI   string
+	lastRotation time.Time
 }
 
 // New creates a new tunnel manager
@@ -529,17 +532,73 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 }
 
 // getRotationSNI picks a random SNI from the Russian list or returns default
+// getRotationSNI picks a random SNI from the Russian list based on dynamic intervals
 func (m *Manager) getRotationSNI() string {
+	m.connMu.Lock()
+	defer m.connMu.Unlock()
+
 	if len(m.russianSNIs) == 0 {
 		return m.config.PhantomSNI
 	}
 
-	// Use crypto/rand for uniform selection
-	idxBig, err := rand.Int(rand.Reader, big.NewInt(int64(len(m.russianSNIs))))
-	if err != nil {
-		return m.russianSNIs[0] // Fallback
+	// Calculate interval for current SNI
+	interval := m.getSNIRotationInterval(m.currentSNI)
+
+	// Rotate only if enough time has passed or no SNI selected yet
+	if m.currentSNI == "" || time.Since(m.lastRotation) > interval {
+		// Use crypto/rand for uniform selection
+		idxBig, err := rand.Int(rand.Reader, big.NewInt(int64(len(m.russianSNIs))))
+		if err != nil {
+			m.currentSNI = m.russianSNIs[0]
+		} else {
+			m.currentSNI = m.russianSNIs[idxBig.Int64()]
+		}
+		m.lastRotation = time.Now()
+
+		// Log new interval for debugging
+		newInterval := m.getSNIRotationInterval(m.currentSNI)
+		log.Info("Rotated SNI to: %s (Next rotation in %s)", m.currentSNI, newInterval)
 	}
-	return m.russianSNIs[idxBig.Int64()]
+
+	return m.currentSNI
+}
+
+// getSNIRotationInterval returns the rotation duration based on SNI category
+func (m *Manager) getSNIRotationInterval(sni string) time.Duration {
+	if sni == "" {
+		return 0
+	}
+
+	// Marketplaces (Long sessions) -> 15 min
+	if strings.Contains(sni, "ozon") ||
+		strings.Contains(sni, "wildberries") ||
+		strings.Contains(sni, "avito") ||
+		strings.Contains(sni, "market") {
+		return 15 * time.Minute
+	}
+
+	// Search Engines / Portals (Short sessions/Frequent requests) -> 5 sec
+	if strings.Contains(sni, "yandex") ||
+		strings.Contains(sni, "ya.ru") ||
+		strings.Contains(sni, "google") ||
+		strings.Contains(sni, "mail.ru") ||
+		strings.Contains(sni, "rambler") ||
+		strings.Contains(sni, "bing") {
+		return 5 * time.Second
+	}
+
+	// Video / Streaming (Long sessions) -> 2 hours
+	if strings.Contains(sni, "rutube") ||
+		strings.Contains(sni, "vk.com") ||
+		strings.Contains(sni, "vkvideo") || // explicit check if used
+		strings.Contains(sni, "youtube") ||
+		strings.Contains(sni, "kion") ||
+		strings.Contains(sni, "premier") {
+		return 2 * time.Hour
+	}
+
+	// Default (Social/Messengers/Etc) -> 1 minute
+	return 1 * time.Minute
 }
 
 // enableKillSwitch configures firewall

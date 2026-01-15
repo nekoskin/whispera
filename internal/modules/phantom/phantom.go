@@ -267,43 +267,40 @@ func (h *Handler) handleConnection(conn net.Conn) {
 		return
 	}
 
-	// Validate SNI
+	// Try to authenticate as Whispera client FIRST (bypass SNI check for valid clients)
+	clientID, ok := h.authenticateClient(clientRandom, sessionID)
+	// Fallback to legacy extension check if REALITY check fails
+	if !ok && len(authData) > 0 && len(h.privateKey) > 0 {
+		clientID, ok = h.authenticateClientLegacy(authData)
+	}
+
+	if ok {
+		// Authenticated Whispera client!
+		h.stats.AuthenticatedClients++
+		log.Printf("Authenticated client: %s from %s (SNI: %s)", clientID, remoteAddr, sni)
+
+		// REALITY-like: Perform minimal handshake with real destination to satisfy DPI
+		if err := h.sendFakeHandshake(conn, clientHello, sni); err != nil {
+			log.Printf("Warning: Failed to send fake handshake: %v", err)
+		}
+
+		// Call handler for authenticated connection
+		if h.config.OnAuthenticated != nil {
+			h.config.OnAuthenticated(conn, clientID)
+		}
+		return
+	}
+
+	// Not authenticated - enforce SNI allowlist to avoid being an open proxy
 	if !h.isAllowedSNI(sni) {
 		log.Printf("Rejected SNI: %s from %s", sni, remoteAddr)
 		h.proxyToDestination(conn, clientHello)
 		return
 	}
 
-	// Try to authenticate as Whispera client
-	clientID, ok := h.authenticateClient(clientRandom, sessionID)
-	// Fallback to legacy extension check if REALITY check fails (and keys were present)
-	if !ok && len(authData) > 0 && len(h.privateKey) > 0 {
-		clientID, ok = h.authenticateClientLegacy(authData)
-	}
-
-	if !ok {
-		// Not a Whispera client - proxy to real destination
-		h.stats.ProxiedConnections++
-		h.proxyToDestination(conn, clientHello)
-		return
-	}
-
-	// Authenticated Whispera client!
-	h.stats.AuthenticatedClients++
-	log.Printf("Authenticated client: %s from %s", clientID, remoteAddr)
-
-	// REALITY-like: Perform minimal handshake with real destination to satisfy DPI
-	// This sends ClientHello -> Dest, and forwards Dest's ServerHello -> Client
-	// The client (Marionette) must consume this data before starting VPN stream.
-	if err := h.sendFakeHandshake(conn, clientHello, sni); err != nil {
-		log.Printf("Warning: Failed to send fake handshake: %v", err)
-		// Proceed anyway, might fail DPI check but connection is valid
-	}
-
-	// Call handler for authenticated connection
-	if h.config.OnAuthenticated != nil {
-		h.config.OnAuthenticated(conn, clientID)
-	}
+	// Allowed SNI but not authenticated - proxy to real destination
+	h.stats.ProxiedConnections++
+	h.proxyToDestination(conn, clientHello)
 }
 
 // sendFakeHandshake mimics server response by proxying real server's hello
