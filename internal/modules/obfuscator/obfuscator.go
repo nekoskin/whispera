@@ -273,6 +273,13 @@ func (e *Engine) SetThreatLevel(level int) {
 	})
 }
 
+// SetRealityKey sets the REALITY public key to prevent double-obfuscation
+func (e *Engine) SetRealityKey(key string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.manager.SetRealityKey(key)
+}
+
 // GetStats returns obfuscation statistics
 func (e *Engine) GetStats() interfaces.ObfuscationStats {
 	// Fetch metrics from the manager

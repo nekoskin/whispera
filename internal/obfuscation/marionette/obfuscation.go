@@ -32,6 +32,22 @@ func (m *Marionette) ApplyTrafficObfuscation(data []byte, profile *TrafficObfusc
 	if !profile.Enabled {
 		return data
 	}
+
+	// CRITICAL: When using REALITY (Phantom), the transport layer handles all obfuscation/encryption.
+	// The internal payload MUST be kept clean (VLESS/Protobuf) for the server to process it.
+	// Any modification here (JSON wrapping, Fake TLS headers) results in "Double Obfuscation"
+	// which the server will reject as invalid payload.
+	if profile.RealityPublicKey != "" {
+		return data
+	}
+
+	m.Mutex.RLock()
+	if m.RealityKey != "" {
+		m.Mutex.RUnlock()
+		return data
+	}
+	m.Mutex.RUnlock()
+
 	switch profile.ObfuscationType {
 	case "protocol":
 		data = m.applyProtocolObfuscation(data, profile)
@@ -67,7 +83,8 @@ func (m *Marionette) applyProtocolObfuscation(data []byte, profile *TrafficObfus
 		data = m.addProtocolTimingPatterns(data, profile)
 	}
 	// Apply headers LAST (Outer layer) to ensure valid HTTP/TLS look
-	if profile.ObfuscationLevel > 3 {
+	// SKIP if using Reality/Phantom (as the transport handles framing/encryption and likely expects raw VLESS)
+	if profile.ObfuscationLevel > 3 && profile.RealityPublicKey == "" {
 		data = m.addProtocolHeaders(data, profile)
 	}
 
@@ -75,64 +92,69 @@ func (m *Marionette) applyProtocolObfuscation(data []byte, profile *TrafficObfus
 	// This makes the connection start look like a real TLS Handshake to google.com.
 	// We only do this once per connection session.
 	m.Mutex.RLock()
-	count := m.State.PacketCount
+	// count := m.State.PacketCount // Unused if block is disabled
 	m.Mutex.RUnlock()
 
-	// Note: PacketCount is incremented in ProcessPacket BEFORE calling applyAction/applyProtocolObfuscation.
-	// So for the first packet, count is 1.
-	if count == 1 {
-		// Prepend Fake Client Hello (SNI=high reputation domain)
-		// XTLS/REALITY strategy: Use a domain that usually resolves to a large cloud (CDNs).
-		// We avoid iterating random small domains to prevent SNI/IP mismatches if the server falls back.
+	// CRITICAL FIX: Disable Marionette's Fake Client Hello injection.
+	// The transport layer (asn_bypass / uTLS) now handles the connection handshake
+	// with "Authentic" fingerprints. Injecting a second Client Hello here creates
+	// a "Double Handshake" (ClientHello -> Server -> ClientHello -> Error) which
+	// causes the server or destination to Reset the connection.
+	/*
+		if count == 1 {
+			// Prepend Fake Client Hello (SNI=high reputation domain)
+			// XTLS/REALITY strategy: Use a domain that usually resolves to a large cloud (CDNs).
+			// We avoid iterating random small domains to prevent SNI/IP mismatches if the server falls back.
 
-		// Check for custom SNI in profile
-		sni := profile.SNI
-		realityKey := profile.RealityPublicKey
+			// Check for custom SNI in profile
+			sni := profile.SNI
+			realityKey := profile.RealityPublicKey
 
-		if sni == "" || sni == "random_ru" || sni == "random" {
-			var snis []string
+			if sni == "" || sni == "random_ru" || sni == "random" {
+				var snis []string
 
-			if sni == "random_ru" {
-				snis = []string{
-					"vk.com",
-					"dzen.ru",
-					"www.ozon.ru",
-					"www.wildberries.ru",
-					"rutube.ru",
-					"yandex.ru",
-					"disk.yandex.ru",
-					"mail.ru",
-					"ok.ru",
+				if sni == "random_ru" {
+					snis = []string{
+						"vk.com",
+						"dzen.ru",
+						"www.ozon.ru",
+						"www.wildberries.ru",
+						"rutube.ru",
+						"yandex.ru",
+						"disk.yandex.ru",
+						"mail.ru",
+						"ok.ru",
+					}
+				} else {
+					// Global Mix
+					snis = []string{
+						// Global high-reputation
+						"www.microsoft.com",
+						"www.google.com",
+						"www.samsung.com",
+						"www.apple.com",
+						"code.jquery.com",
+						"www.twitch.tv",
+						"ajax.googleapis.com",
+						// Russian High-Reputation
+						"vk.com",
+						"dzen.ru",
+						"rutube.ru",
+						"yandex.ru",
+					}
 				}
-			} else {
-				// Global Mix
-				snis = []string{
-					// Global high-reputation
-					"www.microsoft.com",
-					"www.google.com",
-					"www.samsung.com",
-					"www.apple.com",
-					"code.jquery.com",
-					"www.twitch.tv",
-					"ajax.googleapis.com",
-					// Russian High-Reputation
-					"vk.com",
-					"dzen.ru",
-					"rutube.ru",
-					"yandex.ru",
-				}
+				sni = snis[m.Rand.Intn(len(snis))]
 			}
-			sni = snis[m.Rand.Intn(len(snis))]
-		}
-		// This header mimics a standard Chrome Client Hello
-		fakeHello := m.generateFakeClientHello(sni, realityKey)
+			// This header mimics a standard Chrome Client Hello
+			fakeHello := m.generateFakeClientHello(sni, realityKey)
 
-		// Create a new buffer: [Fake Hello] + [Real Data (already wrapped in AppData)]
-		res := make([]byte, len(fakeHello)+len(data))
-		copy(res, fakeHello)
-		copy(res[len(fakeHello):], data)
-		return res
-	}
+			// Create a new buffer: [Fake Hello] + [Real Data (already wrapped in AppData)]
+			res := make([]byte, len(fakeHello)+len(data))
+			copy(res, fakeHello)
+			copy(res[len(fakeHello):], data)
+			return res
+		}
+	*/
 
 	return data
 }
@@ -799,6 +821,12 @@ func (m *Marionette) applyAction(action types.Action, data []byte, params map[st
 		if pubKey, ok := params["reality_public_key"].(string); ok {
 			prof.RealityPublicKey = pubKey
 		}
+
+		m.Mutex.RLock()
+		if m.RealityKey != "" {
+			prof.RealityPublicKey = m.RealityKey
+		}
+		m.Mutex.RUnlock()
 
 		// Map Active profile to TargetService if needed (simple fallback)
 		if prof.TargetService == "" {

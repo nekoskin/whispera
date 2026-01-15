@@ -7,14 +7,15 @@ use std::fs;
 use std::net::IpAddr;
 use serde::{Deserialize, Serialize};
 use base64::Engine;
+use std::io::{BufRead, BufReader};
+use std::thread;
 
 #[allow(dead_code)]
 struct VpnState {
     go_client: Option<Child>,
-    socks_tunnel: Option<Child>,
+    mihomo: Option<Child>,
     server_ip: Option<String>,
     gateway_ip: Option<String>,
-    tun_gateway: String,
 }
 
 static VPN_STATE: Mutex<Option<VpnState>> = Mutex::new(None);
@@ -150,59 +151,6 @@ fn get_default_gateway() -> Option<String> {
     None
 }
 
-/// Add routes for VPN
-fn add_routes(server_ip: &str, gateway: &str, tun_gateway: &str) -> Result<(), String> {
-    println!("Whispera: Adding routes...");
-    println!("  Server IP: {}", server_ip);
-    println!("  Gateway: {}", gateway);
-    println!("  TUN Gateway: {}", tun_gateway);
-    
-    #[cfg(target_os = "windows")]
-    {
-        // Route to VPN server through real gateway
-        let _ = Command::new("route")
-            .args(&["add", server_ip, "mask", "255.255.255.255", gateway, "metric", "1"])
-            .output();
-        
-        // Route all traffic through TUN
-        let _ = Command::new("route")
-            .args(&["add", "0.0.0.0", "mask", "128.0.0.0", tun_gateway, "metric", "1"])
-            .output();
-        
-        let _ = Command::new("route")
-            .args(&["add", "128.0.0.0", "mask", "128.0.0.0", tun_gateway, "metric", "1"])
-            .output();
-        
-        println!("Whispera: Routes added successfully");
-    }
-    
-    Ok(())
-}
-
-/// Remove routes
-fn remove_routes(server_ip: &str, tun_gateway: &str) {
-    println!("Whispera: Removing routes...");
-    
-    #[cfg(target_os = "windows")]
-    {
-        // Remove TUN routes
-        let _ = Command::new("route")
-            .args(&["delete", "0.0.0.0", "mask", "128.0.0.0", tun_gateway])
-            .output();
-        
-        let _ = Command::new("route")
-            .args(&["delete", "128.0.0.0", "mask", "128.0.0.0", tun_gateway])
-            .output();
-        
-        // Remove server route
-        let _ = Command::new("route")
-            .args(&["delete", server_ip])
-            .output();
-        
-        println!("Whispera: Routes removed");
-    }
-}
-
 /// Kill all Whispera processes
 fn kill_all_processes() {
     println!("Whispera: Killing processes...");
@@ -216,10 +164,12 @@ fn kill_all_processes() {
         let _ = Command::new("taskkill")
             .args(&["/F", "/IM", "whispera-go-client-x86_64-pc-windows-msvc.exe"])
             .output();
+    
         
         let _ = Command::new("taskkill")
-            .args(&["/F", "/IM", "hev-socks5-tunnel.exe"])
+            .args(&["/F", "/IM", "mihomo.exe"])
             .output();
+        
     }
     
     #[cfg(not(target_os = "windows"))]
@@ -229,27 +179,11 @@ fn kill_all_processes() {
             .output();
         
         let _ = Command::new("pkill")
-            .args(&["-f", "hev-socks5-tunnel"])
+            .args(&["-f", "mihomo"])
             .output();
     }
     
     println!("Whispera: Processes killed");
-}
-
-/// Generate hev-socks5-tunnel config
-fn generate_hev_config(socks_port: u16) -> String {
-    format!(r#"misc:
-  log-level: info
-  log-file: whispera-client.log
-
-socks5:
-  address: 127.0.0.1
-  port: {}
-  udp: true
-
-tunnel:
-  mtu: 1500
-"#, socks_port)
 }
 
 /// Generate Go client config
@@ -268,7 +202,7 @@ server: "{}"
 psk: "{}"
 server_pub: "{}"
 
-# SOCKS5 proxy
+# SOCKS5 proxy - Mihomo connects here
 socks:
   enabled: true
   address: "127.0.0.1"
@@ -279,7 +213,7 @@ obfuscation:
   enabled: true
   profile: "{}"
 
-# Phantom protocol
+# Phantom protocol (REALITY-like)
 phantom:
   enabled: {}
   sni: "{}"
@@ -293,15 +227,184 @@ asn_bypass:
 connection:
   timeout: 30s
   keep_alive: 25s
+
+# Disable internal TUN - Mihomo handles this
+tun:
+  enabled: false
 "#, server, psk, server_pub, socks_port, profile, phantom_enabled, phantom_sni, asn_bypass, tls_fp)
+}
+
+/// Generate Mihomo config with server IP exclusion
+fn generate_mihomo_config(server_ip: &str, socks_port: u16) -> String {
+    format!(r#"# Whispera Mihomo Configuration (auto-generated)
+
+mixed-port: 7890
+allow-lan: false
+bind-address: '127.0.0.1'
+mode: rule
+log-level: info
+external-controller: 127.0.0.1:9090
+
+# GeoIP
+geodata-mode: true
+geo-auto-update: true
+geo-update-interval: 24
+
+# DNS with Fake-IP
+dns:
+  enable: true
+  listen: 0.0.0.0:1053
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - '*.lan'
+    - '*.local'
+    - 'localhost.ptlogin2.qq.com'
+    - '+.stun.*.*'
+    - '+.stun.*.*.*'
+    - 'lens.l.google.com'
+    - 'time.windows.com'
+    - 'time.nist.gov'
+    - 'time.apple.com'
+    - '*.ntp.org.cn'
+    - '+.pool.ntp.org'
+  default-nameserver:
+    - 8.8.8.8
+    - 1.1.1.1
+  nameserver:
+    - 'tls://8.8.8.8#PROXY'
+    - 'tls://1.1.1.1#PROXY'
+  fallback:
+    - 'https://1.1.1.1/dns-query#PROXY'
+    - 'https://8.8.8.8/dns-query#PROXY'
+  fallback-filter:
+    geoip: true
+    geoip-code: RU
+    ipcidr:
+      - 240.0.0.0/4
+
+# TUN Mode
+tun:
+  enable: true
+  stack: gvisor
+  auto-route: true
+  auto-detect-interface: true
+  dns-hijack:
+    - any:53
+    - tcp://any:53
+  device: Whispera
+  mtu: 1500
+  strict-route: false
+
+# Sniffer
+sniffer:
+  enable: true
+  force-dns-mapping: true
+  parse-pure-ip: true
+  override-destination: true
+  sniff:
+    HTTP:
+      ports: [80, 8080-8880]
+      override-destination: true
+    TLS:
+      ports: [443, 8443]
+    QUIC:
+      ports: [443, 8443]
+
+# Profile
+profile:
+  store-selected: true
+  store-fake-ip: true
+
+# Performance
+unified-delay: true
+tcp-concurrent: true
+global-client-fingerprint: chrome
+
+# Proxy Groups
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - Whispera
+
+# Whispera SOCKS5 proxy (Go client)
+proxies:
+  - name: Whispera
+    type: socks5
+    server: 127.0.0.1
+    port: {}
+    udp: true
+
+# Rules
+rules:
+  # CRITICAL: VPN server must go direct to prevent loop
+  - IP-CIDR,{}/32,DIRECT,no-resolve
+  
+  # Private networks
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
+  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,100.64.0.0/10,DIRECT,no-resolve
+  - IP-CIDR,224.0.0.0/4,DIRECT,no-resolve
+  - IP-CIDR,fe80::/10,DIRECT,no-resolve
+  - IP-CIDR,::1/128,DIRECT,no-resolve
+  
+  # Local domains
+  - DOMAIN-SUFFIX,local,DIRECT
+  - DOMAIN-SUFFIX,lan,DIRECT
+  - DOMAIN-KEYWORD,localhost,DIRECT
+  
+  # Everything else through Whispera
+  - MATCH,PROXY
+"#, socks_port, server_ip)
+}
+
+/// Find binary directory
+fn find_bin_dir() -> Result<std::path::PathBuf, String> {
+    let exe_dir = std::env::current_exe()
+        .map(|p| p.parent().unwrap().to_path_buf())
+        .map_err(|e| format!("Failed to get exe path: {}", e))?;
+    
+    let possible_bin_dirs = vec![
+        exe_dir.join("bin"),
+        exe_dir.join("..").join("..").join("bin"),
+        exe_dir.join("..").join("..").join("..").join("src-tauri").join("bin"),
+        std::path::PathBuf::from("C:\\Whispera-main\\client-package-tauri\\src-tauri\\bin"),
+    ];
+    
+    for dir in &possible_bin_dirs {
+        let client = dir.join("whispera-go-client-x86_64-pc-windows-msvc.exe");
+        let mihomo = dir.join("mihomo-windows-amd64.exe");
+        
+        if client.exists() && mihomo.exists() {
+            return Ok(dir.clone());
+        } else if client.exists() {
+            return Ok(dir.clone());
+        }
+    }
+    
+    // Fallback to first existing
+    for dir in &possible_bin_dirs {
+        if dir.exists() {
+            return Ok(dir.clone());
+        }
+    }
+    
+    Err("Binary directory not found".to_string())
 }
 
 #[tauri::command]
 fn connect(key: String) -> Result<ConnectResult, String> {
-    println!("Whispera: Connecting with key...");
+    println!("Whispera: Connecting with Mihomo TUN mode...");
     
-    // First, kill any existing processes
+    // Kill any existing processes
     kill_all_processes();
+    
+    // Small delay to ensure processes are killed
+    std::thread::sleep(std::time::Duration::from_millis(500));
     
     // Parse the connection key
     let ck = parse_connection_key(&key)?;
@@ -309,9 +412,9 @@ fn connect(key: String) -> Result<ConnectResult, String> {
     let server = ck.server.clone().unwrap_or_else(|| "unknown".to_string());
     let profile = ck.obfs_profile.clone().unwrap_or_else(|| "vk".to_string());
     
-    println!("Whispera: Parsed key - Server: {}, Profile: {}", server, profile);
+    println!("Whispera: Server: {}, Profile: {}", server, profile);
     
-    // Extract server IP
+    // Extract server IP - critical for routing
     let server_ip = extract_server_ip(&server)
         .ok_or_else(|| "Failed to resolve server IP".to_string())?;
     
@@ -321,129 +424,91 @@ fn connect(key: String) -> Result<ConnectResult, String> {
     
     println!("Whispera: Server IP: {}, Gateway: {}", server_ip, gateway);
     
-    // Get paths - try multiple locations for dev and release modes
-    let exe_dir = std::env::current_exe()
-        .map(|p| p.parent().unwrap().to_path_buf())
-        .map_err(|e| format!("Failed to get exe path: {}", e))?;
-    
-    // In dev mode, exe is in target/debug, bin is in src-tauri/bin
-    // In release mode, bin is next to the exe
-    let possible_bin_dirs = vec![
-        exe_dir.join("bin"),                                          // Release mode
-        exe_dir.join("..").join("..").join("bin"),                   // Dev mode (target/debug -> src-tauri/bin)
-        exe_dir.join("..").join("..").join("..").join("src-tauri").join("bin"), // Alternative dev path
-        std::path::PathBuf::from("C:\\Whispera-main\\client-package-tauri\\src-tauri\\bin"), // Absolute fallback
-    ];
-    
-    let mut bin_dir = exe_dir.join("bin");
-    let mut go_client_path = bin_dir.join("whispera-go-client.exe");
-    
-    // Find the correct bin directory
-    for dir in &possible_bin_dirs {
-        let client1 = dir.join("whispera-go-client-x86_64-pc-windows-msvc.exe");
-        let client2 = dir.join("whispera-go-client.exe");
-        
-        if client1.exists() {
-            bin_dir = dir.clone();
-            go_client_path = client1;
-            break;
-        } else if client2.exists() {
-            bin_dir = dir.clone();
-            go_client_path = client2;
-            break;
-        }
-    }
-    
-    let hev_tunnel_path = bin_dir.join("hev-socks5-tunnel.exe");
-    let config_path = bin_dir.join("client_config.yaml");
-    let hev_config_path = bin_dir.join("hev-config.yml");
-    
+    // Find bin directory
+    let bin_dir = find_bin_dir()?;
     println!("Whispera: Binary dir: {:?}", bin_dir);
-    println!("Whispera: Client path: {:?}", go_client_path);
     
-    // Check if binaries exist
+    // Find Go client
+    let go_client_path = if bin_dir.join("whispera-go-client-x86_64-pc-windows-msvc.exe").exists() {
+        bin_dir.join("whispera-go-client-x86_64-pc-windows-msvc.exe")
+    } else {
+        bin_dir.join("whispera-go-client.exe")
+    };
+    
+    let mihomo_path = bin_dir.join("mihomo.exe");
+    let config_path = bin_dir.join("client_config.yaml");
+    let mihomo_config_path = bin_dir.join("mihomo-config-runtime.yaml");
+    
+    // Check binaries exist
     if !go_client_path.exists() {
-        return Err(format!("Go client not found: {:?}. Make sure to build with: go build -o client-package-tauri/src-tauri/bin/whispera-go-client.exe ./cmd/client", go_client_path));
+        return Err(format!("Go client not found: {:?}", go_client_path));
+    }
+    if !mihomo_path.exists() {
+        return Err(format!("Mihomo not found: {:?}. Download from: https://github.com/MetaCubeX/mihomo/releases", mihomo_path));
     }
     
-    // Use SOCKS5 port - Go client default is 10800
+    // SOCKS5 port for Go client
     let socks_port: u16 = 10800;
-    let tun_gateway = "10.0.85.1".to_string();
     
     // Generate configs
     let client_config = generate_client_config(&ck, socks_port);
-    let hev_config = generate_hev_config(socks_port);
+    let mihomo_config = generate_mihomo_config(&server_ip, socks_port);
     
     fs::write(&config_path, &client_config)
-        .map_err(|e| format!("Failed to write config: {}", e))?;
-    fs::write(&hev_config_path, &hev_config)
-        .map_err(|e| format!("Failed to write hev config: {}", e))?;
+        .map_err(|e| format!("Failed to write client config: {}", e))?;
+    fs::write(&mihomo_config_path, &mihomo_config)
+        .map_err(|e| format!("Failed to write Mihomo config: {}", e))?;
     
-    println!("Whispera: Starting Go client...");
+    println!("Whispera: Configs generated");
     
-    // Start Go client with logs going to console (Stdio::inherit)
-    // We let Go manage its own log file to avoid conflicts
+    // STEP 1: Start Go client first (SOCKS5 server)
+    println!("Whispera: Starting Go client (SOCKS5 server)...");
+    
     let go_client = Command::new(&go_client_path)
-        .args(&["-config", config_path.to_str().unwrap(), "-key", &key])
+        .args(&["-config", config_path.to_str().unwrap(), "-key", &key, "--no-tun"])
         .current_dir(&bin_dir)
-        .stdout(Stdio::inherit()) 
+        .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| format!("Failed to start Go client: {}", e))?;
     
     println!("Whispera: Go client started with PID: {}", go_client.id());
-    // println!("Whispera: Logs saved to: {:?}", log_path);
     
-    // Wait a bit for client to initialize
-    // std::thread::sleep(std::time::Duration::from_secs(2));
+    // Wait for Go client to initialize SOCKS5 server
+    println!("Whispera: Waiting for SOCKS5 server to be ready...");
+    std::thread::sleep(std::time::Duration::from_secs(3));
     
-    // DISABLE Rust-side HevTunnel management.
-    // The Go client will start HevTunnel internally once valid VPN connection is established.
-    // This prevents routing loops and race conditions.
-    println!("Whispera: Delegating HevTunnel management to Go client...");
-    let socks_tunnel = None; 
-
-    /* 
-    // Start hev-socks5-tunnel if it exists (for TUN mode)
-    let socks_tunnel = if hev_tunnel_path.exists() {
-        println!("Whispera: Starting hev-socks5-tunnel...");
-        
-        let tunnel = Command::new(&hev_tunnel_path)
-            .args(&[hev_config_path.to_str().unwrap()])
-            .current_dir(&bin_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("Failed to start tunnel: {}", e))?;
-        
-        println!("Whispera: hev-socks5-tunnel started with PID: {}", tunnel.id());
-        
-        // Wait for TUN to initialize
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        
-        // Add routes
-        add_routes(&server_ip, &gateway, &tun_gateway)?;
-        
-        Some(tunnel)
-    } else {
-        println!("Whispera: hev-socks5-tunnel not found, using SOCKS5 proxy mode only");
-        None
-    };
-    */
+    // STEP 2: Start Mihomo (TUN + routing)
+    println!("Whispera: Starting Mihomo TUN...");
+    
+    let mihomo = Command::new(&mihomo_path)
+        .args(&["-d", bin_dir.to_str().unwrap(), "-f", mihomo_config_path.to_str().unwrap()])
+        .current_dir(&bin_dir)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("Failed to start Mihomo: {}", e))?;
+    
+    println!("Whispera: Mihomo started with PID: {}", mihomo.id());
+    
+    // Wait for Mihomo to initialize TUN
+    println!("Whispera: Waiting for TUN interface...");
+    std::thread::sleep(std::time::Duration::from_secs(2));
     
     // Store state
     let mut state = VPN_STATE.lock().unwrap();
     *state = Some(VpnState {
         go_client: Some(go_client),
-        socks_tunnel,
+        mihomo: Some(mihomo),
         server_ip: Some(server_ip),
         gateway_ip: Some(gateway),
-        tun_gateway,
     });
+    
+    println!("Whispera: Connection established!");
     
     Ok(ConnectResult {
         success: true,
-        message: format!("Connected to {} with {} profile", server, profile),
+        message: format!("Connected to {} via Mihomo TUN", server),
         server: Some(server),
         profile: Some(profile),
         socks_port,
@@ -457,27 +522,22 @@ fn disconnect() -> Result<String, String> {
     let mut state = VPN_STATE.lock().unwrap();
     
     if let Some(ref mut vpn) = *state {
-        // Remove routes first
-        if let Some(ref server_ip) = vpn.server_ip {
-            remove_routes(server_ip, &vpn.tun_gateway);
+        // Kill Mihomo first (to release TUN)
+        if let Some(ref mut child) = vpn.mihomo {
+            let _ = child.kill();
+            println!("Whispera: Mihomo stopped");
         }
         
-        // Kill Go client
+        // Then kill Go client
         if let Some(ref mut child) = vpn.go_client {
             let _ = child.kill();
             println!("Whispera: Go client stopped");
         }
         
-        // Kill hev-socks5-tunnel
-        if let Some(ref mut child) = vpn.socks_tunnel {
-            let _ = child.kill();
-            println!("Whispera: hev-socks5-tunnel stopped");
-        }
-        
         *state = None;
     }
     
-    // Also kill any orphaned processes
+    // Kill any orphaned processes
     kill_all_processes();
     
     Ok("Disconnected".to_string())
@@ -494,11 +554,30 @@ fn get_status() -> Result<String, String> {
     }
 }
 
+fn disconnect_cleanup() -> Result<(), ()> {
+    println!("Whispera: Cleanup on exit...");
+    
+    let mut state = VPN_STATE.lock().map_err(|_| ())?;
+    
+    if let Some(ref mut vpn) = *state {
+        if let Some(ref mut child) = vpn.mihomo {
+            let _ = child.kill();
+        }
+        if let Some(ref mut child) = vpn.go_client {
+            let _ = child.kill();
+        }
+    }
+    
+    *state = None;
+    kill_all_processes();
+    
+    Ok(())
+}
+
 fn main() {
-    // Set up panic handler to cleanup on crash
+    // Panic handler for cleanup
     let default_panic = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        // Cleanup on panic
         let _ = disconnect_cleanup();
         default_panic(info);
     }));
@@ -513,32 +592,4 @@ fn main() {
         .invoke_handler(tauri::generate_handler![connect, disconnect, get_status])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-fn disconnect_cleanup() -> Result<(), ()> {
-    println!("Whispera: Cleanup on exit...");
-    
-    let mut state = VPN_STATE.lock().map_err(|_| ())?;
-    
-    if let Some(ref mut vpn) = *state {
-        // Remove routes
-        if let Some(ref server_ip) = vpn.server_ip {
-            remove_routes(server_ip, &vpn.tun_gateway);
-        }
-        
-        // Kill processes
-        if let Some(ref mut child) = vpn.go_client {
-            let _ = child.kill();
-        }
-        if let Some(ref mut child) = vpn.socks_tunnel {
-            let _ = child.kill();
-        }
-    }
-    
-    *state = None;
-    
-    // Kill all orphaned processes
-    kill_all_processes();
-    
-    Ok(())
 }

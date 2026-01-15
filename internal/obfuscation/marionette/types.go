@@ -43,6 +43,9 @@ type Marionette struct {
 	UTLSFingerprint string // "chrome", "firefox", "safari", "android", "random"
 	UTLSConn        *utls.UConn
 
+	// REALITY / Phantom Integration
+	RealityKey string // Public key for REALITY/Phantom to skip payload corruption
+
 	// Behavioral Mimicry - full multi-layer traffic imitation
 	BehaviorEngine          *behavioral.BehaviorEngine
 	ActiveBehavioralProfile *behavioral.MessengerProfile

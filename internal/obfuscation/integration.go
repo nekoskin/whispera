@@ -272,6 +272,11 @@ func (im *IntegrationManager) SetStrict(strict bool) {
 	im.adapter.SetStrict(strict)
 }
 
+// SetRealityKey sets the REALITY public key for all sub-modules
+func (im *IntegrationManager) SetRealityKey(key string) {
+	im.adapter.SetRealityKey(key)
+}
+
 // EnableGrammarRotation enables grammar rotation for FTE
 func (im *IntegrationManager) EnableGrammarRotation(interval time.Duration, bytes uint64, profiles []string) {
 	if im.fteEnabled && im.fte != nil {

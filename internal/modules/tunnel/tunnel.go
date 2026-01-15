@@ -178,11 +178,23 @@ func New(cfg *Config) (*Manager, error) {
 	}
 
 	// Initialize ASN Bypass dialer if enabled
+	// Initialize ASN Bypass dialer if enabled
 	if cfg.EnableASNBypass {
+		// If Phantom is enabled, use PhantomSNI as the masquerade domain (FrontDomain)
+		// and enforce SNI masking.
+		frontDomain := cfg.DomainFrontHost
+		enableSNIMask := false // Default false unless configured or Phantom active
+
+		if cfg.EnablePhantom && cfg.PhantomSNI != "" {
+			frontDomain = cfg.PhantomSNI
+			enableSNIMask = true
+		}
+
 		asnConfig := &asnbypass.Config{
 			Strategy:               cfg.ASNBypassStrategy,
 			TLSFingerprint:         cfg.TLSFingerprint,
-			FrontDomain:            cfg.DomainFrontHost,
+			FrontDomain:            frontDomain,   // Used as SNI masquerade
+			EnableSNIMask:          enableSNIMask, // Critical for Phantom
 			ResidentialProxies:     cfg.ResidentialProxies,
 			EnableJA3Randomization: cfg.EnableJA3Randomize,
 			ConnectionBurstLimit:   5,
@@ -191,7 +203,7 @@ func New(cfg *Config) (*Manager, error) {
 			FallbackStrategies:     []asnbypass.Strategy{asnbypass.StrategyTLSMasquerade, asnbypass.StrategyDomainFronting},
 		}
 		m.asnBypassDialer = asnbypass.NewDialer(asnConfig)
-		log.Info("ASN bypass enabled with strategy: %d, fingerprint: %s", cfg.ASNBypassStrategy, cfg.TLSFingerprint)
+		log.Info("ASN bypass initialized (SniMask: %v, Domain: %s)", enableSNIMask, frontDomain)
 	}
 
 	// Initialize Kill Switch if enabled in config
@@ -311,6 +323,16 @@ func (m *Manager) Connect(ctx context.Context) error {
 		// Configure ASN bypass dialer with Phantom SNI
 		if m.asnBypassDialer != nil {
 			m.asnBypassDialer.SetPhantomConfig(m.config.PhantomSNI, m.phantomAuth)
+		}
+
+		// Critical: Inform Obfuscator about REALITY mode to disable payload corruption
+		if m.obfuscator != nil {
+			m.obfuscator.SetRealityKey(m.config.PhantomServerPubKey)
+		}
+	} else {
+		// Ensure it's cleared if not using Phantom
+		if m.obfuscator != nil {
+			m.obfuscator.SetRealityKey("")
 		}
 	}
 

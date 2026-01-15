@@ -314,6 +314,49 @@ EOF
     log_success "CLI wrapper installed (whispera-mgmt)"
 }
 
+setup_network() {
+    log_info "Setting up VPN networking (IP forwarding, NAT, etc.)..."
+    
+    # Detect WAN interface
+    local WAN_IF=$(ip route | grep default | awk '{print $5}' | head -n1)
+    if [[ -z "$WAN_IF" ]]; then
+        log_warn "Could not auto-detect WAN interface. Please configure manually with:"
+        log_warn "  sudo sysctl -w net.ipv4.ip_forward=1"
+        log_warn "  sudo iptables -t nat -A POSTROUTING -s 10.0.85.0/24 -o <WAN_IF> -j MASQUERADE"
+        return
+    fi
+    
+    log_info "Detected WAN interface: $WAN_IF"
+    
+    # Enable IP forwarding
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+    
+    # Make permanent
+    if grep -q "^net.ipv4.ip_forward" /etc/sysctl.conf; then
+        sed -i 's/^net.ipv4.ip_forward.*/net.ipv4.ip_forward = 1/' /etc/sysctl.conf
+    else
+        echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+    fi
+    sysctl -p >/dev/null 2>&1
+    
+    # Setup NAT
+    if command -v iptables &> /dev/null; then
+        # MASQUERADE for client subnet
+        iptables -t nat -A POSTROUTING -s 10.0.85.0/24 -o "$WAN_IF" -j MASQUERADE 2>/dev/null || true
+        
+        # FORWARD rules
+        iptables -A FORWARD -i tun0 -o "$WAN_IF" -j ACCEPT 2>/dev/null || true
+        iptables -A FORWARD -i "$WAN_IF" -o tun0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+        
+        # Save rules (if iptables-persistent available)
+        if command -v iptables-save &>/dev/null; then
+            iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+        fi
+        
+        log_success "NAT and FORWARD rules configured for $WAN_IF"
+    fi
+}
+
 setup_firewall() {
     log_info "Setting up Firewall (UFW)..."
     
@@ -365,6 +408,7 @@ main() {
     fi
     
     install_cli_wrapper
+    setup_network
     setup_firewall
     setup_systemd
     

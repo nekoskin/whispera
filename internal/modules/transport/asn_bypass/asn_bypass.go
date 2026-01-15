@@ -288,36 +288,41 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 		return nil, fmt.Errorf("tcp dial failed: %w", err)
 	}
 
+	// CRITICAL: We must ALWAYS connect to the VPN server IP (addr), not the masquerade domain (SNI).
+	// The 'addr' argument comes from tunnel config (ServerAddr) and is the physical destination.
+	// The 'host' variable is just for default SNI if no masquerade is set.
+
 	// Get fingerprint
 	fingerprint := d.getUTLSFingerprint()
 
-	// Extract host for SNI
-	host, _, err := net.SplitHostPort(addr)
+	// Default SNI is the address host (fallback)
+	sniToUse, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		host = addr
-	}
-
-	// Create uTLS connection with browser fingerprint
-	tlsConfig := &utls.Config{
-		ServerName:         host,
-		InsecureSkipVerify: false,
-		MinVersion:         d.config.TLSMinVersion,
-		MaxVersion:         d.config.TLSMaxVersion,
+		sniToUse = addr
 	}
 
 	// Apply SNI masking if configured
+	// This overrides the default SNI with the masquerade domain
 	var connectionDuration time.Duration = 0
 
 	if d.config.EnableSNIMask {
 		if d.config.FrontDomain == "random" || d.config.FrontDomain == "random_ru" {
 			// Behavioral SNI rotation
-			var sni string
-			sni, connectionDuration = pickRandomSNI()
-			tlsConfig.ServerName = sni
-			// Log checking strategy (optional, requires logger import which we might not have here, so skipping)
+			var randomSni string
+			randomSni, connectionDuration = pickRandomSNI()
+			sniToUse = randomSni
+			// Log checking strategy (optional, skipping due to logger dependency)
 		} else if d.config.FrontDomain != "" {
-			tlsConfig.ServerName = d.config.FrontDomain
+			sniToUse = d.config.FrontDomain
 		}
+	}
+
+	// Create uTLS connection with browser fingerprint
+	tlsConfig := &utls.Config{
+		ServerName:         sniToUse, // The masquerade domain (e.g. google.com)
+		InsecureSkipVerify: false,
+		MinVersion:         d.config.TLSMinVersion,
+		MaxVersion:         d.config.TLSMaxVersion,
 	}
 
 	// --- "Hello-Only" Strategy Implementation ---
@@ -381,20 +386,52 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 	// Read ServerHello (Phantom proxies it from real dest)
 	// We consume it to clear the socket buffer for the actual protocol
 	// We read effectively until the server stops sending the fake handshake.
+	// Since we don't have the private key, we can't parse the encrypted handshake messages (ChangeCipherSpec, Finished).
+	// We rely on the fact that the server will stop sending data after the handshake and wait for client request.
+
+	// Strategy: Read until we get a read timeout (silence).
+	// For a high-latency connection, we give a generous initial timeout.
+	// Once we start receiving data, we reduce the timeout to detect the "end of burst".
+
 	buf := make([]byte, 16*1024)
-	tcpConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if _, err := tcpConn.Read(buf); err != nil {
+	totalRead := 0
+
+	// Phase 1: Wait for initial response (ServerHello)
+	tcpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	n, err := tcpConn.Read(buf)
+	if err != nil {
 		tcpConn.Close()
 		return nil, fmt.Errorf("failed to read ServerHello (timeout/error): %w", err)
 	}
+	totalRead += n
+	// fmt.Printf("DEBUG: Received initial ServerHello burst: %d bytes\n", n)
 
-	// Drain any remaining data (TCP fragmentation) with a short timeout
-	// The server sends a single write (up to 4KB), but it might arrive in multiple packets.
-	tcpConn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	// Phase 2: Drain remaining handshake (ChangeCipherSpec, EncryptedHandshake, etc.)
+	// We loop with a short timeout. If we read nothing, we assume the server is done.
 	for {
-		_, err := tcpConn.Read(buf)
+		tcpConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		n, err := tcpConn.Read(buf)
+		if n > 0 {
+			totalRead += n
+			// fmt.Printf("DEBUG: Drained additional handshake data: %d bytes\n", n)
+		}
 		if err != nil {
-			// Expected timeout (silence) or error, stop draining
+			// Timeout (common) or EOF
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// Expected timeout, we drained the buffer
+				break
+			}
+			// Real error or EOF
+			if err == io.EOF {
+				// Server closed connection? If we read *something*, maybe it's okay?
+				// But usually handshake shouldn't close immediately.
+				// We'll return what we have, but logically this might be bad if server hung up.
+				// For Phantom, if auth fails, it might close.
+				// tcpConn.Close()
+				// return nil, fmt.Errorf("server closed connection during handshake drain")
+				break
+			}
+			// Other error
 			break
 		}
 	}

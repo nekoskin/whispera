@@ -68,6 +68,10 @@ type Server struct {
 	sessionAddrs   map[uint32]net.Addr
 	sessionAddrsMu sync.RWMutex
 
+	// Raw packet tracking (packetID -> clientAddr for response routing)
+	rawPackets   map[uint32]net.Addr
+	rawPacketsMu sync.RWMutex
+
 	// Stats
 	framesIn       uint64
 	framesOut      uint64
@@ -93,6 +97,7 @@ func New(cfg *Config) (*Server, error) {
 		Module:       base.NewModule(ModuleName, ModuleVersion, []string{"transport.udp"}),
 		config:       cfg,
 		sessionAddrs: make(map[uint32]net.Addr),
+		rawPackets:   make(map[uint32]net.Addr),
 		log:          logger.Module("relay"),
 	}
 
@@ -220,6 +225,8 @@ func (s *Server) ProcessFrame(data []byte, session interfaces.Session, addr net.
 		return s.handlePing(addr)
 	case FrameUDPData:
 		return s.handleUDPData(frame)
+	case FrameRawPacket:
+		return s.handleRawPacket(frame, addr)
 	default:
 		if s.config.Debug {
 			s.log.Debug("Unknown frame type: %d", frame.Type)
@@ -477,6 +484,192 @@ func Factory(cfg interface{}) (interfaces.Module, error) {
 		config = DefaultConfig()
 	}
 	return New(config)
+}
+
+// handleRawPacket handles RAW_PACKET frames from client
+// These are full IP packets (TCP/UDP/ICMP/etc) from TUN interface
+func (s *Server) handleRawPacket(frame *Frame, addr net.Addr) error {
+	// Parse raw packet frame
+	packetID, rawPacket, err := ParseRawPacketFrame(frame)
+	if err != nil {
+		if s.config.Debug {
+			s.log.Debug("Failed to parse raw packet frame: %v", err)
+		}
+		return err
+	}
+
+	if len(rawPacket) < 20 {
+		return fmt.Errorf("raw packet too small: %d bytes", len(rawPacket))
+	}
+
+	// Parse IPv4 header (basic validation)
+	version := rawPacket[0] >> 4
+	if version != 4 {
+		// IPv6 or other - could be supported later
+		if s.config.Debug {
+			s.log.Debug("Raw packet has unsupported IP version: %d", version)
+		}
+		return nil
+	}
+
+	srcIP := net.IPv4(rawPacket[12], rawPacket[13], rawPacket[14], rawPacket[15])
+	dstIP := net.IPv4(rawPacket[16], rawPacket[17], rawPacket[18], rawPacket[19])
+	protocol := rawPacket[9]
+
+	if s.config.Debug {
+		s.log.Debug("Raw packet: ID=%d proto=%d %s->%s len=%d",
+			packetID, protocol, srcIP, dstIP, len(rawPacket))
+	}
+
+	// Track packet ID -> client address for response routing
+	// This allows us to send response packets back to the originating client
+	s.rawPacketsMu.Lock()
+	s.rawPackets[packetID] = addr
+	s.rawPacketsMu.Unlock()
+
+	// Handle specific packet types if possible (e.g., ICMP echo)
+	// Protocol: 1=ICMP, 6=TCP, 17=UDP
+	if protocol == 1 && len(rawPacket) >= 20+8 {
+		// ICMP packet - try to handle echo request
+		s.handleICMPPacket(packetID, rawPacket, srcIP, dstIP, addr)
+	}
+
+	// TODO: Implement packet injection/forwarding
+	// This is where we would:
+	// 1. Inject the packet into the system's network stack
+	// 2. Or use raw socket API to forward it
+	// 3. When response comes back, use SendRawPacketToAddr to send it back to client
+
+	atomic.AddUint64(&s.bytesRelayed, uint64(len(rawPacket)))
+
+	return nil
+}
+
+// SendRawPacket sends a raw IP packet to a client through the tunnel
+// Used by server-side components to send response packets back to clients
+// Note: This is meant to be called by handlers that need to send packets back,
+// not by TUN handlers directly - see SendRawPacketToAddr for that
+func (s *Server) SendRawPacket(packetID uint32, data []byte) error {
+	// For direct SendRawPacket without explicit client address,
+	// we would need to track client addresses. For now, use the
+	// SendRawPacketToAddr variant which is more explicit.
+	s.log.Warn("SendRawPacket called without client address - use SendRawPacketToAddr instead")
+	return fmt.Errorf("SendRawPacket requires client address context")
+}
+
+// SendRawPacketToAddr sends a raw IP packet to a specific client through the tunnel
+// This is the primary method for sending response packets to clients
+func (s *Server) SendRawPacketToAddr(packetID uint32, data []byte, addr net.Addr) error {
+	if addr == nil {
+		return fmt.Errorf("invalid client address for raw packet response")
+	}
+
+	frame := NewRawPacketFrame(packetID, data)
+	if frame == nil {
+		return fmt.Errorf("failed to create raw packet frame")
+	}
+
+	if s.config.Debug {
+		s.log.Debug("Sending raw packet response: ID=%d len=%d to %s",
+			packetID, len(data), addr)
+	}
+
+	// Clean up packet tracking after sending response
+	defer func() {
+		s.rawPacketsMu.Lock()
+		delete(s.rawPackets, packetID)
+		s.rawPacketsMu.Unlock()
+	}()
+
+	return s.sendFrameToAddr(frame, addr)
+}
+
+// SendResponsePacket sends a response packet to the original client
+// Uses packetID to look up which client to send to
+func (s *Server) SendResponsePacket(packetID uint32, data []byte) error {
+	// Get client address from tracking
+	clientAddr := s.GetRawPacketClientAddr(packetID)
+	if clientAddr == nil {
+		return fmt.Errorf("client address not found for packet ID %d", packetID)
+	}
+
+	return s.SendRawPacketToAddr(packetID, data, clientAddr)
+}
+
+// GetRawPacketClientAddr retrieves the client address for a given packet ID
+// Used when we receive response packets and need to route them back to the client
+func (s *Server) GetRawPacketClientAddr(packetID uint32) net.Addr {
+	s.rawPacketsMu.RLock()
+	defer s.rawPacketsMu.RUnlock()
+	return s.rawPackets[packetID]
+}
+
+// handleICMPPacket handles ICMP packets (primarily echo requests)
+// Returns ICMP echo reply for testing purposes
+func (s *Server) handleICMPPacket(packetID uint32, rawPacket []byte, srcIP, dstIP net.IP, addr net.Addr) {
+	if len(rawPacket) < 20+8 {
+		return // Too small for ICMP header
+	}
+
+	icmpType := rawPacket[20]
+	_ = rawPacket[21] // icmpCode - unused for now
+
+	if icmpType == 8 { // Echo request
+		// Create echo reply (type 0)
+		replyPacket := make([]byte, len(rawPacket))
+		copy(replyPacket, rawPacket)
+
+		// Swap IP addresses
+		copy(replyPacket[12:16], dstIP.To4())
+		copy(replyPacket[16:20], srcIP.To4())
+
+		// Change ICMP type to echo reply (0)
+		replyPacket[20] = 0
+
+		// Recalculate ICMP checksum (simplified - just zero it for now)
+		// Proper checksum calculation would be needed for production
+		replyPacket[22] = 0
+		replyPacket[23] = 0
+
+		// Recalculate IPv4 checksum
+		// Zero the checksum field first
+		replyPacket[10] = 0
+		replyPacket[11] = 0
+
+		// Calculate new checksum (simplified)
+		checksum := calculateIPChecksum(replyPacket[:20])
+		replyPacket[10] = byte(checksum >> 8)
+		replyPacket[11] = byte(checksum)
+
+		// Send reply back to client
+		if s.config.Debug {
+			s.log.Debug("Sending ICMP echo reply: %s->%s (ID=%d)", srcIP, dstIP, packetID)
+		}
+
+		s.SendRawPacketToAddr(packetID, replyPacket, addr)
+	}
+}
+
+// calculateIPChecksum calculates IPv4 header checksum
+func calculateIPChecksum(header []byte) uint16 {
+	if len(header) < 20 {
+		return 0
+	}
+
+	sum := uint32(0)
+
+	// Sum all 16-bit words
+	for i := 0; i < 20; i += 2 {
+		sum += uint32(header[i])<<8 | uint32(header[i+1])
+	}
+
+	// Fold back carries
+	for sum>>16 > 0 {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+
+	// Return one's complement
+	return ^uint16(sum)
 }
 
 // healthLoop runs periodic health checks

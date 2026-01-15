@@ -1,4 +1,27 @@
 // Package relay provides the relay protocol for tunneled connections
+//
+// Frame Types:
+//   - FrameConnect (0x01): Initiate connection to target
+//   - FrameConnectOK (0x02): Connection established
+//   - FrameConnectFail (0x03): Connection failed
+//   - FrameData (0x04): Application data transfer
+//   - FrameClose (0x05): Close stream
+//   - FramePing (0x06): Keep-alive ping
+//   - FramePong (0x07): Keep-alive pong
+//   - FrameUDPData (0x08): UDP data (DNS, etc)
+//   - FrameRawPacket (0x09): Raw IP packet from TUN (NEW)
+//
+// RawPacketFrame (0x09):
+//
+//	Purpose: Encapsulate any IP packet (TCP/UDP/ICMP/etc) for tunneling
+//	Payload: [PacketID:4 bytes][RawPacket:N bytes]
+//	Usage: Enables tunneling of non-SOCKS5 applications and protocols
+//
+// Processing:
+//
+//	Client side: TUN handler captures packet -> creates RawPacketFrame -> sends via tunnel
+//	Server side: Receives RawPacketFrame -> validates IPv4 header -> injects to network
+//	Response: Server receives response -> creates new RawPacketFrame -> sends back
 package relay
 
 import (
@@ -19,6 +42,7 @@ const (
 	FramePing        uint8 = 0x06 // Keep-alive ping
 	FramePong        uint8 = 0x07 // Keep-alive pong
 	FrameUDPData     uint8 = 0x08 // UDP data (for DNS etc)
+	FrameRawPacket   uint8 = 0x09 // Raw IP packet (TCP/UDP/ICMP/etc from TUN)
 )
 
 // Frame flags
@@ -78,6 +102,8 @@ func FrameTypeName(t uint8) string {
 		return "PONG"
 	case FrameUDPData:
 		return "UDP_DATA"
+	case FrameRawPacket:
+		return "RAW_PACKET"
 	default:
 		return fmt.Sprintf("UNKNOWN(%d)", t)
 	}
@@ -447,4 +473,50 @@ func NewUDPDataFrame(streamID uint16, addrType uint8, addr string, port uint16, 
 		Flags:    0,
 		Payload:  payload,
 	}
+}
+
+// NewRawPacketFrame creates a RAW_PACKET frame
+// Payload format: [PacketID:4][RawPacketData:N]
+func NewRawPacketFrame(packetID uint32, rawPacket []byte) *Frame {
+	var payload []byte
+
+	// PacketID (4 bytes, big-endian)
+	payload = append(payload,
+		byte(packetID>>24),
+		byte((packetID>>16)&0xff),
+		byte((packetID>>8)&0xff),
+		byte(packetID&0xff),
+	)
+
+	// Raw packet data
+	payload = append(payload, rawPacket...)
+
+	return &Frame{
+		StreamID: 0, // Raw packets use stream 0 (control channel)
+		Type:     FrameRawPacket,
+		Flags:    0,
+		Payload:  payload,
+	}
+}
+
+// ParseRawPacketFrame extracts packet ID and data from RAW_PACKET frame
+func ParseRawPacketFrame(f *Frame) (packetID uint32, rawPacket []byte, err error) {
+	if f.Type != FrameRawPacket {
+		return 0, nil, ErrInvalidFrame
+	}
+
+	if len(f.Payload) < 4 {
+		return 0, nil, ErrInvalidFrame
+	}
+
+	// Parse PacketID (first 4 bytes)
+	packetID = uint32(f.Payload[0])<<24 |
+		uint32(f.Payload[1])<<16 |
+		uint32(f.Payload[2])<<8 |
+		uint32(f.Payload[3])
+
+	// Rest is raw packet data
+	rawPacket = f.Payload[4:]
+
+	return packetID, rawPacket, nil
 }

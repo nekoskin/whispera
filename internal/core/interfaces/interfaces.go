@@ -279,6 +279,9 @@ type Obfuscator interface {
 
 	// SetThreatLevel sets the current threat level (0-10)
 	SetThreatLevel(level int)
+
+	// SetRealityKey sets the REALITY public key to prevent double-obfuscation
+	SetRealityKey(key string)
 }
 
 // ObfuscationStats contains obfuscation statistics

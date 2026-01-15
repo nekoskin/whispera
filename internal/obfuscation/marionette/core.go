@@ -484,6 +484,11 @@ func (ma *MarionetteAdapter) SetThreatLevel(level int) {
 	ma.m.SetThreatLevel(level)
 }
 
+// SetRealityKey sets the REALITY public key to enable Phantom bypass mode
+func (ma *MarionetteAdapter) SetRealityKey(key string) {
+	ma.m.SetRealityKey(key)
+}
+
 // GetCore returns the underlying Marionette instance
 func (ma *MarionetteAdapter) GetCore() *Marionette {
 	return ma.m
