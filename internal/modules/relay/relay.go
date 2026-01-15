@@ -476,7 +476,8 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 							streamsMu.Unlock()
 						}()
 
-						b := make([]byte, 32*1024)
+						// Cap buffer to safe MTU (1350) to prevent fragmentation/drops on the way back to client
+						b := make([]byte, 1350)
 						for {
 							rConn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 							rn, rerr := rConn.Read(b)
