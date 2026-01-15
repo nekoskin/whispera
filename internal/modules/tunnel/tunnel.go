@@ -3,9 +3,11 @@ package tunnel
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -18,6 +20,7 @@ import (
 	"whispera/internal/modules/killswitch"
 	"whispera/internal/modules/phantom"
 	asnbypass "whispera/internal/modules/transport/asn_bypass"
+	"whispera/internal/obfuscation/russian"
 )
 
 var log = logger.Module("tunnel")
@@ -197,6 +200,9 @@ type Manager struct {
 
 	// Track if transport is already secure (e.g. TLS) to skip double-obfuscation
 	isTransportSecure bool
+
+	// List of Russian SNIs for rotation
+	russianSNIs []string
 }
 
 // New creates a new tunnel manager
@@ -283,6 +289,18 @@ func New(cfg *Config) (*Manager, error) {
 		}
 
 		log.Info("Phantom protocol enabled (SNI: %s)", cfg.PhantomSNI)
+	}
+
+	// Initialize Russian SNI list for rotation
+	rt := russian.NewRussianTunneler()
+	services := rt.GetAvailableServices()
+	for _, svcName := range services {
+		if info, err := rt.GetServiceInfo(svcName); err == nil {
+			m.russianSNIs = append(m.russianSNIs, info.Domain)
+		}
+	}
+	if len(m.russianSNIs) > 0 {
+		log.Info("Initialized %d Russian SNIs for rotation", len(m.russianSNIs))
 	}
 
 	return m, nil
@@ -455,10 +473,11 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 	var err error
 
 	// Phantom / ASN Bypass
+	targetSNI := m.getRotationSNI()
 	if m.config.EnablePhantom && m.phantomAuth != nil {
-		log.Info("Phantom protocol active - using SNI: %s", m.config.PhantomSNI)
+		log.Info("Phantom protocol active - using SNI: %s", targetSNI)
 		if m.asnBypassDialer != nil {
-			m.asnBypassDialer.SetPhantomConfig(m.config.PhantomSNI, m.phantomAuth)
+			m.asnBypassDialer.SetPhantomConfig(targetSNI, m.phantomAuth)
 		}
 		if m.obfuscator != nil {
 			m.obfuscator.SetRealityKey(m.config.PhantomServerPubKey)
@@ -507,6 +526,20 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 	}
 
 	return nil, fmt.Errorf("all dial attempts failed")
+}
+
+// getRotationSNI picks a random SNI from the Russian list or returns default
+func (m *Manager) getRotationSNI() string {
+	if len(m.russianSNIs) == 0 {
+		return m.config.PhantomSNI
+	}
+
+	// Use crypto/rand for uniform selection
+	idxBig, err := rand.Int(rand.Reader, big.NewInt(int64(len(m.russianSNIs))))
+	if err != nil {
+		return m.russianSNIs[0] // Fallback
+	}
+	return m.russianSNIs[idxBig.Int64()]
 }
 
 // enableKillSwitch configures firewall

@@ -5,6 +5,7 @@ package socks5
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	stdlog "log"
@@ -85,7 +86,7 @@ func New(cfg *Config) (*Module, error) {
 
 	// Set reasonable default MTU if missing
 	if cfg.MTU <= 0 || cfg.MTU > 65535 {
-		cfg.MTU = 1350 // Default safe MTU for VPN
+		cfg.MTU = 1280 // Default safe MTU (IPv6 min) to prevent fragmentation
 	}
 
 	m := &Module{
@@ -157,7 +158,9 @@ func (m *Module) SetTunnel(tunnel TunnelManager) {
 // receiveFrames receives frames from tunnel and dispatches to streams
 func (m *Module) receiveFrames() {
 	buf := make([]byte, 65536)
+	var packetBuf []byte
 	stdlog.Printf("[SOCKS5] receiveFrames goroutine started")
+
 	for {
 		m.mu.RLock()
 		tunnel := m.tunnel
@@ -181,20 +184,43 @@ func (m *Module) receiveFrames() {
 		}
 
 		if n > 0 {
-			stdlog.Printf("[SOCKS5] Received %d bytes from tunnel", n)
+			packetBuf = append(packetBuf, buf[:n]...)
 		}
 
-		if n < relay.HeaderSize {
-			continue
+		// Process all complete frames in buffer
+		for len(packetBuf) >= relay.HeaderSize {
+			// Header: [StreamID:2][Type:1][Flags:1][Length:4]
+			// We need to peek at the length field (offset 4, 4 bytes)
+			payloadLen := binary.BigEndian.Uint32(packetBuf[4:8])
+			frameSize := relay.HeaderSize + int(payloadLen)
+
+			if len(packetBuf) < frameSize {
+				// Wait for more data
+				break
+			}
+
+			// Extract complete frame
+			frameData := packetBuf[:frameSize]
+			// Decode (this should succeed as we have the full frame)
+			frame, err := relay.Decode(frameData)
+			if err != nil {
+				stdlog.Printf("[SOCKS5] Frame decode error: %v", err)
+				// If decode fails on a sized chunk, the stream is likely desynchronized.
+				// We drop this frame and shift (risky, but better than stuck)
+				// Ideally, we should close the connection, but here we just drop.
+			} else {
+				m.handleIncomingFrame(frame)
+			}
+
+			// Slice buffer
+			packetBuf = packetBuf[frameSize:]
 		}
 
-		frame, err := relay.Decode(buf[:n])
-		if err != nil {
-			stdlog.Printf("[SOCKS5] Frame decode error: %v (data: %x)", err, buf[:min(n, 32)])
-			continue
+		// Safety cap to prevent memory leaks if stream is infinitely broken
+		if len(packetBuf) > 4*1024*1024 { // 4MB
+			stdlog.Printf("[SOCKS5] Buffer overflow, clearing accumulator")
+			packetBuf = nil
 		}
-
-		m.handleIncomingFrame(frame)
 	}
 }
 
@@ -381,7 +407,7 @@ Loop:
 
 	// Client -> Server (via tunnel)
 	go func() {
-		buf := make([]byte, 32*1024)
+		buf := make([]byte, m.config.MTU)
 		for {
 			n, err := clientConn.Read(buf)
 			if err != nil {
