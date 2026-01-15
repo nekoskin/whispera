@@ -655,6 +655,7 @@ func handlePacket(data []byte, addr net.Addr) {
 		deobfuscated, _, err := globalObfuscator.Process(data, interfaces.DirectionInbound)
 		if err == nil && len(deobfuscated) > 0 {
 			payload = deobfuscated
+			fmt.Printf("[Packet] Deobfuscated %d -> %d bytes\n", len(data), len(payload))
 		}
 	}
 
@@ -668,12 +669,12 @@ func handlePacket(data []byte, addr net.Addr) {
 			dataLen := uint32(payload[4])<<24 | uint32(payload[5])<<16 | uint32(payload[6])<<8 | uint32(payload[7])
 			// Allow some buffer, but if claimed length is way larger than packet, it's likely not a relay frame
 			if int(dataLen) <= len(payload)-8 {
+				fmt.Printf("[Packet] RELAY frame detected: type=%d streamID=%d len=%d from %v\n",
+					frameType, uint16(payload[0])<<8|uint16(payload[1]), dataLen, addr)
 				// Process through relay server - this handles CONNECT, DATA, etc.
 				// Note: We pass the DEOBFUSCATED payload
 				if err := globalRelay.ProcessFrame(payload, sess, addr); err != nil {
-					if *debug {
-						log.Printf("[Packet] Relay error: %v", err)
-					}
+					fmt.Printf("[Packet] Relay error: %v\n", err)
 				}
 				return
 			}
