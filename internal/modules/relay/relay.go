@@ -3,11 +3,14 @@ package relay
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
@@ -317,4 +320,206 @@ func (s *Server) HealthCheck() interfaces.HealthStatus {
 		status.Details["bytes_out"] = bout
 	}
 	return status
+}
+
+// ServeTunnel handles a persistent tunnel connection (e.g. TCP or Phantom)
+// It manages streams, applies obfuscation, and routes frames via the Relay Protocol.
+func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
+	defer conn.Close()
+
+	// Connection context
+	clientID := conn.RemoteAddr().String()
+	s.log.Info("Starting tunnel session for %s", clientID)
+
+	// Write lock for the tunnel
+	var writeMu sync.Mutex
+
+	// Helper to send frame
+	sendFrame := func(f *Frame) error {
+		data, err := f.Encode()
+		if err != nil {
+			return err
+		}
+
+		// Apply obfuscation
+		if obfuscator != nil {
+			obfuscated, _, err := obfuscator.Process(data, interfaces.DirectionOutbound)
+			if err != nil {
+				return err
+			}
+			data = obfuscated
+		}
+
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		_, err = conn.Write(data)
+		conn.SetWriteDeadline(time.Time{})
+		return err
+	}
+
+	// Active streams for this tunnel
+	streams := make(map[uint16]net.Conn)
+	var streamsMu sync.Mutex
+
+	defer func() {
+		streamsMu.Lock()
+		for _, c := range streams {
+			c.Close()
+		}
+		streamsMu.Unlock()
+		s.log.Info("Tunnel closed for %s", clientID)
+	}()
+
+	// Read buffer
+	buf := make([]byte, 32*1024)
+	var packetBuf []byte // Accumulator for partial frames
+
+	for {
+		conn.SetReadDeadline(time.Now().Add(300 * time.Second)) // 5 min idle
+		n, err := conn.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				s.log.Debug("Tunnel read error from %s: %v", clientID, err)
+			}
+			return
+		}
+
+		data := buf[:n]
+
+		// De-obfuscate
+		if obfuscator != nil {
+			deobfuscated, _, err := obfuscator.Process(data, interfaces.DirectionInbound)
+			if err != nil {
+				s.log.Warn("Deobfuscation failed from %s: %v", clientID, err)
+				return
+			}
+			data = deobfuscated
+		}
+
+		// Append to accumulator
+		packetBuf = append(packetBuf, data...)
+
+		// Process frames
+		for len(packetBuf) >= HeaderSize {
+			// Check potential frame length
+			payloadLen := binary.BigEndian.Uint32(packetBuf[4:8])
+			frameSize := HeaderSize + int(payloadLen)
+
+			// Sanity check for frame size
+			if frameSize > MaxPayloadLen+HeaderSize {
+				s.log.Error("Frame too large from %s: %d", clientID, frameSize)
+				return
+			}
+
+			if len(packetBuf) < frameSize {
+				// Wait for more data
+				break
+			}
+
+			// Extract frame data
+			frameData := packetBuf[:frameSize]
+			packetBuf = packetBuf[frameSize:] // Shift buffer
+
+			f, err := Decode(frameData)
+			if err != nil {
+				s.log.Error("Frame decode error from %s: %v", clientID, err)
+				return // Protocol violation
+			}
+
+			// Handle Frame
+			switch f.Type {
+			case FrameConnect:
+				// Async Connect
+				go func(fr *Frame) {
+					// Decode Payload
+					payload, err := DecodeConnectPayload(fr.Payload)
+					if err != nil {
+						sendFrame(NewConnectFailFrame(fr.StreamID, "Invalid payload"))
+						return
+					}
+
+					target := fmt.Sprintf("%s:%d", payload.Addr, payload.Port)
+					network := "tcp"
+					if payload.Protocol == ProtoUDP {
+						network = "udp"
+					}
+
+					// Dial
+					var dialer proxy.Dialer = proxy.Direct
+					if s.proxyDialer != nil {
+						dialer = s.proxyDialer
+					}
+
+					rConn, err := dialer.Dial(network, target)
+					if err != nil {
+						s.log.Debug("Failed to dial %s: %v", target, err)
+						sendFrame(NewConnectFailFrame(fr.StreamID, err.Error()))
+						return
+					}
+
+					streamsMu.Lock()
+					streams[fr.StreamID] = rConn
+					streamsMu.Unlock()
+
+					sendFrame(NewConnectOKFrame(fr.StreamID))
+
+					// Pump Data Target -> Tunnel
+					go func() {
+						defer rConn.Close()
+
+						// Close tunnel stream on exit
+						defer func() {
+							sendFrame(NewCloseFrame(fr.StreamID))
+							streamsMu.Lock()
+							delete(streams, fr.StreamID)
+							streamsMu.Unlock()
+						}()
+
+						b := make([]byte, 32*1024)
+						for {
+							rConn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+							rn, rerr := rConn.Read(b)
+							if rn > 0 {
+								if err := sendFrame(NewDataFrame(fr.StreamID, b[:rn])); err != nil {
+									return
+								}
+							}
+							if rerr != nil {
+								return
+							}
+						}
+					}()
+				}(f)
+
+			case FrameData:
+				streamsMu.Lock()
+				rc, ok := streams[f.StreamID]
+				streamsMu.Unlock()
+				if ok {
+					rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
+					rc.Write(f.Payload)
+					rc.SetWriteDeadline(time.Time{})
+				}
+
+			case FrameClose:
+				streamsMu.Lock()
+				rc, ok := streams[f.StreamID]
+				delete(streams, f.StreamID)
+				streamsMu.Unlock()
+				if ok {
+					rc.Close()
+				}
+
+			case FramePing:
+				sendFrame(NewPongFrame())
+			}
+		}
+
+		// Protection against buffer bloat attack
+		if len(packetBuf) > 1024*1024 {
+			s.log.Warn("Buffer overflow from %s, disconnecting", clientID)
+			return
+		}
+	}
 }

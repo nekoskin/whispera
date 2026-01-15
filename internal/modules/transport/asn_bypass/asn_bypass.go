@@ -64,7 +64,7 @@ var SNICategories = []SNICategory{
 	},
 	{
 		Name:        "Search",
-		Domains:     []string{"yandex.ru", "google.ru", "mail.ru", "rambler.ru", "ya.ru"},
+		Domains:     []string{"yandex.ru", "mail.ru", "rambler.ru", "ya.ru"},
 		MinDuration: 5 * time.Minute,
 		MaxDuration: 10 * time.Minute,
 	},
@@ -76,7 +76,7 @@ var SNICategories = []SNICategory{
 	},
 	{
 		Name:        "Social/Other",
-		Domains:     []string{"vk.com", "ok.ru", "gosuslugi.ru", "avito.ru", "wildberries.ru", "ozon.ru", "dzen.ru", "telegram.org", "whatsapp.com", "hh.ru", "rbc.ru"},
+		Domains:     []string{"vk.com", "ok.ru", "gosuslugi.ru", "avito.ru", "wildberries.ru", "ozon.ru", "dzen.ru", "hh.ru", "rbc.ru"},
 		MinDuration: 20 * time.Minute,
 		MaxDuration: 40 * time.Minute,
 	},

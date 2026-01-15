@@ -55,7 +55,8 @@ func (s TunnelState) String() string {
 
 // Config holds tunnel configuration
 type Config struct {
-	ServerAddr           string        // Server address
+	ServerAddr           string        // Server address (Primary/UDP)
+	ServerAddrTCP        string        // Server address TCP (Fallback)
 	KeepaliveInterval    time.Duration // Keepalive interval
 	ReconnectInterval    time.Duration // Reconnect interval
 	ReconnectMaxDelay    time.Duration // Max reconnect delay
@@ -353,23 +354,52 @@ func (m *Manager) Connect(ctx context.Context) error {
 		}
 	}
 
-	// Fallback to direct UDP connection if ASN bypass not enabled or failed
+	// Fallback to direct connection if ASN bypass not enabled or failed
 	if conn == nil {
-		m.isTransportSecure = false // UDP is not TLS secured by transport
-		// Resolve server address
-		addr, err := net.ResolveUDPAddr("udp", m.config.ServerAddr)
-		if err != nil {
-			m.setError(fmt.Errorf("failed to resolve address: %w", err))
-			return err
+		var connectErr error
+
+		// 1. Try UDP (Primary)
+		// SECURITY: If Phantom is enabled, we MUST NOT use UDP as it leaks SNI/content
+		// and cannot masquerade as a Russian profile.
+		if !m.config.EnablePhantom {
+			log.Info("Connecting via UDP to %s", m.config.ServerAddr)
+			udpAddr, err := net.ResolveUDPAddr("udp", m.config.ServerAddr)
+			if err == nil {
+				udpConn, err := net.DialUDP("udp", nil, udpAddr)
+				if err == nil {
+					conn = udpConn
+					m.isTransportSecure = false
+					log.Info("UDP connection established")
+				} else {
+					connectErr = fmt.Errorf("UDP dial failed: %v", err)
+				}
+			} else {
+				connectErr = fmt.Errorf("UDP resolve failed: %v", err)
+			}
+		} else {
+			log.Info("Skipping UDP fallback to enforce Phantom masquerading")
+			connectErr = fmt.Errorf("secure connection failed and fallback is disabled")
 		}
 
-		// Create UDP connection
-		udpConn, err := net.DialUDP("udp", nil, addr)
-		if err != nil {
-			m.setError(fmt.Errorf("failed to dial UDP: %w", err))
-			return err
+		// 2. Try TCP (Fallback) if UDP failed and TCP address is set
+		// Also skipped if Phantom is enabled to prevent Direct TCP leaks
+		if conn == nil && m.config.ServerAddrTCP != "" && !m.config.EnablePhantom {
+			log.Warn("UDP connection failed (%v), falling back to TCP: %s", connectErr, m.config.ServerAddrTCP)
+			tcpConn, err := net.DialTimeout("tcp", m.config.ServerAddrTCP, 10*time.Second)
+			if err == nil {
+				conn = tcpConn
+				m.isTransportSecure = true // TCP stream
+				log.Info("TCP fallback connection established")
+				connectErr = nil
+			} else {
+				connectErr = fmt.Errorf("TCP fallback failed: %v (UDP error: %v)", err, connectErr)
+			}
 		}
-		conn = udpConn
+
+		if conn == nil {
+			m.setError(fmt.Errorf("all connection attempts failed: %v", connectErr))
+			return connectErr
+		}
 	}
 
 	m.connMu.Lock()

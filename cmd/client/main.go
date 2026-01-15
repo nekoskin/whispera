@@ -205,8 +205,15 @@ func main() {
 		}
 	}
 
+	// Calculate fallback TCP address
+	fallbackTCP := cfg.ServerTCP
+	if fallbackTCP == "" {
+		fallbackTCP = cfg.Server // Assume same address supports TCP
+	}
+
 	tunnelMod, _ := tunnel.New(&tunnel.Config{
 		ServerAddr:        serverAddress,
+		ServerAddrTCP:     fallbackTCP,
 		KeepaliveInterval: 30 * time.Second,
 		// ASN Bypass settings
 		EnableASNBypass:    asnBypassEnabled,
