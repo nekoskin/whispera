@@ -220,8 +220,8 @@ generate_connection_key() {
     fi
     
     # Build connection key URL
-    # Format: whispera://SERVER:PORT?key=PUBLIC_KEY&transport=tcp&phantom=1&sni=random_ru&asn=1&tls=chrome
-    local CONNECTION_KEY="whispera://${SERVER_IP}:8443?key=${PUBLIC_KEY}&transport=tcp&phantom=1&sni=random_ru&asn=1&tls=chrome"
+    # Format: whispera://SERVER:PORT?pub=PUBLIC_KEY&transport=tcp&phantom=1&sni=random_ru&asn=1&tls=chrome
+    local CONNECTION_KEY="whispera://${SERVER_IP}:8443?pub=${PUBLIC_KEY}&transport=tcp&phantom=1&sni=random_ru&asn=1&tls=chrome"
     
     echo "$CONNECTION_KEY" > "$CONF_PATH/connection.key"
     
