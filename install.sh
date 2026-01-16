@@ -268,6 +268,7 @@ transport:
 phantom:
   enabled: true
   dest: "yandex.ru:443"              # Real TLS server for mimicry
+  private_key: "$PRIVATE_KEY"        # X25519 private key for REALITY auth
   server_names:
     # Banking
     - "sberbank.ru"

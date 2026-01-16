@@ -248,8 +248,21 @@ func New(cfg *Config) (*Manager, error) {
 			FailoverTimeout:        cfg.ConnectionTimeout,
 			FallbackStrategies:     []asnbypass.Strategy{asnbypass.StrategyTLSMasquerade, asnbypass.StrategyDomainFronting},
 		}
+
+		// FORCE TLS Masquerade strategy if Phantom is enabled
+		// This is critical because Phantom Protocol requires a TLS ClientHello
+		// to be sent first, which is only handled by the StrategyTLSMasquerade logic.
+		if cfg.EnablePhantom {
+			asnConfig.Strategy = asnbypass.StrategyTLSMasquerade
+		}
+
 		m.asnBypassDialer = asnbypass.NewDialer(asnConfig)
-		log.Info("ASN bypass initialized (SniMask: %v, Domain: %s)", enableSNIMask, frontDomain)
+		if cfg.EnablePhantom {
+			log.Info("ASN Bypass initialized for Phantom (Forced Strategy: TLSMasquerade)")
+		} else {
+			log.Info("ASN Bypass initialized (Strategy: %v)", cfg.ASNBypassStrategy)
+		}
+
 	}
 
 	// Initialize Kill Switch if enabled in config
@@ -626,7 +639,7 @@ func (m *Manager) getSNIRotationInterval(sni string) time.Duration {
 	}
 
 	// Social Media (Medium sessions) -> 10-15 min
-	if strings.Contains(sni, "vk.com")  ||
+	if strings.Contains(sni, "vk.com") ||
 		strings.Contains(sni, "telegram") {
 		return 10 * time.Minute
 	}

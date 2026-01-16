@@ -883,15 +883,12 @@ type interceptorConn struct {
 	net.Conn
 	buf      bytes.Buffer
 	mu       sync.Mutex
-	cond     *sync.Cond
 	captured bool
 	closed   bool
 }
 
 func newInterceptorConn() *interceptorConn {
-	ic := &interceptorConn{}
-	ic.cond = sync.NewCond(&ic.mu)
-	return ic
+	return &interceptorConn{}
 }
 
 func (ic *interceptorConn) Write(b []byte) (int, error) {
@@ -902,7 +899,6 @@ func (ic *interceptorConn) Write(b []byte) (int, error) {
 	}
 	n, err := ic.buf.Write(b)
 	ic.captured = true
-	ic.cond.Broadcast()
 	return n, err
 }
 
@@ -927,30 +923,23 @@ func (ic *interceptorConn) SetWriteDeadline(t time.Time) error { return nil }
 
 func (ic *interceptorConn) WaitForBytes(timeout time.Duration) ([]byte, error) {
 	deadline := time.Now().Add(timeout)
-	ic.mu.Lock()
-	defer ic.mu.Unlock()
 
-	for ic.buf.Len() == 0 {
+	for {
+		ic.mu.Lock()
+		if ic.buf.Len() > 0 {
+			out := make([]byte, ic.buf.Len())
+			copy(out, ic.buf.Bytes())
+			ic.mu.Unlock()
+			return out, nil
+		}
+		ic.mu.Unlock()
+
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf("timeout waiting for ClientHello")
 		}
 
-		// Wait with check
-		done := make(chan struct{})
-		go func() {
-			ic.cond.Wait()
-			close(done)
-		}()
-
-		// We have to release lock for Wait, but standard Cond.Wait does that.
-		// However, we can't implement timeout easily with Cond.Wait without a loop and separate timer.
-		// Simplified for this context:
-		ic.mu.Unlock()
 		time.Sleep(10 * time.Millisecond)
-		ic.mu.Lock()
 	}
-
-	return ic.buf.Bytes(), nil
 }
 
 // TimedConn wraps a net.Conn and closes it after a specific duration
