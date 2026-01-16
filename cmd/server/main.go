@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -515,12 +516,64 @@ func createModules(manager *lifecycle.Manager) error {
 			MaxTimeDiff: serverConfig.Phantom.MaxTimeDiff,
 			Fingerprint: serverConfig.Phantom.Fingerprint,
 			OnAuthenticated: func(conn net.Conn, clientID string) {
-				if globalRelay != nil {
-					globalRelay.ServeTunnel(conn, globalObfuscator)
-				} else {
+				if globalRelay == nil {
 					log.Printf("Phantom: Relay server not available, closing connection from %s", clientID)
 					conn.Close()
+					return
 				}
+
+				// Perform protocol handshake first (client sends 64-byte init, expects 48-byte response)
+				conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+				initBuf := make([]byte, 128) // Buffer for handshake init
+				n, err := conn.Read(initBuf)
+				conn.SetReadDeadline(time.Time{})
+
+				if err != nil {
+					log.Printf("Phantom: Failed to read handshake init from %s: %v", clientID, err)
+					conn.Close()
+					return
+				}
+
+				initData := initBuf[:n]
+
+				// Validate handshake init (first byte should be 0x01 = HandshakeTypeInit)
+				if len(initData) < 32 || initData[0] != 0x01 {
+					log.Printf("Phantom: Invalid handshake init from %s (size=%d, type=%d)", clientID, len(initData), initData[0])
+					conn.Close()
+					return
+				}
+
+				log.Printf("Phantom: Received handshake init from %s (%d bytes)", clientID, len(initData))
+
+				// Build response: [type:1][status:1][session_id:4][server_pubkey:32][nonce:10] = 48 bytes
+				response := make([]byte, 48)
+				response[0] = 0x02 // HandshakeTypeResponse
+				response[1] = 0x00 // Status OK
+
+				// Generate session ID (4 bytes)
+				sessionID := uint32(time.Now().UnixNano() & 0xFFFFFFFF)
+				response[2] = byte(sessionID >> 24)
+				response[3] = byte(sessionID >> 16)
+				response[4] = byte(sessionID >> 8)
+				response[5] = byte(sessionID)
+
+				// Random server pubkey placeholder and nonce
+				rand.Read(response[6:48])
+
+				conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				_, err = conn.Write(response)
+				conn.SetWriteDeadline(time.Time{})
+
+				if err != nil {
+					log.Printf("Phantom: Failed to send handshake response to %s: %v", clientID, err)
+					conn.Close()
+					return
+				}
+
+				log.Printf("Phantom: Handshake completed for %s, starting relay", clientID)
+
+				// Now pass to relay - client will start sending framed data
+				globalRelay.ServeTunnel(conn, globalObfuscator)
 			},
 		})
 		if err != nil {
