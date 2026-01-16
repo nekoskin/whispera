@@ -196,36 +196,95 @@ generate_config() {
     
     cat > "$CONF_PATH/config.yaml" <<EOF
 server:
+  name: whispera-server
   listen_addr: "0.0.0.0:8443"
   uuid: "$UUID"
   private_key: "$PRIVATE_KEY"
+  mtu: 1420
+  workers: 8
 
 transport:
   udp:
     enabled: true
     listen_addr: ":8443"
   tcp:
-    enabled: true
+    enabled: false   # Disabled - Phantom handles TCP/TLS on same port
     listen_addr: ":8443"
   websocket:
     enabled: true
     listen_addr: ":8080"
 
+# Phantom Protocol - REALITY-like TLS masquerading
+# Handles all TCP connections on server.listen_addr with SNI spoofing
+phantom:
+  enabled: true
+  dest: "yandex.ru:443"              # Real TLS server for mimicry
+  server_names:
+    # Banking
+    - "sberbank.ru"
+    - "tinkoff.ru"
+    # Search
+    - "yandex.ru"
+    - "mail.ru"
+    - "rambler.ru"
+    - "ya.ru"
+    # Video
+    - "rutube.ru"
+    - "kinopoisk.ru"
+    - "kion.ru"
+    - "ivi.ru"
+    - "pladform.ru"
+    - "ntv.ru"
+    - "1tv.ru"
+    # Social/Other
+    - "vk.com"
+    - "ok.ru"
+    - "gosuslugi.ru"
+    - "avito.ru"
+    - "wildberries.ru"
+    - "ozon.ru"
+    - "dzen.ru"
+    - "hh.ru"
+    - "rbc.ru"
+  private_key: "$PRIVATE_KEY"       # Same key as server for simplicity
+  short_ids:
+    - ""                            # Allow any shortId from client
+  max_time_diff: 60000              # 60 seconds tolerance
+  fingerprint: "chrome"             # Browser fingerprint to mimic
+
 obfuscation:
   enabled: true
-  ml_engine:
-    enabled: true
-    model_path: "$WORK_DIR/ml_engine/models"
+  profile: "http2"
+  threat_level: 5
+
+session:
+  max_sessions: 10000
+  session_timeout: 30m
+  cleanup_interval: 1m
+  keepalive_interval: 30s
+
+relay:
+  max_streams: 10000
+  enable_tcp: true
+  enable_udp: true
+  debug: false
+
+metrics:
+  enabled: true
+  listen_addr: ":9090"
+  path: "/metrics"
 
 logging:
   level: "info"
-  path: "$LOG_PATH/access.log"
+  format: "text"
+  output: "stdout"
 
 api:
   enabled: true
   listen_addr: ":8080"
   auth_token: "$UUID"
   web_root: "$DAT_PATH/web"
+  enable_cors: true
 EOF
     
     log_success "Config saved to $CONF_PATH/config.yaml"

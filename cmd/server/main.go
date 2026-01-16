@@ -321,10 +321,9 @@ func createModules(manager *lifecycle.Manager) error {
 	}
 
 	// 8.1. TCP Transport
-	// Only enable raw TCP transport if Phantom is disabled to avoid port conflict
-	if !serverConfig.Phantom.Enabled {
+	if serverConfig.Transport.TCP.Enabled {
 		tcpTransport, err := tcp.New(&tcp.Config{
-			ListenAddr:   serverConfig.Transport.UDP.ListenAddr, // Reuse same address/port
+			ListenAddr:   serverConfig.Transport.TCP.ListenAddr, // Use TCP-specific address
 			ReadTimeout:  30 * time.Second,
 			WriteTimeout: 30 * time.Second,
 			KeepAlive:    30 * time.Second,
@@ -343,7 +342,7 @@ func createModules(manager *lifecycle.Manager) error {
 		go func() {
 			// Wait for start
 			time.Sleep(1 * time.Second)
-			log.Printf("[TCP] Starting accept loop on %s", serverConfig.Transport.UDP.ListenAddr)
+			log.Printf("[TCP] Starting accept loop on %s", serverConfig.Transport.TCP.ListenAddr)
 
 			for {
 				conn, err := tcpTransport.Accept()
@@ -359,8 +358,7 @@ func createModules(manager *lifecycle.Manager) error {
 				go handleTCPConnection(conn)
 			}
 		}()
-	} else {
-		log.Printf("[Server] Raw TCP Transport disabled (Phantom Protocol takes precedence on %s)", serverConfig.Transport.UDP.ListenAddr)
+		log.Printf("  ✓ TCP Transport enabled on %s", serverConfig.Transport.TCP.ListenAddr)
 	}
 
 	// 8.2. WebSocket Transport
