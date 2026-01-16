@@ -73,40 +73,41 @@ fi
 # Regenerate config with phantom enabled
 cat > "$CONF_PATH/config.yaml" << EOF
 server:
-  addr: "0.0.0.0:8443"
-  max_streams: 10000
+  name: whispera-server
+  listen_addr: "0.0.0.0:8443"
+  mtu: 1420
+  workers: 8
 
-transports:
+transport:
   udp:
     enabled: true
-    addr: "0.0.0.0:8443"
+    listen_addr: ":8443"
   tcp:
-    enabled: true
-    addr: "0.0.0.0:8443"
-  websocket:
     enabled: false
-    addr: "0.0.0.0:8080"
-    path: "/ws"
+    listen_addr: ":8443"
+  websocket:
+    enabled: true
+    listen_addr: ":8080"
 
 phantom:
   enabled: true
   dest: "yandex.ru:443"
   server_names:
-    - "www.google.com"
-    - "www.cloudflare.com"
-    - "www.amazon.com"
-    - "www.microsoft.com"
-    - "www.apple.com"
-    - "www.facebook.com"
-    - "www.twitter.com"
-    - "www.instagram.com"
-    - "www.linkedin.com"
-    - "www.netflix.com"
-    - "www.spotify.com"
-    - "www.twitch.tv"
-    - "www.reddit.com"
-    - "www.github.com"
-    - "www.stackoverflow.com"
+    - "sberbank.ru"
+    - "tinkoff.ru"
+    - "yandex.ru"
+    - "mail.ru"
+    - "rambler.ru"
+    - "ya.ru"
+    - "vk.com"
+    - "ok.ru"
+    - "dzen.ru"
+    - "rutube.ru"
+    - "ozon.ru"
+    - "wildberries.ru"
+    - "avito.ru"
+    - "mos.ru"
+    - "gosuslugi.ru"
   private_key: "$PRIVATE_KEY"
   max_time_diff: 60
 EOF
