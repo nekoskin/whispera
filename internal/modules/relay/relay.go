@@ -387,6 +387,14 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 
 		data := buf[:n]
 
+		// DEBUG: Log first bytes of incoming data
+		if n >= 8 {
+			s.log.Info("Tunnel data from %s: first 8 bytes = [%02x %02x %02x %02x %02x %02x %02x %02x]",
+				clientID, data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7])
+		} else {
+			s.log.Info("Tunnel data from %s: %d bytes = %x", clientID, n, data)
+		}
+
 		// De-obfuscate
 		if obfuscator != nil {
 			deobfuscated, _, err := obfuscator.Process(data, interfaces.DirectionInbound)
