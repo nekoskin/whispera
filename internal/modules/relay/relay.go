@@ -389,10 +389,17 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 
 		// DEBUG: Log first bytes of incoming data
 		if n >= 8 {
-			s.log.Info("Tunnel data from %s: first 8 bytes = [%02x %02x %02x %02x %02x %02x %02x %02x]",
+			s.log.Debug("Tunnel data from %s: first 8 bytes = [%02x %02x %02x %02x %02x %02x %02x %02x]",
 				clientID, data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7])
-		} else {
-			s.log.Info("Tunnel data from %s: %d bytes = %x", clientID, n, data)
+		}
+
+		// Check for TLS data (leftover from masquerade handshake)
+		// TLS record types: 0x14 (ChangeCipherSpec), 0x15 (Alert), 0x16 (Handshake), 0x17 (ApplicationData)
+		if n >= 5 && data[0] >= 0x14 && data[0] <= 0x17 && data[1] == 0x03 {
+			tlsLen := int(data[3])<<8 | int(data[4])
+			s.log.Warn("Detected TLS data from %s (type=0x%02x, len=%d), skipping...", clientID, data[0], tlsLen)
+			// Skip this TLS record - don't add to packetBuf
+			continue
 		}
 
 		// De-obfuscate
@@ -410,6 +417,18 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 
 		// Process frames
 		for len(packetBuf) >= HeaderSize {
+			// Check for TLS data in accumulated buffer
+			if packetBuf[0] >= 0x14 && packetBuf[0] <= 0x17 && packetBuf[1] == 0x03 && len(packetBuf) >= 5 {
+				tlsLen := int(packetBuf[3])<<8 | int(packetBuf[4])
+				skipLen := 5 + tlsLen
+				if skipLen <= len(packetBuf) {
+					s.log.Warn("Skipping TLS record in buffer from %s (len=%d)", clientID, tlsLen)
+					packetBuf = packetBuf[skipLen:]
+					continue
+				}
+				break // Wait for more data
+			}
+
 			// Check potential frame length
 			payloadLen := binary.BigEndian.Uint32(packetBuf[4:8])
 			frameSize := HeaderSize + int(payloadLen)

@@ -415,9 +415,10 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 	fmt.Printf("[ASN-BYPASS] Received initial ServerHello: %d bytes\n", n)
 
 	// Phase 2: Drain remaining handshake (ChangeCipherSpec, EncryptedHandshake, etc.)
-	// We loop with a short timeout. If we read nothing, we assume the server is done.
+	// Use 1500ms timeout to ensure ALL TLS handshake data is consumed.
+	// The real server may send data in multiple packets with network delays.
 	for {
-		tcpConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		tcpConn.SetReadDeadline(time.Now().Add(1500 * time.Millisecond))
 		n, err := tcpConn.Read(buf)
 		if n > 0 {
 			totalRead += n

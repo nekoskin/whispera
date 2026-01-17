@@ -776,6 +776,8 @@ func (m *Manager) readLoop(mc *managedConn) {
 
 	// Buffer for header
 	header := make([]byte, FrameHeaderSize)
+	tlsDrainCount := 0 // Counter to prevent infinite TLS drain loop
+	const maxTLSDrain = 20
 
 	for {
 		select {
@@ -792,6 +794,27 @@ func (m *Manager) readLoop(mc *managedConn) {
 			m.handleReadError(mc, err)
 			return
 		}
+
+		// Check for TLS data (leftover from masquerade handshake)
+		// TLS record types: 0x14 (ChangeCipherSpec), 0x15 (Alert), 0x16 (Handshake), 0x17 (ApplicationData)
+		if header[0] >= 0x14 && header[0] <= 0x17 && header[1] == 0x03 {
+			tlsDrainCount++
+			if tlsDrainCount > maxTLSDrain {
+				log.Error("Too many TLS records (%d), connection may be corrupted", tlsDrainCount)
+				return
+			}
+			// This looks like TLS data, not a relay frame. Drain and skip.
+			tlsLen := int(header[3])<<8 | int(header[4])
+			if tlsDrainCount <= 3 {
+				log.Warn("Detected TLS data (type=0x%02x, len=%d), draining... [%d/%d]", header[0], tlsLen, tlsDrainCount, maxTLSDrain)
+			}
+			if tlsLen > 0 && tlsLen < 16384 {
+				drain := make([]byte, tlsLen-3) // Already read 8 bytes (5 hdr + 3 fragment), need remaining
+				io.ReadFull(mc, drain)
+			}
+			continue // Skip to next read
+		}
+		tlsDrainCount = 0 // Reset counter on valid frame
 
 		// 2. Parse Payload Length
 		// Format: [StreamID:2][Type:1][Flags:1][Length:4]
