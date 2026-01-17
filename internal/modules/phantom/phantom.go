@@ -303,74 +303,11 @@ func (h *Handler) handleConnection(conn net.Conn) {
 	h.proxyToDestination(conn, clientHello)
 }
 
-// sendFakeHandshake mimics server response by proxying real server's hello
+// sendFakeHandshake is a no-op now - client is already authenticated via HMAC
+// No need to proxy real TLS handshake, just return success
 func (h *Handler) sendFakeHandshake(clientConn net.Conn, clientHello []byte, sni string) error {
-	// Connect to destination (Use SNI if available to match expectation, otherwise default Dest)
-	target := h.config.Dest
-	if sni != "" {
-		// Append port 443 if missing
-		if _, _, err := net.SplitHostPort(sni); err != nil {
-			target = sni + ":443"
-		} else {
-			target = sni
-		}
-	}
-
-	destConn, err := net.DialTimeout("tcp", target, 5*time.Second)
-	if err != nil {
-		// Fallback to default dest if SNI dial fails
-		log.Printf("Failed to dial SNI %s: %v, falling back to %s", target, err, h.config.Dest)
-		destConn, err = net.DialTimeout("tcp", h.config.Dest, 5*time.Second)
-		if err != nil {
-			return err
-		}
-	}
-	defer destConn.Close()
-
-	// Forward ClientHello to destination
-	if _, err := destConn.Write(clientHello); err != nil {
-		return fmt.Errorf("write client hello: %w", err)
-	}
-
-	// Read initial ServerHello response (first chunk to forward to client)
-	buffer := make([]byte, 4096)
-	destConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	n, err := destConn.Read(buffer)
-	if err != nil && err != io.EOF {
-		return fmt.Errorf("read server hello: %w", err)
-	}
-
-	// Forward initial response to client (for DPI to see ServerHello)
-	if n > 0 {
-		if _, err := clientConn.Write(buffer[:n]); err != nil {
-			return fmt.Errorf("write server hello: %w", err)
-		}
-	}
-
-	// CRITICAL: Fully drain all remaining TLS data from destConn
-	// TLS 1.3 sends lots of data after ServerHello (Certificate, NewSessionTicket, etc.)
-	// We must NOT forward this to client - just absorb it until timeout
-	drainBuf := make([]byte, 8192)
-	totalDrained := 0
-	for {
-		destConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-		dn, derr := destConn.Read(drainBuf)
-		if dn > 0 {
-			totalDrained += dn
-			// DO NOT forward this to client - just discard
-		}
-		if derr != nil {
-			// Timeout or EOF - we're done draining
-			break
-		}
-		// Safety: don't drain forever - Some sites send LOTS of TLS data (e.g. rutube.ru)
-		if totalDrained > 512*1024 {
-			break
-		}
-	}
-
-	// Now destConn is fully drained - close it and proceed
-	// The clientConn is now "Ready" for VPN traffic
+	// Client is already authenticated via HMAC in SessionID
+	// No need to proxy any TLS data - client can start sending VPN traffic immediately
 	return nil
 }
 
