@@ -387,65 +387,15 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 		tcpConn.Close()
 		return nil, fmt.Errorf("write client hello failed: %w", err)
 	}
-	fmt.Printf("[ASN-BYPASS] ClientHello sent, waiting for ServerHello...\n")
+	fmt.Printf("[ASN-BYPASS] ClientHello sent - server authenticated via HMAC in SessionID\n")
 
-	// Read ServerHello (Phantom proxies it from real dest)
-	// We consume it to clear the socket buffer for the actual protocol
-	// We read effectively until the server stops sending the fake handshake.
-	// Since we don't have the private key, we can't parse the encrypted handshake messages (ChangeCipherSpec, Finished).
-	// We rely on the fact that the server will stop sending data after the handshake and wait for client request.
+	// NO ServerHello expected from server!
+	// Server validates HMAC in ClientHello and immediately accepts VPN traffic.
+	// We just sent ClientHello for DPI to see a valid TLS handshake initiation.
+	// The server doesn't proxy any real TLS response - it's pure authentication.
 
-	// Strategy: Read until we get a read timeout (silence).
-	// For a high-latency connection, we give a generous initial timeout.
-	// Once we start receiving data, we reduce the timeout to detect the "end of burst".
-
-	buf := make([]byte, 16*1024)
-	totalRead := 0
-
-	// Phase 1: Wait for initial response (ServerHello)
-	fmt.Printf("[ASN-BYPASS] Waiting for ServerHello (10s timeout)...\n")
-	tcpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	n, err := tcpConn.Read(buf)
-	if err != nil {
-		fmt.Printf("[ASN-BYPASS] ServerHello read failed: %v\n", err)
-		tcpConn.Close()
-		return nil, fmt.Errorf("failed to read ServerHello (timeout/error): %w", err)
-	}
-	totalRead += n
-	fmt.Printf("[ASN-BYPASS] Received initial ServerHello: %d bytes\n", n)
-
-	// Phase 2: Drain remaining handshake (ChangeCipherSpec, EncryptedHandshake, etc.)
-	// Use 1500ms timeout to ensure ALL TLS handshake data is consumed.
-	// The real server may send data in multiple packets with network delays.
-	for {
-		tcpConn.SetReadDeadline(time.Now().Add(1500 * time.Millisecond))
-		n, err := tcpConn.Read(buf)
-		if n > 0 {
-			totalRead += n
-			// fmt.Printf("DEBUG: Drained additional handshake data: %d bytes\n", n)
-		}
-		if err != nil {
-			// Timeout (common) or EOF
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				// Expected timeout, we drained the buffer
-				break
-			}
-			// Real error or EOF
-			if err == io.EOF {
-				// Server closed connection? If we read *something*, maybe it's okay?
-				// But usually handshake shouldn't close immediately.
-				// We'll return what we have, but logically this might be bad if server hung up.
-				// For Phantom, if auth fails, it might close.
-				// tcpConn.Close()
-				// return nil, fmt.Errorf("server closed connection during handshake drain")
-				break
-			}
-			// Other error
-			break
-		}
-	}
-	// We ignore the content of ServerHello (it is encrypted/real TLS we can't speak)
-	fmt.Printf("[ASN-BYPASS] Handshake drain complete, total read: %d bytes\n", totalRead)
+	// Small delay to ensure server processes ClientHello before we send VPN frames
+	time.Sleep(50 * time.Millisecond)
 
 	// Reset deadline
 	tcpConn.SetReadDeadline(time.Time{})

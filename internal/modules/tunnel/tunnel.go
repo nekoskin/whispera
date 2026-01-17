@@ -1101,6 +1101,10 @@ func (m *Manager) setError(err error) {
 func (m *Manager) startKeepalive() {
 	m.stopKeepalive()
 
+	// Send immediate keepalive to kick off communication with server
+	// Server is waiting for first frame after authentication
+	m.sendKeepalive()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	m.keepaliveCancel = cancel
 	m.keepaliveTicker = time.NewTicker(m.config.KeepaliveInterval)
@@ -1127,14 +1131,21 @@ func (m *Manager) stopKeepalive() {
 	}
 }
 
-// sendKeepalive sends a keepalive packet
+// sendKeepalive sends a keepalive packet (proper PING frame)
 func (m *Manager) sendKeepalive() {
-	// Simple keepalive packet
-	// Assuming `socks5` module sends Pings via `Send`.
-	// Here we keep dummy keepalive.
-	keepalive := []byte{0x00}
-	m.Send(keepalive)
-	m.lastKeepalive = time.Now()
+	// Build proper PING frame: [StreamID:2][Type:1][Flags:1][Length:4]
+	// StreamID=0 (control channel), Type=0x06 (PING), Flags=0, PayloadLen=0
+	pingFrame := make([]byte, 8)
+	// pingFrame[0], pingFrame[1] = 0, 0 (StreamID = 0)
+	pingFrame[2] = 0x06 // FramePing
+	// pingFrame[3] = 0 (Flags)
+	// pingFrame[4:8] = 0 (PayloadLen = 0)
+
+	if err := m.Send(pingFrame); err != nil {
+		log.Warn("Keepalive send failed: %v", err)
+	} else {
+		m.lastKeepalive = time.Now()
+	}
 }
 
 // HealthCheck returns health status
