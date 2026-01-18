@@ -15,6 +15,17 @@ call menu:
 bash menu
 ```
 
+## Use Warp (Linux)
+If you want to use warp, you need to follow these steps:
+```bash
+Install warp through the menu
+Add to /etc/whispera/config.yaml :
+relay:
+  upstream_proxy: "socks5://127.0.0.1:40000"
+systemctl restart whispera
+warp-cli status
+```
+
 ### Management
 After installation, you can manage the server using the `whispera-mgmt` command:
 - `whispera-mgmt status`   - Check server status
