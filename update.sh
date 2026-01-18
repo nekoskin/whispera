@@ -95,10 +95,10 @@ transport:
     listen_addr: ":8443"
     max_packet_size: 65535
   tcp:
-    enabled: true
+    enabled: false
     listen_addr: ":8443"
   websocket:
-    enabled: true
+    enabled: false
     listen_addr: ":8080"
     path: "/ws"
 
