@@ -60,8 +60,8 @@ func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, 
 		TargetAddr: addr,
 		TargetPort: port,
 		writer:     writer,
-		incoming:   make(chan []byte, 256),
-		outgoing:   make(chan []byte, 256),
+		incoming:   make(chan []byte, 512),
+		outgoing:   make(chan []byte, 512),
 		closeChan:  make(chan struct{}),
 		created:    time.Now(),
 		lastT:      time.Now(),
@@ -311,7 +311,7 @@ func (s *Stream) readFromTarget() {
 		s.Close()
 	}()
 
-	buf := make([]byte, 32*1024) // 32KB buffer
+	buf := make([]byte, 64*1024) // 64KB buffer
 	for {
 		select {
 		case <-s.closeChan:
@@ -486,8 +486,8 @@ func NewStreamManager(dialer proxy.Dialer) *StreamManager {
 func (sm *StreamManager) HandleConnect(streamID uint16, payload *ConnectPayload, writer ResponseWriter) error {
 	sm.mu.Lock()
 
-	// Create stream with requested profile and clean writer
-	stream := NewStream(streamID, payload.Protocol, payload.Addr, payload.Port, payload.Profile, writer, sm.dialer)
+	// Create stream with default profile (Backward compatibility)
+	stream := NewStream(streamID, payload.Protocol, payload.Addr, payload.Port, ProfileBalanced, writer, sm.dialer)
 	sm.streams[streamID] = stream
 	sm.mu.Unlock()
 

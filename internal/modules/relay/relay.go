@@ -388,7 +388,7 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 	}
 
 	// Read buffer
-	buf := make([]byte, 32*1024)
+	buf := make([]byte, 64*1024)
 	var packetBuf []byte // Accumulator for partial frames
 
 	// Send immediate PONG to break potential deadlock
@@ -487,13 +487,15 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 				// Handle Connect Async to avoid blocking the tunnel read loop
 				// Payload parsing and stream creation happens here
 				go func(fr *Frame) {
-					// Deep copy payload if needed? Frame logic decodes it.
-					// fr.Payload is slice of buffer which might be overwritten?
-					// Wait, packetBuf is sliced. buffer 'data' comes from 'buf'.
-					// But we process 'frameData' which is a slice of 'packetBuf'.
-					// 'packetBuf' is append()ed.
-					// We shifted 'packetBuf'. The underlying array might be reused if we didn't realloc.
-					// Safest to Clone payload if passing to goroutine.
+					// Recover from panic to prevent crashing the server
+					defer func() {
+						if r := recover(); r != nil {
+							s.log.Error("Panic in Connect handler: %v", r)
+							sendFrame(NewConnectFailFrame(fr.StreamID, "Internal Error"))
+						}
+					}()
+
+					// Deep copy payload as the buffer is reused
 					payloadCopy := make([]byte, len(fr.Payload))
 					copy(payloadCopy, fr.Payload)
 					fr.Payload = payloadCopy // Swap with copy

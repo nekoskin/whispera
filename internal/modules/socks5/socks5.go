@@ -86,7 +86,7 @@ func New(cfg *Config) (*Module, error) {
 
 	// Set reasonable default MTU if missing
 	if cfg.MTU <= 0 || cfg.MTU > 65535 {
-		cfg.MTU = 1280 // Default safe MTU (IPv6 min) to prevent fragmentation
+		cfg.MTU = 32768 // Optimize for throughput (32KB chunks)
 	}
 
 	m := &Module{
@@ -232,9 +232,7 @@ func (m *Module) handleIncomingFrame(frame *relay.Frame) {
 	m.streamsMu.RUnlock()
 
 	if !exists {
-		if m.config.Debug || true {
-			stdlog.Printf("[SOCKS5] Frame for unknown stream %d (Type=%d)", frame.StreamID, frame.Type)
-		}
+		// Log removed to reduce noise for late frames
 		return
 	}
 
@@ -254,13 +252,13 @@ func (m *Module) handleIncomingFrame(frame *relay.Frame) {
 		close(stream.closeChan)
 
 	case relay.FrameData:
+		// CRITICAL FIX: Blocking send for TCP data.
+		// Dropping TCP packets causes stream corruption and stalls (YouTube buffering).
+		// Backpressure will propagate to the tunnel if channel fills.
 		select {
 		case stream.dataChan <- frame.Payload:
-		default:
-			// Channel full, drop data
-			if m.config.Debug {
-				stdlog.Printf("[SOCKS5] Stream %d data dropped (buffer full)", stream.ID)
-			}
+		case <-stream.closeChan:
+			// Stream closed while waiting
 		}
 
 	case relay.FrameUDPData:
@@ -330,7 +328,7 @@ Loop:
 		ID:         streamID,
 		TargetAddr: targetAddr,
 		TargetPort: targetPort,
-		dataChan:   make(chan []byte, 100),
+		dataChan:   make(chan []byte, 1000), // Larger buffer (was 100) for 4K video bursts
 		closeChan:  make(chan struct{}),
 	}
 
@@ -359,7 +357,7 @@ Loop:
 		}
 	}
 
-	connectFrame := relay.NewConnectFrame(streamID, relay.ProtoTCP, addrType, targetAddr, targetPort, relay.ProfilePersonal)
+	connectFrame := relay.NewConnectFrame(streamID, relay.ProtoTCP, addrType, targetAddr, targetPort)
 	frameData, err := connectFrame.Encode()
 	if err != nil {
 		return fmt.Errorf("failed to encode CONNECT frame: %v", err)
@@ -525,7 +523,7 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 
 	// Send CONNECT frame (UDP Mode)
 	// Addr 0.0.0.0 signals Relay Mode on server
-	connectFrame := relay.NewConnectFrame(streamID, relay.ProtoUDP, relay.AddrTypeIPv4, "0.0.0.0", 0, relay.ProfilePersonal)
+	connectFrame := relay.NewConnectFrame(streamID, relay.ProtoUDP, relay.AddrTypeIPv4, "0.0.0.0", 0)
 	encFrame, _ := connectFrame.Encode()
 	if err := tunnel.Send(encFrame); err != nil {
 		return err
