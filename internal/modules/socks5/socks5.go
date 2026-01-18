@@ -87,7 +87,7 @@ func New(cfg *Config) (*Module, error) {
 
 	// Set reasonable default MTU if missing
 	if cfg.MTU <= 0 || cfg.MTU > 65535 {
-		cfg.MTU = 32768 // Optimize for throughput (32KB chunks)
+		cfg.MTU = 65535 // Max MTU for throughput (64KB chunks)
 	}
 
 	m := &Module{
