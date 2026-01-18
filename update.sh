@@ -326,6 +326,9 @@ do_update() {
         echo -e "${GREEN}================================================================${PLAIN}"
     fi
     echo ""
+    
+    # Show extras menu
+    show_extras_menu
 }
 
 # --- Entry Point ---
