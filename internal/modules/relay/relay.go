@@ -330,10 +330,7 @@ type tunnelWriter struct {
 }
 
 func (w *tunnelWriter) Write(data []byte) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	// Apply obfuscation
+	// Apply obfuscation OUTSIDE the lock to reduce contention
 	if w.obfuscator != nil {
 		obfuscated, _, err := w.obfuscator.Process(data, interfaces.DirectionOutbound)
 		if err != nil {
@@ -342,9 +339,9 @@ func (w *tunnelWriter) Write(data []byte) error {
 		data = obfuscated
 	}
 
-	w.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	w.mu.Lock()
 	_, err := w.conn.Write(data)
-	w.conn.SetWriteDeadline(time.Time{})
+	w.mu.Unlock()
 	return err
 }
 

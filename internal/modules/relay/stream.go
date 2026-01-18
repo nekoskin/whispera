@@ -327,13 +327,15 @@ func (s *Stream) readFromTarget() {
 
 	buf := make([]byte, 64*1024) // 64KB buffer
 	for {
+		// Check if closed (non-blocking)
 		select {
 		case <-s.closeChan:
 			return
 		default:
 		}
 
-		s.conn.SetReadDeadline(time.Now().Add(300 * time.Second)) // Increased timeout
+		// Read with deadline
+		s.conn.SetReadDeadline(time.Now().Add(180 * time.Second)) // Changed to 180s for stability
 		n, err := s.conn.Read(buf)
 		if err != nil {
 			if err != io.EOF {
@@ -348,8 +350,10 @@ func (s *Stream) readFromTarget() {
 			s.bytesIn += uint64(n)
 			s.lastT = time.Now()
 
-			// Send data frame back through tunnel
-			frame := NewDataFrame(s.ID, buf[:n])
+			// Send data frame back through tunnel (make a copy to avoid buffer reuse issues)
+			data := make([]byte, n)
+			copy(data, buf[:n])
+			frame := NewDataFrame(s.ID, data)
 			if err := s.sendFrame(frame); err != nil {
 				return
 			}

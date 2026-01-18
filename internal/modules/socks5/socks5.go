@@ -380,7 +380,7 @@ Loop:
 	}
 
 	// Wait for CONNECT_OK or timeout
-	connectTimeout := time.After(10 * time.Second)
+	connectTimeout := time.After(15 * time.Second)
 	for {
 		stream.mu.Lock()
 		connected := stream.Connected
