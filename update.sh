@@ -29,17 +29,22 @@ fi
 
 echo "Updating Whispera..."
 
+# Copy latest source to work directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$SCRIPT_DIR" != "$WORK_DIR" ]]; then
+    log_info "Syncing source code..."
+    rsync -a --delete --exclude='.git' "$SCRIPT_DIR/" "$WORK_DIR/" 2>/dev/null || cp -r "$SCRIPT_DIR"/* "$WORK_DIR/"
+fi
+
 cd "$WORK_DIR" || exit 1
 
 echo "Building server..."
 export PATH=$PATH:/usr/local/go/bin
-# Clean old binary first
 rm -f whispera-server
-# Build
 go build -trimpath -ldflags "-w -s" -o whispera-server ./cmd/server
 
 if [[ ! -f "whispera-server" ]]; then
-    echo "Build failed! No binary created."
+    echo "Build failed!"
     exit 1
 fi
 
