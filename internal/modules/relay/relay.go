@@ -502,7 +502,7 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 
 					connPayload, err := DecodeConnectPayload(fr.Payload)
 					if err != nil {
-						sendFrame(NewConnectFailFrame(fr.StreamID, "Invalid payload"))
+						sendFrame(NewConnectFailFrame(fr.StreamID, "InvPayload: "+err.Error()))
 						return
 					}
 					// Permission check (optional, but good practice)
