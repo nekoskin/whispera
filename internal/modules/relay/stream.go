@@ -131,7 +131,8 @@ func (s *Stream) Connect(ctx context.Context) error {
 				KeepAlive: 30 * time.Second, // Enable TCP Keep-Alive
 			}
 			var conn net.Conn
-			conn, err = dialer.DialContext(ctx, "tcp", target)
+			// Force IPv4 to avoid potential IPv6 latency/routing issues
+			conn, err = dialer.DialContext(ctx, "tcp4", target)
 			if err != nil {
 				s.fsm.Event(EventConnectFail)
 				return err
@@ -325,7 +326,7 @@ func (s *Stream) readFromTarget() {
 		s.Close()
 	}()
 
-	buf := make([]byte, 64*1024) // 64KB buffer
+	buf := make([]byte, 32*1024) // 32KB buffer (balanced)
 	for {
 		// Check if closed (non-blocking)
 		select {
