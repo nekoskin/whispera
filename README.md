@@ -1,7 +1,7 @@
-Важно что данный проект только для технически подготовленных пользователей и с обычным использованием лезть во внутрь не рекомендуется
+It is important to note that this project is intended for technically advanced users only and is not recommended for general use.
 
 # Whispera
-VPN-туннель
+Stealth-transport
 
 ## Quick Start (Linux)
 The easiest way to install Whispera on Linux is via the automated installer:
@@ -12,7 +12,7 @@ bash install.sh
 ```
 
 ## Menu (Linux)
-call menu:
+Сall menu:
 ```bash
 bash menu
 ```
