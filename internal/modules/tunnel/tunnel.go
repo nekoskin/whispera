@@ -106,14 +106,14 @@ type Config struct {
 // DefaultConfig returns default tunnel configuration
 func DefaultConfig() *Config {
 	return &Config{
-		KeepaliveInterval:    30 * time.Second,
+		KeepaliveInterval:    3 * time.Second, // Fast keepalive for quick failure detection
 		ReconnectInterval:    5 * time.Second,
 		ReconnectMaxDelay:    60 * time.Second,
 		MaxReconnectAttempts: 0,
 		ConnectionTimeout:    30 * time.Second,
 		EnableRotation:       true,
-		RotationInterval:     15 * time.Minute,
-		DrainingTimeout:      30 * time.Minute,
+		RotationInterval:     30 * time.Minute, // INCREASED from 15 min
+		DrainingTimeout:      60 * time.Minute, // INCREASED from 30 min
 	}
 }
 
@@ -183,6 +183,7 @@ type Manager struct {
 	bytesUp           uint64
 	bytesDown         uint64
 	lastKeepalive     time.Time
+	lastPong          time.Time // Track last PONG response from server
 	connectedAt       time.Time
 
 	// Callbacks
@@ -484,6 +485,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 
 		m.startRotation()
 		m.connectedAt = time.Now()
+		m.lastPong = time.Now() // Initialize lastPong for health monitoring
 		m.setState(StateConnected)
 
 		m.PublishEvent("tunnel.connected", map[string]interface{}{
@@ -629,47 +631,48 @@ func (m *Manager) getRotationSNI() string {
 
 // getSNIRotationInterval returns the rotation duration based on SNI category
 // Intervals are designed to mimic realistic user session durations
+// INCREASED for stability - less frequent rotations = more stable connections
 func (m *Manager) getSNIRotationInterval(sni string) time.Duration {
 	if sni == "" {
 		return m.config.RotationInterval // Use default from config
 	}
 
-	// Marketplaces (Long shopping sessions) -> 20-30 min
+	// Marketplaces (Long shopping sessions) -> 1-2 hours
 	if strings.Contains(sni, "ozon") ||
 		strings.Contains(sni, "wildberries") ||
 		strings.Contains(sni, "avito") ||
 		strings.Contains(sni, "market") {
-		return 20 * time.Minute
+		return 60 * time.Minute
 	}
 
-	// Search Engines / Portals (Browse sessions) -> 5-10 min (NOT 5 seconds!)
+	// Search Engines / Portals -> 30 min
 	if strings.Contains(sni, "yandex") ||
 		strings.Contains(sni, "ya.ru") ||
 		strings.Contains(sni, "google") ||
 		strings.Contains(sni, "mail.ru") ||
 		strings.Contains(sni, "rambler") ||
 		strings.Contains(sni, "bing") {
-		return 5 * time.Minute // FIXED: Was 5 seconds, now 5 minutes
+		return 30 * time.Minute
 	}
 
-	// Video / Streaming (Long watch sessions) -> 1-2 hours
+	// Video / Streaming (Long watch sessions) -> 2-3 hours
 	if strings.Contains(sni, "rutube") ||
 		strings.Contains(sni, "vk.com") ||
 		strings.Contains(sni, "vkvideo") ||
 		strings.Contains(sni, "kion") ||
 		strings.Contains(sni, "premier") ||
 		strings.Contains(sni, "twitch") {
-		return 60 * time.Minute
+		return 120 * time.Minute
 	}
 
-	// Social Media (Medium sessions) -> 10-15 min
+	// Social Media -> 45 min
 	if strings.Contains(sni, "vk.com") ||
 		strings.Contains(sni, "telegram") {
-		return 10 * time.Minute
+		return 45 * time.Minute
 	}
 
-	// Default -> 15 min (stable baseline)
-	return 15 * time.Minute
+	// Default -> 30 min (stable baseline)
+	return 30 * time.Minute
 }
 
 // enableKillSwitch configures firewall
@@ -1066,6 +1069,13 @@ func (m *Manager) readLoop(mc *managedConn) {
 			}
 		}
 
+		// 4.5. Handle PONG frames (Type 0x07) - update lastPong time
+		if len(frameData) >= 3 && frameData[2] == 0x07 {
+			m.lastPong = time.Now()
+			log.Debug("Received PONG from server")
+			continue // Don't send to readCh, just update timestamp
+		}
+
 		// 5. Send atomic frame
 		select {
 		case m.readCh <- frameData:
@@ -1144,54 +1154,77 @@ func (m *Manager) Send(data []byte) error {
 
 	// Route to correct connection
 	// Parse Frame Header to get StreamID and Type
-	targetConn := m.activeConn
+	var streamID uint16
+	var frameType uint8
 
-	if len(data) >= 8 { // Minimal header size assumption
-		// Assuming Relay Frame Format: [StreamID:2][Type:1]...
-		streamID := binary.BigEndian.Uint16(data[0:2])
-		frameType := data[2]
+	if len(data) >= 8 {
+		streamID = binary.BigEndian.Uint16(data[0:2])
+		frameType = data[2]
+	}
 
-		m.connMu.Lock() // Needed for map rewrite
-		if frameType == FrameTypeConnect {
-			// New Stream -> bind to Active
-			if m.activeConn != nil {
-				m.streamConns[streamID] = m.activeConn
-				targetConn = m.activeConn
-			}
-		} else {
-			// Existing Stream -> find binding
-			if c, ok := m.streamConns[streamID]; ok {
-				targetConn = c
+	// Retry loop for reconnect scenarios
+	const maxRetries = 3
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		targetConn := m.activeConn
+
+		if len(data) >= 8 {
+			m.connMu.Lock()
+			if frameType == FrameTypeConnect {
+				if m.activeConn != nil {
+					m.streamConns[streamID] = m.activeConn
+					targetConn = m.activeConn
+				}
 			} else {
-				// Not found? Use active (fallback)
-				// Or drop? Fallback is safer.
+				if c, ok := m.streamConns[streamID]; ok {
+					targetConn = c
+				}
+				if frameType == FrameTypeClose {
+					delete(m.streamConns, streamID)
+				}
 			}
-
-			// Cleanup on Close
-			if frameType == FrameTypeClose {
-				delete(m.streamConns, streamID)
-			}
+			m.connMu.Unlock()
 		}
-		m.connMu.Unlock()
-	}
 
-	m.connMu.RLock()
-	// Validation
-	if targetConn == nil {
+		m.connMu.RLock()
+		if targetConn == nil {
+			m.connMu.RUnlock()
+
+			// If reconnecting, wait and retry
+			state := m.GetState()
+			if state == StateReconnecting || state == StateRotating || state == StateConnecting {
+				log.Debug("Send: waiting for reconnect (attempt %d/%d)", attempt+1, maxRetries)
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			return fmt.Errorf("not connected")
+		}
+		conn := targetConn
 		m.connMu.RUnlock()
-		return fmt.Errorf("not connected")
-	}
-	conn := targetConn
-	m.connMu.RUnlock()
 
-	n, err := conn.Write(data)
-	if err != nil {
-		return err
+		n, err := conn.Write(data)
+		if err != nil {
+			lastErr = err
+
+			// Check if it's a "use of closed network connection" error
+			if strings.Contains(err.Error(), "closed") || strings.Contains(err.Error(), "broken pipe") {
+				state := m.GetState()
+				if state == StateReconnecting || state == StateRotating {
+					log.Debug("Send: connection closed during reconnect (attempt %d/%d)", attempt+1, maxRetries)
+					time.Sleep(500 * time.Millisecond)
+					continue
+				}
+			}
+			return err
+		}
+
+		atomic.AddUint64(&m.bytesUp, uint64(n))
+		m.UpdateActivity()
+		return nil
 	}
 
-	atomic.AddUint64(&m.bytesUp, uint64(n))
-	m.UpdateActivity()
-	return nil
+	return fmt.Errorf("send failed after %d retries: %w", maxRetries, lastErr)
 }
 
 // monitorDrainingConn waits and closes old connection
@@ -1352,6 +1385,17 @@ func (m *Manager) stopKeepalive() {
 
 // sendKeepalive sends a keepalive packet (proper PING frame)
 func (m *Manager) sendKeepalive() {
+	// Check connection health - if no PONG received in 5 seconds, reconnect
+	if !m.lastPong.IsZero() && m.GetState() == StateConnected {
+		silentDuration := time.Since(m.lastPong)
+		maxSilence := 5 * time.Second
+		if silentDuration > maxSilence {
+			log.Warn("No PONG received in %s (max %s), triggering reconnect", silentDuration, maxSilence)
+			go m.Reconnect(context.Background())
+			return
+		}
+	}
+
 	// Build proper PING frame: [StreamID:2][Type:1][Flags:1][Length:4]
 	// StreamID=0 (control channel), Type=0x06 (PING), Flags=0, PayloadLen=0
 	pingFrame := make([]byte, 8)
