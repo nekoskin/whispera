@@ -562,6 +562,14 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 		log.Warn("Falling back to TCP: %s", m.config.ServerAddrTCP)
 		conn, err = net.DialTimeout("tcp", m.config.ServerAddrTCP, 10*time.Second)
 		if err == nil {
+			// OPTIMIZATION: Increase TCP buffers for high throughput
+			// Default 64KB is often insufficient for >100Mbps
+			// User requested 20MB buffers for maximum throughput
+			if tcpConn, ok := conn.(*net.TCPConn); ok {
+				tcpConn.SetReadBuffer(20 * 1024 * 1024)  // 20MB
+				tcpConn.SetWriteBuffer(20 * 1024 * 1024) // 20MB
+				tcpConn.SetNoDelay(true)                 // Low latency
+			}
 			m.isTransportSecure = true
 			return conn, nil
 		}
