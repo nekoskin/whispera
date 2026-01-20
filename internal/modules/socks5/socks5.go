@@ -520,10 +520,14 @@ Loop:
 				// GRACEFUL SHUTDOWN: Try CloseWrite first to send FIN instead of RST
 				if tcpConn, ok := clientConn.(*net.TCPConn); ok {
 					tcpConn.CloseWrite()
+					// Set a deadline to force the client to close its side eventually
+					// This triggers an error in the Read loop if the client doesn't close.
+					tcpConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+					// We return from this goroutine but DO NOT signal errChan yet.
+					// We wait for the Read loop to hit EOF or Timeout.
+					return
 				}
-				// We don't return immediately here to allow the read loop to finish naturally?
-				// Actually, if we close write, the client (browser) should finish reading and then Close() or CloseWrite() its side.
-				// But we need to signal the outer function to exit eventually.
+				// For non-TCP (UDP relay link), we can't half-close.
 				errChan <- io.EOF
 				return
 			}
