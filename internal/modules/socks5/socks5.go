@@ -517,6 +517,13 @@ Loop:
 				}
 				tunnel.Recycle(dp.Raw) // Recycle after write
 			case <-stream.closeChan:
+				// GRACEFUL SHUTDOWN: Try CloseWrite first to send FIN instead of RST
+				if tcpConn, ok := clientConn.(*net.TCPConn); ok {
+					tcpConn.CloseWrite()
+				}
+				// We don't return immediately here to allow the read loop to finish naturally?
+				// Actually, if we close write, the client (browser) should finish reading and then Close() or CloseWrite() its side.
+				// But we need to signal the outer function to exit eventually.
 				errChan <- io.EOF
 				return
 			}

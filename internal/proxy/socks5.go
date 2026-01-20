@@ -169,8 +169,10 @@ func (s *SOCKS5Server) handleConnection(conn net.Conn) {
 
 	// Вызываем обработчик для проксирования
 	if err := s.handler(conn, addr, port); err != nil {
-		fmt.Printf("[SOCKS5] Handler failed: %v\n", err)
-		s.log.Debug("Handler failed: %v", err)
+		if err != io.EOF && err.Error() != "EOF" {
+			fmt.Printf("[SOCKS5] Handler failed: %v\n", err)
+			s.log.Debug("Handler failed: %v", err)
+		}
 	}
 }
 
