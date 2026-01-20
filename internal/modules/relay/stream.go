@@ -343,7 +343,11 @@ func (s *Stream) readFromTarget() {
 		s.Close()
 	}()
 
-	buf := make([]byte, 32*1024) // 32KB buffer (balanced)
+	// Zero-Copy Optimization:
+	// Allocate buffer with headroom for Frame Header (8 bytes)
+	// We read directly into buf[HeaderSize:] and prepend header.
+	buf := make([]byte, HeaderSize+32*1024)
+
 	for {
 		// Check if closed (non-blocking)
 		select {
@@ -353,8 +357,10 @@ func (s *Stream) readFromTarget() {
 		}
 
 		// Read with deadline
-		s.conn.SetReadDeadline(time.Now().Add(180 * time.Second)) // Changed to 180s for stability
-		n, err := s.conn.Read(buf)
+		s.conn.SetReadDeadline(time.Now().Add(180 * time.Second))
+
+		// Read into payload area
+		n, err := s.conn.Read(buf[HeaderSize:])
 		if err != nil {
 			if err != io.EOF {
 				s.fsm.Event(EventError)
@@ -372,7 +378,6 @@ func (s *Stream) readFromTarget() {
 			if s.Protocol == ProtoTCP {
 				s.mu.Lock()
 				for s.sendWindow <= 0 {
-					// Broadcast sent on Close(), check if alive
 					select {
 					case <-s.closeChan:
 						s.mu.Unlock()
@@ -385,11 +390,13 @@ func (s *Stream) readFromTarget() {
 				s.mu.Unlock()
 			}
 
-			// Send data frame back through tunnel (make a copy to avoid buffer reuse issues)
-			data := make([]byte, n)
-			copy(data, buf[:n])
-			frame := NewDataFrame(s.ID, data)
-			if err := s.sendFrame(frame); err != nil {
+			// Zero-Copy Send:
+			// Write Header in-place
+			WriteFrameHeader(buf, s.ID, FrameData, 0, n)
+
+			// Send the wrapped frame directly to writer
+			// s.writer is thread-safe (tunnelWriter)
+			if err := s.writer.Write(buf[:HeaderSize+n]); err != nil {
 				return
 			}
 		}
@@ -405,7 +412,9 @@ func (s *Stream) readUDPFromTarget() {
 		s.Close()
 	}()
 
-	buf := make([]byte, 65535)
+	// Buffer with Headroom for Header
+	buf := make([]byte, HeaderSize+65535)
+
 	for {
 		select {
 		case <-s.closeChan:
@@ -414,7 +423,8 @@ func (s *Stream) readUDPFromTarget() {
 		}
 
 		s.udpConn.SetReadDeadline(time.Now().Add(300 * time.Second))
-		n, err := s.udpConn.Read(buf)
+		// Read into payload offset
+		n, err := s.udpConn.Read(buf[HeaderSize:])
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
@@ -428,9 +438,28 @@ func (s *Stream) readUDPFromTarget() {
 			s.lastT = time.Now()
 
 			// Connected UDP uses standard DFRAME
-			frame := NewDataFrame(s.ID, buf[:n])
-			if err := s.sendFrame(frame); err != nil {
-				return
+			WriteFrameHeader(buf, s.ID, FrameData, 0, n)
+
+			// Send with Retry (Seamless Reconnection)
+			retryAttempts := 0
+			const MaxRetryAttempts = 3000 // ~5 minutes
+
+			for {
+				if err := s.writer.Write(buf[:HeaderSize+n]); err != nil {
+					select {
+					case <-s.closeChan:
+						return
+					default:
+					}
+
+					retryAttempts++
+					if retryAttempts > MaxRetryAttempts {
+						return
+					}
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+				break
 			}
 		}
 	}
@@ -444,7 +473,11 @@ func (s *Stream) readRelayUDP() {
 		s.Close()
 	}()
 
-	buf := make([]byte, 65535)
+	// Buffer with large headroom for FrameHeader + UDP Header (IPv6+Domain)
+	// Max UDP header ~260 bytes, FrameHeader 8 bytes. 300 bytes headroom is safe.
+	const Headroom = 300
+	buf := make([]byte, Headroom+65535)
+
 	for {
 		select {
 		case <-s.closeChan:
@@ -453,7 +486,7 @@ func (s *Stream) readRelayUDP() {
 		}
 
 		s.udpConn.SetReadDeadline(time.Now().Add(300 * time.Second))
-		n, addr, err := s.udpConn.ReadFromUDP(buf)
+		n, addr, err := s.udpConn.ReadFromUDP(buf[Headroom:])
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
@@ -472,8 +505,48 @@ func (s *Stream) readRelayUDP() {
 				atyp = 0x04 // IPv6
 			}
 
-			frame := NewUDPDataFrame(s.ID, atyp, addr.IP.String(), uint16(addr.Port), buf[:n])
-			if err := s.sendFrame(frame); err != nil {
+			// SealUDPData writes headers BEFORE buf[Headroom]
+			// It returns the full frame slice starting from the header
+			packet, err := SealUDPData(buf, s.ID, atyp, addr.IP.String(), uint16(addr.Port), Headroom)
+			if err != nil {
+				return
+			}
+
+			if err := s.writer.Write(packet); err != nil {
+				// Retry Strategy for UDP Relay
+				select {
+				case <-s.closeChan:
+					return
+				default:
+				}
+				// For UDP, we can be less aggressive, but let's try a few times.
+				// Actually, seamless UDP is tricky. If we block, we block the read loop.
+				// But that's fine.
+				for i := 0; i < 3000; i++ {
+					time.Sleep(100 * time.Millisecond)
+					if err := s.writer.Write(packet); err == nil {
+						break
+					}
+					select {
+					case <-s.closeChan:
+						return
+					default:
+					}
+				}
+				// If still fail, we likely return.
+				// Actually, strict "return" here closes the stream.
+				// If we want seamless, we should probably return ONLY if closeChan.
+				// But dropping one UDP packet is fine.
+				// Returning kills the listener?
+				// readRelayUDP loops.
+				// If we return, we stop reading from local UDP.
+				// Yes, providing seamless means we must NOT return.
+				// We should just continue loop?
+				// But we must send THIS packet?
+				// The retry loop above tries to send THIS packet.
+				// If it fails after 5 mins, we probably should drop it and continue.
+				// Or return.
+				// Let's stick to "return" after timeout to avoid zombie state.
 				return
 			}
 		}
