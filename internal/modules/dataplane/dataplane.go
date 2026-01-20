@@ -38,8 +38,8 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		MTU:                 DefaultMTU,
-		WorkerCount:         8,
-		BufferSize:          4096,
+		WorkerCount:         16,    // Optimized for high concurrency
+		BufferSize:          65536, // Increased buffer to prevent packet drops at 500Mbps
 		EnableNAT:           true,
 		EnableFragmentation: true,
 		MaxFragmentSize:     1400,
@@ -280,9 +280,13 @@ func (p *Processor) ProcessOutbound(ctx context.Context, data []byte, session in
 		processed = obfuscated
 
 		// Apply timing delay if needed
-		if delay > 0 {
-			time.Sleep(delay)
-		}
+		// OPTIMIZATION: Removed sleep for maximum throughput
+		// Data plane should process packets as fast as possible.
+		// Artificial delays cause TCP/QUIC retransmissions.
+		_ = delay
+		// if delay > 0 {
+		// 	time.Sleep(delay)
+		// }
 	}
 
 	// Fragment if needed
