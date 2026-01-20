@@ -433,25 +433,54 @@ Loop:
 	errChan := make(chan error, 2)
 
 	// Client -> Server (via tunnel)
+	// Client -> Server (via tunnel)
 	go func() {
-		buf := make([]byte, m.config.MTU)
+		// ZERO-COPY OPTIMIZATION
+		// Pre-allocate buffer with space for Header (8 bytes)
+		// We use a larger buffer to accommodate the Reader and the Frame overhead without copying
+		const headerSize = 8 // relay.HeaderSize
+		buf := make([]byte, headerSize+m.config.MTU)
+
 		for {
-			n, err := clientConn.Read(buf)
+			// Read directly into the payload area, skipping header space
+			n, err := clientConn.Read(buf[headerSize:])
 			if err != nil {
 				errChan <- err
 				return
 			}
 
-			dataFrame := relay.NewDataFrame(streamID, buf[:n])
-			frameData, _ := dataFrame.Encode()
+			// Manually construct Frame Header in-place
+			// Format: [StreamID:2][Type:1][Flags:1][Length:4]
+			// StreamID
+			buf[0] = byte(streamID >> 8)
+			buf[1] = byte(streamID & 0xff)
+			// Type (FrameData = 0x04)
+			buf[2] = 0x04
+			// Flags (0)
+			buf[3] = 0x00
+			// Length
+			buf[4] = byte(n >> 24)
+			buf[5] = byte(n >> 16)
+			buf[6] = byte(n >> 8)
+			buf[7] = byte(n & 0xff)
+
+			// Slice the buffer to include header + data
+			frameData := buf[:headerSize+n]
 
 			// Kill Switch Blocking Loop for Send
 			// If Send fails because tunnel is down, we wait.
+			retryCount := 0
 			for {
 				if err := tunnel.Send(frameData); err != nil {
 					// Check if we should retry
 					if !tunnel.IsConnected() {
 						time.Sleep(500 * time.Millisecond)
+						continue
+					}
+					// Transient error? Retry a few times
+					if retryCount < 3 {
+						retryCount++
+						time.Sleep(10 * time.Millisecond)
 						continue
 					}
 					errChan <- err
