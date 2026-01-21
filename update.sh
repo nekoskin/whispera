@@ -307,7 +307,7 @@ do_update() {
     systemctl start whispera
     
     # Get keys for display
-    PRIVATE_KEY=$(grep "private_key:" "$CONF_PATH/config.yaml" 2>/dev/null | awk '{print $2}' | tr -d '"' | head -n1)
+    PRIVATE_KEY=$(awk '/private_key:/ {gsub(/"/, "", $2); if (length($2) >= 30) print $2}' "$CONF_PATH/config.yaml" 2>/dev/null | head -n1)
     PUBLIC_KEY=$($BIN_PATH/whispera pubkey "$PRIVATE_KEY" 2>/dev/null)
     SERVER_IP=$(get_public_ip)
     

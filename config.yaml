@@ -72,11 +72,21 @@ logging:
   level: "info"  # debug, info, warn, error
   format: "json"
   
-# Monitoring
-monitoring:
+# Metrics
+metrics:
   enabled: true
-  metrics_port: 9090
-  health_port: 8080
+  listen_addr: ":9090"
+  path: "/metrics"
+  # health_port was 8080, but that conflicts with API default. 
+  # API server provides /api/v1/health on 8080.
+
+# API Server Configuration
+api:
+  enabled: true
+  listen_addr: ":8080"
+  web_root: "c:/Whispera-main/web"
+  enable_cors: true
+  auth_token: "whispera_admin_token" # Change this!
 
 # Phantom Protocol Settings
 # Whispera's stealth protocol for SNI masquerading and TLS proxying
