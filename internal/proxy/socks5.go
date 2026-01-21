@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 
 	"whispera/internal/logger"
@@ -169,8 +170,10 @@ func (s *SOCKS5Server) handleConnection(conn net.Conn) {
 
 	// Вызываем обработчик для проксирования
 	if err := s.handler(conn, addr, port); err != nil {
-		fmt.Printf("[SOCKS5] Handler failed: %v\n", err)
-		s.log.Debug("Handler failed: %v", err)
+		if err != io.EOF && err.Error() != "EOF" && !strings.Contains(err.Error(), "i/o timeout") && !strings.Contains(err.Error(), "use of closed network connection") {
+			fmt.Printf("[SOCKS5] Handler failed: %v\n", err)
+			s.log.Debug("Handler failed: %v", err)
+		}
 	}
 }
 

@@ -37,6 +37,14 @@ const (
 	FrameTypeClose   = 0x05
 )
 
+// bufferPool recycles buffers to allow zero-allocation packet processing
+// Size: 64KB payload + 8B header + safety margin
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 66048)
+	},
+}
+
 // TunnelState represents the tunnel state
 type TunnelState int
 
@@ -106,14 +114,14 @@ type Config struct {
 // DefaultConfig returns default tunnel configuration
 func DefaultConfig() *Config {
 	return &Config{
-		KeepaliveInterval:    30 * time.Second,
+		KeepaliveInterval:    3 * time.Second, // Fast keepalive for quick failure detection
 		ReconnectInterval:    5 * time.Second,
 		ReconnectMaxDelay:    60 * time.Second,
 		MaxReconnectAttempts: 0,
 		ConnectionTimeout:    30 * time.Second,
 		EnableRotation:       true,
-		RotationInterval:     15 * time.Minute,
-		DrainingTimeout:      30 * time.Minute,
+		RotationInterval:     30 * time.Minute, // INCREASED from 15 min
+		DrainingTimeout:      60 * time.Minute, // INCREASED from 30 min
 	}
 }
 
@@ -183,6 +191,7 @@ type Manager struct {
 	bytesUp           uint64
 	bytesDown         uint64
 	lastKeepalive     time.Time
+	lastPong          time.Time // Track last PONG response from server
 	connectedAt       time.Time
 
 	// Callbacks
@@ -224,7 +233,7 @@ func New(cfg *Config) (*Manager, error) {
 		config:      cfg,
 		state:       StateDisconnected,
 		streamConns: make(map[uint16]*managedConn),
-		readCh:      make(chan []byte, 32000), // Large buffer to absorb bursts
+		readCh:      make(chan []byte, 4096), // Reduced from 32000 to 4096 to save RAM (256MB max)
 	}
 
 	// Initialize ASN Bypass dialer if enabled
@@ -341,6 +350,7 @@ func (m *Manager) Start() error {
 	}
 	m.SetHealthy(true, "tunnel manager running")
 	m.PublishEvent(events.EventTypeModuleStarted, nil)
+	log.Info("[TUNNEL] Starting Tunnel Manager (Build: Zero-Copy Final v3)...")
 
 	// Initiate connection automatically in background
 	go m.Reconnect(context.Background())
@@ -484,6 +494,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 
 		m.startRotation()
 		m.connectedAt = time.Now()
+		m.lastPong = time.Now() // Initialize lastPong for health monitoring
 		m.setState(StateConnected)
 
 		m.PublishEvent("tunnel.connected", map[string]interface{}{
@@ -535,6 +546,13 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 			log.Warn("ASN bypass dial failed: %v", err)
 		} else {
 			log.Info("ASN bypass connection established")
+			// CRITICAL: Apply TCP Buffer Optimizations to ASN Connection
+			if tcpConn, ok := conn.(*net.TCPConn); ok {
+				log.Info("[TUNNEL] Applying 12MB buffers to ASN connection (High Performance)")
+				tcpConn.SetReadBuffer(12 * 1024 * 1024)
+				tcpConn.SetWriteBuffer(12 * 1024 * 1024)
+				tcpConn.SetNoDelay(true)
+			}
 			m.isTransportSecure = true
 			return conn, nil
 		}
@@ -560,6 +578,14 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 		log.Warn("Falling back to TCP: %s", m.config.ServerAddrTCP)
 		conn, err = net.DialTimeout("tcp", m.config.ServerAddrTCP, 10*time.Second)
 		if err == nil {
+			// OPTIMIZATION: Increase TCP buffers for high throughput
+			// Default 64KB is often insufficient for >100Mbps
+			// User requested 20MB buffers for maximum throughput
+			if tcpConn, ok := conn.(*net.TCPConn); ok {
+				tcpConn.SetReadBuffer(20 * 1024 * 1024)  // 20MB
+				tcpConn.SetWriteBuffer(20 * 1024 * 1024) // 20MB
+				tcpConn.SetNoDelay(true)                 // Low latency
+			}
 			m.isTransportSecure = true
 			return conn, nil
 		}
@@ -629,47 +655,48 @@ func (m *Manager) getRotationSNI() string {
 
 // getSNIRotationInterval returns the rotation duration based on SNI category
 // Intervals are designed to mimic realistic user session durations
+// INCREASED for stability - less frequent rotations = more stable connections
 func (m *Manager) getSNIRotationInterval(sni string) time.Duration {
 	if sni == "" {
 		return m.config.RotationInterval // Use default from config
 	}
 
-	// Marketplaces (Long shopping sessions) -> 20-30 min
+	// Marketplaces (Long shopping sessions) -> 1-2 hours
 	if strings.Contains(sni, "ozon") ||
 		strings.Contains(sni, "wildberries") ||
 		strings.Contains(sni, "avito") ||
 		strings.Contains(sni, "market") {
-		return 20 * time.Minute
+		return 60 * time.Minute
 	}
 
-	// Search Engines / Portals (Browse sessions) -> 5-10 min (NOT 5 seconds!)
+	// Search Engines / Portals -> 30 min
 	if strings.Contains(sni, "yandex") ||
 		strings.Contains(sni, "ya.ru") ||
 		strings.Contains(sni, "google") ||
 		strings.Contains(sni, "mail.ru") ||
 		strings.Contains(sni, "rambler") ||
 		strings.Contains(sni, "bing") {
-		return 5 * time.Minute // FIXED: Was 5 seconds, now 5 minutes
+		return 30 * time.Minute
 	}
 
-	// Video / Streaming (Long watch sessions) -> 1-2 hours
+	// Video / Streaming (Long watch sessions) -> 2-3 hours
 	if strings.Contains(sni, "rutube") ||
 		strings.Contains(sni, "vk.com") ||
 		strings.Contains(sni, "vkvideo") ||
 		strings.Contains(sni, "kion") ||
 		strings.Contains(sni, "premier") ||
 		strings.Contains(sni, "twitch") {
-		return 60 * time.Minute
+		return 120 * time.Minute
 	}
 
-	// Social Media (Medium sessions) -> 10-15 min
+	// Social Media -> 45 min
 	if strings.Contains(sni, "vk.com") ||
 		strings.Contains(sni, "telegram") {
-		return 10 * time.Minute
+		return 45 * time.Minute
 	}
 
-	// Default -> 15 min (stable baseline)
-	return 15 * time.Minute
+	// Default -> 30 min (stable baseline)
+	return 30 * time.Minute
 }
 
 // enableKillSwitch configures firewall
@@ -802,15 +829,18 @@ func (m *Manager) readLoop(mc *managedConn) {
 	defer mc.Close()
 
 	// Use bufio.NewReader for Peek capability
-	// This helps us distinguish between TLS data (from masquerade) and Frame data
-	// without over-reading and causing desync.
-	reader := bufio.NewReader(mc)
+	// Increase buffer to 256KB to maximize throughput on high-speed links (500Mbps+)
+	reader := bufio.NewReaderSize(mc, 262144)
 
 	// Buffer for header
 	header := make([]byte, FrameHeaderSize)
 	tlsDrainCount := 0      // Counter to prevent infinite TLS drain loop
 	consecutiveGarbage := 0 // Counter for consecutive bad packets
 	const maxTLSDrain = 50
+
+	// Track deadline updates to reduce syscalls
+	lastDeadlineUpdate := time.Now()
+	mc.SetReadDeadline(lastDeadlineUpdate.Add(m.config.KeepaliveInterval * 2))
 
 	for {
 		select {
@@ -863,7 +893,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 
 							// Heuristic: Type must be valid (0-10, 0=Padding) and length must be reasonable
 							if fType <= 0x0A && int(pLen) <= 65535 && FrameHeaderSize+int(pLen) <= len(processBuf) {
-								log.Info("Unwrapped TLS ApplicationData containing valid Frame (Layer %d, StreamID=%d, Type=%d, Len=%d)",
+								log.Debug("Unwrapped TLS ApplicationData containing valid Frame (Layer %d, StreamID=%d, Type=%d, Len=%d)",
 									layer, binary.BigEndian.Uint16(processBuf[0:2]), fType, pLen)
 								isWrappedFrame = true
 
@@ -914,7 +944,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 						if len(processBuf) > 5 && processBuf[0] == 0x17 && processBuf[1] == 0x03 {
 							innerLen := int(processBuf[3])<<8 | int(processBuf[4])
 							if innerLen+5 <= len(processBuf) {
-								log.Info("Detected nested TLS record inside AppData (Layer %d), unwrapping %d bytes...", layer, innerLen)
+								log.Debug("Detected nested TLS record inside AppData (Layer %d), unwrapping %d bytes...", layer, innerLen)
 								processBuf = processBuf[5 : 5+innerLen]
 								continue // Try next layer
 							}
@@ -971,7 +1001,14 @@ func (m *Manager) readLoop(mc *managedConn) {
 		tlsDrainCount = 0      // Reset on non-TLS (Frame)
 
 		// 2. Read Frame Header (8 bytes)
-		mc.SetReadDeadline(time.Now().Add(m.config.KeepaliveInterval * 2))
+		// OPTIMIZATION: Lazy Deadline Update
+		// Instead of calling syscall SetReadDeadline on every frame (expensive!),
+		// only update it periodically (e.g. every 5 seconds).
+		if time.Since(lastDeadlineUpdate) > 5*time.Second {
+			lastDeadlineUpdate = time.Now()
+			mc.SetReadDeadline(lastDeadlineUpdate.Add(m.config.KeepaliveInterval * 2))
+		}
+
 		if _, err := io.ReadFull(reader, header); err != nil {
 			m.handleReadError(mc, err)
 			return
@@ -1056,7 +1093,17 @@ func (m *Manager) readLoop(mc *managedConn) {
 		}
 
 		// 4. Read Payload
-		frameData := make([]byte, FrameHeaderSize+int(payloadLen))
+		needed := FrameHeaderSize + int(payloadLen)
+		var frameData []byte
+
+		// Use pool for standard sizes to avoid GC churn
+		if needed <= 66048 {
+			frameData = bufferPool.Get().([]byte)
+			frameData = frameData[:needed]
+		} else {
+			frameData = make([]byte, needed) // Fallback for huge/abnormal frames
+		}
+
 		copy(frameData, header)
 
 		if payloadLen > 0 {
@@ -1065,6 +1112,16 @@ func (m *Manager) readLoop(mc *managedConn) {
 				return
 			}
 		}
+
+		// 4.5. Handle PONG frames (Type 0x07) - update lastPong time
+		if len(frameData) >= 3 && frameData[2] == 0x07 {
+			m.lastPong = time.Now()
+			log.Debug("Received PONG from server")
+			continue // Don't send to readCh, just update timestamp
+		}
+
+		// Any valid frame from server counts as activity
+		m.lastPong = time.Now()
 
 		// 5. Send atomic frame
 		select {
@@ -1109,10 +1166,18 @@ func (m *Manager) Receive(buf []byte) (int, error) {
 
 	if len(packet) > len(buf) {
 		log.Error("Receive buffer too small for packet (%d > %d)", len(packet), len(buf))
+		if cap(packet) == 66048 {
+			bufferPool.Put(packet)
+		}
 		return 0, fmt.Errorf("buffer too small")
 	}
 
 	copy(buf, packet) // Raw encrypted/obfuscated data?
+
+	// Return buffer to pool
+	if cap(packet) == 66048 {
+		bufferPool.Put(packet)
+	}
 
 	n := len(packet)
 
@@ -1127,8 +1192,35 @@ func (m *Manager) Receive(buf []byte) (int, error) {
 	return n, nil
 }
 
+// ReceivePacket returns a packet directly from the channel (Zero Copy)
+// Caller MUST call Recycle(packet) when done.
+func (m *Manager) ReceivePacket() ([]byte, error) {
+	packet, ok := <-m.readCh
+	if !ok {
+		return nil, fmt.Errorf("tunnel closed")
+	}
+	return packet, nil
+}
+
+// Recycle returns a buffer to the pool
+func (m *Manager) Recycle(buf []byte) {
+	if cap(buf) == 66048 {
+		bufferPool.Put(buf)
+	}
+}
+
 // Send sends data through the tunnel
 func (m *Manager) Send(data []byte) error {
+	// Route to correct connection
+	// Parse Frame Header to get StreamID and Type
+	var streamID uint16
+	var frameType uint8
+
+	if len(data) >= 8 {
+		streamID = binary.BigEndian.Uint16(data[0:2])
+		frameType = data[2]
+	}
+
 	if m.obfuscator != nil && !m.isTransportSecure {
 		obfuscated, delay, err := m.obfuscator.Process(data, interfaces.DirectionOutbound)
 		if err != nil {
@@ -1137,61 +1229,94 @@ func (m *Manager) Send(data []byte) error {
 		if obfuscated != nil {
 			data = obfuscated
 		}
+		// OPTIMIZATION: Skip delay for DATA frames to maximize throughput
+		// Jitter is only needed for handshake/control frames to defeat traffic analysis
 		if delay > 0 && delay < 5*time.Second {
-			time.Sleep(delay)
+			if frameType != 0x04 && frameType != 0x08 && frameType != 0x09 { // Skip for DATA, UDP_DATA, RAW_PACKET
+				time.Sleep(delay)
+			}
 		}
 	}
 
-	// Route to correct connection
-	// Parse Frame Header to get StreamID and Type
-	targetConn := m.activeConn
+	// Retry loop for reconnect scenarios
+	const maxRetries = 10
+	var lastErr error
 
-	if len(data) >= 8 { // Minimal header size assumption
-		// Assuming Relay Frame Format: [StreamID:2][Type:1]...
-		streamID := binary.BigEndian.Uint16(data[0:2])
-		frameType := data[2]
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		targetConn := m.activeConn
 
-		m.connMu.Lock() // Needed for map rewrite
-		if frameType == FrameTypeConnect {
-			// New Stream -> bind to Active
-			if m.activeConn != nil {
-				m.streamConns[streamID] = m.activeConn
-				targetConn = m.activeConn
-			}
-		} else {
-			// Existing Stream -> find binding
-			if c, ok := m.streamConns[streamID]; ok {
-				targetConn = c
+		if len(data) >= 8 {
+			m.connMu.Lock()
+			if frameType == FrameTypeConnect {
+				if m.activeConn != nil {
+					m.streamConns[streamID] = m.activeConn
+					targetConn = m.activeConn
+				}
 			} else {
-				// Not found? Use active (fallback)
-				// Or drop? Fallback is safer.
+				if c, ok := m.streamConns[streamID]; ok {
+					targetConn = c
+				}
+				if frameType == FrameTypeClose {
+					delete(m.streamConns, streamID)
+				}
 			}
-
-			// Cleanup on Close
-			if frameType == FrameTypeClose {
-				delete(m.streamConns, streamID)
-			}
+			m.connMu.Unlock()
 		}
-		m.connMu.Unlock()
-	}
 
-	m.connMu.RLock()
-	// Validation
-	if targetConn == nil {
+		m.connMu.RLock()
+		if targetConn == nil {
+			m.connMu.RUnlock()
+
+			// If reconnecting, wait and retry
+			state := m.GetState()
+			if state == StateReconnecting || state == StateRotating || state == StateConnecting {
+				log.Debug("Send: waiting for reconnect (attempt %d/%d)", attempt+1, maxRetries)
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			return fmt.Errorf("not connected")
+		}
+		conn := targetConn
 		m.connMu.RUnlock()
-		return fmt.Errorf("not connected")
-	}
-	conn := targetConn
-	m.connMu.RUnlock()
 
-	n, err := conn.Write(data)
-	if err != nil {
-		return err
+		n, err := conn.Write(data)
+		if err != nil {
+			lastErr = err
+
+			// Check if it's a "use of closed network connection" error
+			// Also handle "connection reset" and "EOF" which imply connection death
+			errMsg := err.Error()
+			isClosed := strings.Contains(errMsg, "closed") || strings.Contains(errMsg, "broken pipe") || strings.Contains(errMsg, "connection reset") || strings.Contains(errMsg, "EOF")
+
+			if isClosed {
+				state := m.GetState()
+
+				// If we encounter a closed connection while supposedly Connected, trigger Reconnect immediately
+				if state == StateConnected {
+					// Only trigger if this was the active connection (or we can't tell)
+					// handleReadError checks if it's activeConn
+					log.Warn("Send: connection unexpectedly closed/reset. Triggering Reconnect... (Err: %v)", err)
+					m.handleReadError(conn, err)
+				}
+
+				// Wait and retry if we are (now) reconnecting
+				// We check state again because handleReadError might have changed it
+				state = m.GetState()
+				if state == StateReconnecting || state == StateRotating || state == StateConnecting {
+					log.Debug("Send: connection closed during reconnect (attempt %d/%d). Waiting...", attempt+1, maxRetries)
+					time.Sleep(500 * time.Millisecond)
+					continue
+				}
+			}
+			return err
+		}
+
+		atomic.AddUint64(&m.bytesUp, uint64(n))
+		m.UpdateActivity()
+		return nil
 	}
 
-	atomic.AddUint64(&m.bytesUp, uint64(n))
-	m.UpdateActivity()
-	return nil
+	return fmt.Errorf("send failed after %d retries: %w", maxRetries, lastErr)
 }
 
 // monitorDrainingConn waits and closes old connection
@@ -1352,6 +1477,18 @@ func (m *Manager) stopKeepalive() {
 
 // sendKeepalive sends a keepalive packet (proper PING frame)
 func (m *Manager) sendKeepalive() {
+	// Check connection health - if no data received in 60 seconds, reconnect
+	// This is more lenient than checking just for PONG, since any server response proves liveness
+	if !m.lastPong.IsZero() && m.GetState() == StateConnected {
+		silentDuration := time.Since(m.lastPong)
+		maxSilence := 60 * time.Second // INCREASED: 60 seconds is more reasonable for real-world conditions
+		if silentDuration > maxSilence {
+			log.Warn("No data received in %s (max %s), triggering reconnect", silentDuration, maxSilence)
+			go m.Reconnect(context.Background())
+			return
+		}
+	}
+
 	// Build proper PING frame: [StreamID:2][Type:1][Flags:1][Length:4]
 	// StreamID=0 (control channel), Type=0x06 (PING), Flags=0, PayloadLen=0
 	pingFrame := make([]byte, 8)

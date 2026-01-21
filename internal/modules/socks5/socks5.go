@@ -51,6 +51,15 @@ type Module struct {
 	recvChan chan *relay.Frame
 }
 
+// streamBufferPool recycles 64KB+ buffers for individual client streams
+var streamBufferPool = sync.Pool{
+	New: func() interface{} {
+		// 64KB (Max Payload) + 8B (Header)
+		// Using 66KB to be safe and aligned
+		return make([]byte, 66*1024)
+	},
+}
+
 // TunnelManager interface for tunnel operations
 type TunnelManager interface {
 	// IsConnected returns true if tunnel is connected
@@ -59,6 +68,16 @@ type TunnelManager interface {
 	Send(data []byte) error
 	// Receive receives data from the tunnel
 	Receive(buf []byte) (int, error)
+	// ReceivePacket returns zero-copy packet
+	ReceivePacket() ([]byte, error)
+	// Recycle returns packet to pool
+	Recycle(buf []byte)
+}
+
+// DataPacket wrapper to pass ownership + payload range
+type DataPacket struct {
+	Raw     []byte // The full buffer to recycle
+	Payload []byte // The payload slice to write
 }
 
 // ClientStream represents a client-side stream (one SOCKS5 connection)
@@ -69,8 +88,8 @@ type ClientStream struct {
 	Connected  bool
 	Closed     bool
 
-	// Data channels
-	dataChan  chan []byte
+	// Data channels - strongly typed to avoid interface{} boxing allocations
+	dataChan  chan DataPacket
 	closeChan chan struct{}
 	closeOnce sync.Once // Prevents panic on double-close
 
@@ -157,11 +176,41 @@ func (m *Module) SetTunnel(tunnel TunnelManager) {
 	stdlog.Printf("[SOCKS5] Tunnel set for encrypted relay routing")
 }
 
-// receiveFrames receives frames from tunnel and dispatches to streams
+// receiveFrames receives frames from tunnel and dispatches to streams using Sharded Workers
 func (m *Module) receiveFrames() {
-	buf := make([]byte, 65536)
-	var packetBuf []byte
-	stdlog.Printf("[SOCKS5] receiveFrames goroutine started")
+	stdlog.Printf("[SOCKS5] receiveFrames started (Sharded Worker Mode)")
+
+	type packetReq struct {
+		pkt    []byte
+		tunnel TunnelManager
+	}
+
+	const numWorkers = 16
+	workerChans := make([]chan packetReq, numWorkers)
+
+	// Start Workers
+	for i := 0; i < numWorkers; i++ {
+		workerChans[i] = make(chan packetReq, 2048) // Buffer per worker to absorb micro-bursts
+		go func(ch chan packetReq) {
+			for req := range ch {
+				pkt := req.pkt
+				tunnel := req.tunnel
+
+				// Parse Header (already checked len in dispatcher)
+				streamID := binary.BigEndian.Uint16(pkt[0:2])
+				fType := pkt[2]
+				payloadLen := binary.BigEndian.Uint32(pkt[4:8])
+
+				// Construct DataPacket
+				dp := DataPacket{
+					Raw:     pkt,
+					Payload: pkt[8 : 8+int(payloadLen)],
+				}
+
+				m.handleIncomingFrame(streamID, fType, dp, tunnel)
+			}
+		}(workerChans[i])
+	}
 
 	for {
 		m.mu.RLock()
@@ -173,103 +222,79 @@ func (m *Module) receiveFrames() {
 			continue
 		}
 
-		n, err := tunnel.Receive(buf)
+		// Zero-Copy Read
+		pkt, err := tunnel.ReceivePacket()
 		if err != nil {
 			if err != io.EOF {
-				// Only log non-timeout errors
-				if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
-					stdlog.Printf("[SOCKS5] Receive error: %v", err)
-				}
+				// Log?
 			}
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
 
-		if n > 0 {
-			packetBuf = append(packetBuf, buf[:n]...)
+		// Parse Header (8 bytes) to get StreamID for sharding
+		if len(pkt) < 8 {
+			tunnel.Recycle(pkt)
+			continue
 		}
 
-		// Process all complete frames in buffer
-		for len(packetBuf) >= relay.HeaderSize {
-			// Header: [StreamID:2][Type:1][Flags:1][Length:4]
-			// We need to peek at the length field (offset 4, 4 bytes)
-			payloadLen := binary.BigEndian.Uint32(packetBuf[4:8])
-			frameSize := relay.HeaderSize + int(payloadLen)
+		streamID := binary.BigEndian.Uint16(pkt[0:2])
+		payloadLen := binary.BigEndian.Uint32(pkt[4:8])
 
-			if len(packetBuf) < frameSize {
-				// Wait for more data
-				break
-			}
-
-			// Extract complete frame
-			frameData := packetBuf[:frameSize]
-			// Decode (this should succeed as we have the full frame)
-			frame, err := relay.Decode(frameData)
-			if err != nil {
-				stdlog.Printf("[SOCKS5] Frame decode error: %v", err)
-				// If decode fails on a sized chunk, the stream is likely desynchronized.
-				// We drop this frame and shift (risky, but better than stuck)
-				// Ideally, we should close the connection, but here we just drop.
-			} else {
-				m.handleIncomingFrame(frame)
-			}
-
-			// Slice buffer
-			packetBuf = packetBuf[frameSize:]
+		// Safety check length
+		if int(payloadLen)+8 > len(pkt) {
+			tunnel.Recycle(pkt)
+			continue
 		}
 
-		// Safety cap to prevent memory leaks if stream is infinitely broken
-		if len(packetBuf) > 4*1024*1024 { // 4MB
-			stdlog.Printf("[SOCKS5] Buffer overflow, clearing accumulator")
-			packetBuf = nil
-		}
+		// Dispatch to Worker
+		shardID := streamID % uint16(numWorkers)
+
+		// BLOCKING Dispatch to Worker Queue.
+		// If a specific worker is backed up, we block here.
+		// This means severe congestion on one shard CAN eventually block the dispatcher.
+		// However, with 16 workers and 2048 queue size, this is highly resilient.
+		workerChans[shardID] <- packetReq{pkt: pkt, tunnel: tunnel}
 	}
 }
 
-// handleIncomingFrame processes frames received from server
-func (m *Module) handleIncomingFrame(frame *relay.Frame) {
+// handleIncomingFrame processes frames received from server (Executed by Worker)
+func (m *Module) handleIncomingFrame(streamID uint16, fType byte, dp DataPacket, tunnel TunnelManager) {
 	m.streamsMu.RLock()
-	stream, exists := m.streams[frame.StreamID]
+	stream, exists := m.streams[streamID]
 	m.streamsMu.RUnlock()
 
 	if !exists {
-		// Log removed to reduce noise for late frames
+		tunnel.Recycle(dp.Raw)
 		return
 	}
 
-	switch frame.Type {
+	switch fType {
 	case relay.FrameConnectOK:
-		stdlog.Printf("[SOCKS5] Stream %d connected (ConnectOK received)", stream.ID)
+		if m.config.Debug {
+			stdlog.Printf("[SOCKS5] Stream %d connected", stream.ID)
+		}
 		stream.mu.Lock()
 		stream.Connected = true
 		stream.mu.Unlock()
+		tunnel.Recycle(dp.Raw)
 
 	case relay.FrameConnectFail:
-		reason := string(frame.Payload)
-		stdlog.Printf("[SOCKS5] Stream %d connect failed: %s", stream.ID, reason)
+		stdlog.Printf("[SOCKS5] Stream %d connect failed", stream.ID)
 		stream.mu.Lock()
 		stream.Closed = true
 		stream.mu.Unlock()
 		stream.closeOnce.Do(func() { close(stream.closeChan) })
+		tunnel.Recycle(dp.Raw)
 
-	case relay.FrameData:
-		// CRITICAL FIX: Blocking send for TCP data.
-		// Dropping TCP packets causes stream corruption and stalls (YouTube buffering).
-		// Backpressure will propagate to the tunnel if channel fills.
+	case relay.FrameData, relay.FrameUDPData:
+		// Push DataPacket to channel (BLOCKING with Backpressure)
+		// We are now inside a Sharded Worker. Blocking here only stalls this shard (1/16th of streams).
 		select {
-		case stream.dataChan <- frame.Payload:
+		case stream.dataChan <- dp:
+			// Success
 		case <-stream.closeChan:
-			// Stream closed while waiting
-		}
-
-	case relay.FrameUDPData:
-		// Route UDP data to stream
-		select {
-		case stream.dataChan <- frame.Payload:
-		default:
-			if m.config.Debug {
-				stdlog.Printf("[SOCKS5] Stream %d UDP data dropped", stream.ID)
-			}
+			tunnel.Recycle(dp.Raw)
 		}
 
 	case relay.FrameClose:
@@ -277,13 +302,39 @@ func (m *Module) handleIncomingFrame(frame *relay.Frame) {
 		stream.Closed = true
 		stream.mu.Unlock()
 		close(stream.closeChan)
+		tunnel.Recycle(dp.Raw)
+
+	default:
+		tunnel.Recycle(dp.Raw)
 	}
 }
 
 // nextStreamID returns next unique stream ID
 func (m *Module) nextStreamID() uint16 {
-	id := atomic.AddUint32(&m.streamID, 1)
-	return uint16(id % 65535)
+	for {
+		id := atomic.AddUint32(&m.streamID, 1)
+		sid := uint16(id % 65535)
+		if sid == 0 {
+			continue
+		}
+
+		// Critical Fix: Skip StreamIDs that mimic TLS headers.
+		// The tunnel reader peeks 5 bytes to detect TLS (masquerade/handshake).
+		// Frame Header: [StreamID:2][Type:1]...
+		// If StreamID in BigEndian is [0x14..0x17][0x00..0x04], the reader
+		// misinterprets it as a TLS record and discards it.
+		// Range: HighByte 20-23 (0x14-0x17), LowByte 0-3 (0x00-0x03) (Checks <= 0x04)
+		hb := sid >> 8
+		lb := sid & 0xFF
+		if hb >= 0x14 && hb <= 0x17 && lb <= 0x04 {
+			if m.config.Debug {
+				stdlog.Printf("[SOCKS5] Skipping unsafe StreamID: %d (0x%04x) to avoid TLS collision", sid, sid)
+			}
+			continue
+		}
+
+		return sid
+	}
 }
 
 // handleConnection handles a SOCKS5 connection request through relay protocol
@@ -324,12 +375,20 @@ Loop:
 	// The actual data transfer loop (goroutine) will check tunnel status before sending.
 
 	// Create stream
+	// CRITICAL: Optimize Local TCP Connection (Browser <-> Client)
+	// The default buffer is too small for 500Mbps, causing the internal buffer to fill up.
+	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
+		tcpConn.SetReadBuffer(512 * 1024)  // 512KB
+		tcpConn.SetWriteBuffer(512 * 1024) // 512KB
+		tcpConn.SetNoDelay(true)
+	}
+
 	streamID := m.nextStreamID()
 	stream := &ClientStream{
 		ID:         streamID,
 		TargetAddr: targetAddr,
 		TargetPort: targetPort,
-		dataChan:   make(chan []byte, 32000), // Large buffer for video bursts
+		dataChan:   make(chan DataPacket, 4096), // Tuned: 4096 * 64KB = ~256MB. Balanced for High BDP links.
 		closeChan:  make(chan struct{}),
 	}
 
@@ -413,25 +472,73 @@ Loop:
 	errChan := make(chan error, 2)
 
 	// Client -> Server (via tunnel)
+	// Client -> Server (via tunnel)
 	go func() {
-		buf := make([]byte, m.config.MTU)
+		// ZERO-COPY OPTIMIZATION with sync.Pool
+		// Use pooled buffer to avoid GC on every new connection
+		const headerSize = 8 // relay.HeaderSize
+		buf := streamBufferPool.Get().([]byte)
+		defer streamBufferPool.Put(buf)
+
 		for {
-			n, err := clientConn.Read(buf)
+			// Read directly into the payload area, skipping header space
+			n, err := clientConn.Read(buf[headerSize:])
+
+			// Check if stream was closed remotely (Graceful Drain Mode)
+			stream.mu.Lock()
+			closed := stream.Closed
+			stream.mu.Unlock()
+
+			if closed {
+				// We are in draining mode (CloseWrite already sent FIN)
+				// If we receive data, we discard it to prevent RST
+				// If we receive Error (EOF/Timeout), we exit cleanly
+				if err != nil {
+					// Treat any error during drain as clean exit
+					errChan <- nil
+					return
+				}
+				// Discard data and continue draining
+				continue
+			}
+
 			if err != nil {
 				errChan <- err
 				return
 			}
 
-			dataFrame := relay.NewDataFrame(streamID, buf[:n])
-			frameData, _ := dataFrame.Encode()
+			// Manually construct Frame Header in-place
+			// Format: [StreamID:2][Type:1][Flags:1][Length:4]
+			// StreamID
+			buf[0] = byte(streamID >> 8)
+			buf[1] = byte(streamID & 0xff)
+			// Type (FrameData = 0x04)
+			buf[2] = 0x04
+			// Flags (0)
+			buf[3] = 0x00
+			// Length
+			buf[4] = byte(n >> 24)
+			buf[5] = byte(n >> 16)
+			buf[6] = byte(n >> 8)
+			buf[7] = byte(n & 0xff)
+
+			// Slice the buffer to include header + data
+			frameData := buf[:headerSize+n]
 
 			// Kill Switch Blocking Loop for Send
 			// If Send fails because tunnel is down, we wait.
+			retryCount := 0
 			for {
 				if err := tunnel.Send(frameData); err != nil {
 					// Check if we should retry
 					if !tunnel.IsConnected() {
 						time.Sleep(500 * time.Millisecond)
+						continue
+					}
+					// Transient error? Retry a few times
+					if retryCount < 3 {
+						retryCount++
+						time.Sleep(10 * time.Millisecond)
 						continue
 					}
 					errChan <- err
@@ -444,14 +551,43 @@ Loop:
 
 	// Server -> Client (from tunnel via stream.dataChan)
 	go func() {
+		var pendingWindow uint32
 		for {
 			select {
-			case data := <-stream.dataChan:
-				if _, err := clientConn.Write(data); err != nil {
+			case dp := <-stream.dataChan:
+				n, err := clientConn.Write(dp.Payload)
+				if err != nil {
+					tunnel.Recycle(dp.Raw) // Recycle on error
 					errChan <- err
 					return
 				}
+				tunnel.Recycle(dp.Raw) // Recycle after write
+
+				// Flow Control: Send WINDOW_UPDATE
+				if n > 0 {
+					pendingWindow += uint32(n)
+					if pendingWindow >= 65536 { // 64KB threshold
+						// Create and send WindowUpdate frame
+						// We use a simple allocation here as it happens relatively infrequently (once per 64KB)
+						wf := relay.NewWindowUpdateFrame(streamID, pendingWindow)
+						if data, err := wf.Encode(); err == nil {
+							tunnel.Send(data)
+						}
+						pendingWindow = 0
+					}
+				}
 			case <-stream.closeChan:
+				// GRACEFUL SHUTDOWN: Try CloseWrite first to send FIN instead of RST
+				if tcpConn, ok := clientConn.(*net.TCPConn); ok {
+					tcpConn.CloseWrite()
+					// Set a deadline to force the client to close its side eventually
+					// This triggers an error in the Read loop if the client doesn't close.
+					tcpConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+					// We return from this goroutine but DO NOT signal errChan yet.
+					// We wait for the Read loop to hit EOF or Timeout.
+					return
+				}
+				// For non-TCP (UDP relay link), we can't half-close.
 				errChan <- io.EOF
 				return
 			}
@@ -507,7 +643,7 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 		ID:         streamID,
 		TargetAddr: "0.0.0.0",
 		TargetPort: 0,
-		dataChan:   make(chan []byte, 32000), // Large buffer for UDP
+		dataChan:   make(chan DataPacket, 10000), // Optimized: 10000 packets for UDP
 		closeChan:  make(chan struct{}),
 	}
 
@@ -618,13 +754,16 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 	go func() {
 		for {
 			select {
-			case payload := <-stream.dataChan:
+			case dp := <-stream.dataChan:
+				payload := dp.Payload
+
 				// Payload is [ATYP][ADDR][PORT][DATA]
 
 				// Get Client Address
 				addrVal := clientAddr.Load()
 				if addrVal == nil {
 					// Drop if we don't know where to send yet
+					tunnel.Recycle(dp.Raw)
 					continue
 				}
 				addr := addrVal.(*net.UDPAddr)
@@ -638,6 +777,7 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 				if err != nil {
 					// log or ignore
 				}
+				tunnel.Recycle(dp.Raw)
 
 			case <-stream.closeChan:
 				return
