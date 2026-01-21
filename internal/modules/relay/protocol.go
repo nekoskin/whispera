@@ -64,7 +64,7 @@ const (
 // Header size
 const (
 	HeaderSize    = 8
-	MaxPayloadLen = 65535
+	MaxPayloadLen = 131072
 )
 
 // Errors

@@ -1018,8 +1018,8 @@ func (m *Manager) readLoop(mc *managedConn) {
 		// Format: [StreamID:2][Type:1][Flags:1][Length:4]
 		payloadLen := binary.BigEndian.Uint32(header[4:8])
 
-		// Safety check for huge frames (max 65KB payload as per protocol)
-		if payloadLen > 65535 {
+		// Safety check for huge frames (max 128KB payload as per protocol)
+		if payloadLen > 131072 {
 			log.Warn("Frame too large (%d bytes), header: %x. Attempting RESYNC...", payloadLen, header)
 
 			// Resync Logic: Check if we have a TLS header embedded inside this garbage frame header
