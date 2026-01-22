@@ -1,3 +1,8 @@
+## License
+
+This project is licensed under the GNU AGPL v3.0.
+Commercial use without compliance with AGPL is prohibited.
+
 It is important to note that this project is intended for technically advanced users only and is not recommended for general use.
 
 # Whispera
