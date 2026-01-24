@@ -714,8 +714,8 @@ class WhisperaApp {
         const exists = this.cachedInbounds?.some(i => i.port === port);
 
         if (exists) {
-            // Порт существует - просто обновляем данные
-            await this.updateQuickConnectForPort();
+            // Порт существует - просто обновляем данные, ЯВНО передавая порт
+            await this.updateQuickConnectForPort(port);
         } else {
             // Порт НОВЫЙ - создаем автоматически!
             if (confirm(`Порт ${port} не найден. Создать новое входящее подключение на порту ${port} автоматически?`)) {
@@ -750,8 +750,8 @@ class WhisperaApp {
                     // Устанавливаем значение обратно (т.к. populate может сбросить)
                     portInput.value = port;
 
-                    // Обновляем ключи
-                    await this.updateQuickConnectForPort();
+                    // Обновляем ключи, ЯВНО передавая порт
+                    await this.updateQuickConnectForPort(port);
 
                 } catch (error) {
                     console.error('Auto-create inbound failed:', error);
@@ -767,19 +767,33 @@ class WhisperaApp {
     }
 
     // Обновить Quick Connect данные при выборе порта
-    async updateQuickConnectForPort() {
+    async updateQuickConnectForPort(explicitPort = null) {
         const portSelect = document.getElementById('quickConnectPort');
-        const selectedPort = portSelect?.value;
+
+        // Use explicit port if provided, otherwise fallback to DOM value
+        let selectedPort = explicitPort;
+        if (!selectedPort && portSelect) {
+            selectedPort = portSelect.value;
+        }
 
         if (!selectedPort) {
             console.warn('No port selected');
             return;
         }
 
+        // Ensure input shows the correct port if provided explicitly
+        if (explicitPort && portSelect && portSelect.value != explicitPort) {
+            portSelect.value = explicitPort;
+        }
+
         try {
             // Получаем информацию о сервере
             const info = await api.getSystemInfo();
-            const serverIP = window.location.hostname || info.server_ip || 'YOUR_SERVER_IP';
+            // Clean IP from port if present just in case
+            let serverIP = window.location.hostname || info.server_ip || 'YOUR_SERVER_IP';
+            if (serverIP.includes(':')) {
+                serverIP = serverIP.split(':')[0];
+            }
 
             // Получаем публичный ключ для выбранного порта
             // Если у inbound есть свой ключ, сервер должен вернуть его через API
@@ -803,10 +817,12 @@ class WhisperaApp {
                 fullUrlInput.value = fullUrl;
             }
 
-            console.log(`[QuickConnect] Updated for port ${selectedPort}, pubkey: ${serverPubKey?.substring(0, 16)}...`);
+            console.log(`[QuickConnect] Updated for port ${selectedPort}`);
         } catch (error) {
             console.error('Error updating Quick Connect for port:', error);
-            this.showErrorMessage('Не удалось получить данные для порта: ' + error.message);
+            // Don't show alert for default updates to avoid spam
+            const debugErrEl = document.getElementById('debugLastError');
+            if (debugErrEl) debugErrEl.textContent = 'Update error: ' + error.message;
         }
     }
 
