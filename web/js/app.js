@@ -848,35 +848,15 @@ class WhisperaApp {
         }
 
         try {
-            // Получаем информацию о сервере
-            const info = await api.getSystemInfo();
-            const serverIP = window.location.hostname || info.server_ip || 'YOUR_SERVER_IP';
-
-            // Заполняем порты
-            await this.populatePortSelector();
-
-            // Получаем порт по умолчанию (первый inbound)
-            const portSelect = document.getElementById('quickConnectPort');
-            const defaultPort = portSelect?.value || info.port || 443;
-            const serverPubKey = info.public_key || '';
-
-            // Заполняем поля
+            // Заполняем поля пользователя
             const privateKeyInput = document.getElementById('quickConnectPrivateKey');
             if (privateKeyInput) {
                 privateKeyInput.value = user.privateKey;
             }
 
-            const serverUrlInput = document.getElementById('quickConnectServerUrl');
-            if (serverUrlInput) {
-                serverUrlInput.value = `${serverIP}:${defaultPort}`;
-            }
-
-            // Генерируем полный URL
-            const fullUrl = this.generateQuickConnectUrl(serverIP, defaultPort, serverPubKey, user.privateKey);
-            const fullUrlInput = document.getElementById('quickConnectFullUrl');
-            if (fullUrlInput) {
-                fullUrlInput.value = fullUrl;
-            }
+            // Заполняем порты и запускаем обновление URL
+            // Это вызовет updateQuickConnectForPort, который подтянет ключи и сгенерирует URL
+            await this.populatePortSelector();
 
             // Показываем модальное окно
             const modal = document.getElementById('quickConnectModal');
@@ -885,7 +865,13 @@ class WhisperaApp {
                 modal.style.display = 'flex';
             }
 
-            console.log(`[QuickConnect] Opened for user ${user.username}, initial port: ${defaultPort}`);
+            // Force update again after a short delay to handle browser autofill race conditions
+            setTimeout(() => {
+                const p = document.getElementById('quickConnectPort');
+                if (p && p.value) this.updateQuickConnectForPort(p.value);
+            }, 200);
+
+            console.log(`[QuickConnect] Opened for user ${user.username}`);
         } catch (error) {
             console.error('Error showing Quick Connect modal:', error);
             this.showErrorMessage('Не удалось открыть Quick Connect: ' + error.message);
