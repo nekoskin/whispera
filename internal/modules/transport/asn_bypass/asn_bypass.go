@@ -108,7 +108,7 @@ func pickRandomSNI() (string, time.Duration) {
 
 	// "Sudden switch" behavior (human mimicry)
 	// 15% chance user gets bored/switches immediately (e.g., closed tab)
-	if rand.Float64() < 0.15 {
+	if rand.Float64() < 0.05 {
 		// Short duration: 10s to 60s
 		duration = time.Duration(10+rand.Intn(50)) * time.Second
 	}

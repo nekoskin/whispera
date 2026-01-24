@@ -33,8 +33,8 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		ListenAddr:    ":8443",
-		MaxPacketSize: 1472, // Optimized for encapsulated traffic to avoid truncation
-		ReadTimeout:   0,    // No timeout by default
+		MaxPacketSize: 65535, // Increased from 1472 to 65535 to completely fix Discord Voice and large UDP packets truncation
+		ReadTimeout:   0,     // No timeout by default
 		WriteTimeout:  10 * time.Second,
 		BufferSize:    1024,
 		WorkerCount:   4,

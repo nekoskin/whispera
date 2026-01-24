@@ -250,11 +250,16 @@ func (m *Module) receiveFrames() {
 		// Dispatch to Worker
 		shardID := streamID % uint16(numWorkers)
 
-		// BLOCKING Dispatch to Worker Queue.
-		// If a specific worker is backed up, we block here.
-		// This means severe congestion on one shard CAN eventually block the dispatcher.
-		// However, with 16 workers and 2048 queue size, this is highly resilient.
-		workerChans[shardID] <- packetReq{pkt: pkt, tunnel: tunnel}
+		// Non-Blocking Dispatch to Worker Queue.
+		// If a specific worker is backed up, we drop the packet for THAT shard
+		// to avoid blocking the entire tunnel for everyone.
+		select {
+		case workerChans[shardID] <- packetReq{pkt: pkt, tunnel: tunnel}:
+			// Successfully dispatched
+		default:
+			// Worker queue is full - drop packet to maintain tunnel throughput
+			tunnel.Recycle(pkt)
+		}
 	}
 }
 
@@ -736,8 +741,12 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 				dstPort = binary.BigEndian.Uint16(udpPayload[2+dlen : 2+dlen+2])
 				dataOffset = 2 + dlen + 2
 			case 0x04: // IPv6
-				// IPv6 disabled to prevent routing issues
-				continue
+				if len(udpPayload) < 1+16+2 {
+					continue
+				}
+				dstAddr = net.IP(udpPayload[1:17]).String()
+				dstPort = binary.BigEndian.Uint16(udpPayload[17:19])
+				dataOffset = 19
 			default:
 				continue
 			}

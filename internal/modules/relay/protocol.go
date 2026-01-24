@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"sync/atomic"
 )
 
@@ -353,23 +354,27 @@ func (g *StreamIDGenerator) Next() uint16 {
 
 // Helper functions for IP parsing
 func parseIPv4(addr string) []byte {
-	var ip [4]byte
-	fmt.Sscanf(addr, "%d.%d.%d.%d", &ip[0], &ip[1], &ip[2], &ip[3])
-	return ip[:]
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return make([]byte, 4)
+	}
+	ipv4 := ip.To4()
+	if ipv4 == nil {
+		return make([]byte, 4)
+	}
+	return ipv4
 }
 
 func parseIPv6(addr string) []byte {
-	// Simplified - in production use net.ParseIP
-	ip := make([]byte, 16)
-	// Parse hex groups
-	var groups [8]uint16
-	fmt.Sscanf(addr, "%x:%x:%x:%x:%x:%x:%x:%x",
-		&groups[0], &groups[1], &groups[2], &groups[3],
-		&groups[4], &groups[5], &groups[6], &groups[7])
-	for i, g := range groups {
-		binary.BigEndian.PutUint16(ip[i*2:], g)
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return make([]byte, 16)
 	}
-	return ip
+	ipv6 := ip.To16()
+	if ipv6 == nil {
+		return make([]byte, 16)
+	}
+	return ipv6
 }
 
 // NewConnectFrame creates a CONNECT frame
