@@ -145,6 +145,7 @@ func (s *Server) registerDefaultRoutes() {
 
 	// Inbound management endpoints
 	s.Handle("GET /api/inbounds", s.handleGetInbounds)
+	s.Handle("GET /api/inbounds/pubkey", s.handleGetInboundPublicKey)
 	s.Handle("POST /api/inbounds/add", s.handleAddInbound)
 	s.Handle("POST /api/inbounds/update", s.handleUpdateInbound)
 	s.Handle("POST /api/inbounds/delete", s.handleDeleteInbound)

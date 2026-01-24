@@ -12,6 +12,7 @@ import (
 	_ "net/http/pprof" // Register pprof handlers
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/curve25519"
@@ -20,6 +21,7 @@ import (
 	"whispera/internal/core/lifecycle"
 	"whispera/internal/core/registry"
 	"whispera/internal/logger"
+	"whispera/internal/server/dynamic"
 
 	// Modules
 	"whispera/internal/modules/apiserver"
@@ -36,6 +38,7 @@ import (
 	"whispera/internal/modules/transport/tcp"
 	"whispera/internal/modules/transport/udp"
 	ws "whispera/internal/modules/transport/websocket"
+	// Server components
 )
 
 // log is the module logger
@@ -85,6 +88,10 @@ var (
 	globalRelay          *relay.Server
 	globalObfuscator     interfaces.Obfuscator
 	globalCryptoProvider interfaces.CryptoProvider
+
+	// Dynamic listener management
+	activeListeners = make(map[string]net.Listener) // key: "inbound-tag"
+	listenersMutex  sync.RWMutex
 )
 
 // Helper to create a handshake handler for a specific private key
@@ -121,6 +128,97 @@ func createHandshakeHandler(privateKeyHex string, serverConfig *modconfig.Server
 
 	h.SetStaticKeys(pubKey, privKey)
 	return h
+}
+
+// StartInbound dynamically starts a new inbound listener without server restart
+func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.ServerConfig) error {
+	listenersMutex.Lock()
+	defer listenersMutex.Unlock()
+
+	// Check if already running
+	if _, exists := activeListeners[inbound.Tag]; exists {
+		return fmt.Errorf("inbound %s already running", inbound.Tag)
+	}
+
+	listenAddr := fmt.Sprintf("%s:%d", inbound.Listen, inbound.Port)
+	log.Printf("🚀 [Dynamic] Starting inbound %s on %s", inbound.Tag, listenAddr)
+
+	// Create listener
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", listenAddr, err)
+	}
+
+	// Determine handshake handler for this inbound
+	var hsHandler *handshake.Handler
+	privKey := ""
+	if inbound.StreamSettings.Phantom.PrivateKey != "" {
+		privKey = inbound.StreamSettings.Phantom.PrivateKey
+	} else if serverConfig.Server.PrivateKey != "" {
+		privKey = serverConfig.Server.PrivateKey
+		log.Printf("[Dynamic] Inbound %s using global server key", inbound.Tag)
+	}
+
+	if privKey != "" {
+		hsHandler = createHandshakeHandler(privKey, serverConfig)
+		if hsHandler == nil {
+			listener.Close()
+			return fmt.Errorf("failed to create handshake handler for %s", inbound.Tag)
+		}
+	}
+
+	// Store listener
+	activeListeners[inbound.Tag] = listener
+
+	// Start accepting connections in goroutine
+	go func() {
+		defer func() {
+			listenersMutex.Lock()
+			delete(activeListeners, inbound.Tag)
+			listenersMutex.Unlock()
+			log.Printf("⏹ [Dynamic] Stopped inbound %s", inbound.Tag)
+		}()
+
+		log.Printf("✅ [Dynamic] Inbound %s listening on %s", inbound.Tag, listenAddr)
+
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				// Listener closed
+				if strings.Contains(err.Error(), "use of closed network connection") {
+					return
+				}
+				log.Printf("⚠ [Dynamic] Accept error on %s: %v", inbound.Tag, err)
+				continue
+			}
+
+			// Handle connection
+			go handleTCPConnection(conn, hsHandler)
+		}
+	}()
+
+	return nil
+}
+
+// StopInbound dynamically stops an inbound listener
+func StopInbound(tag string) error {
+	listenersMutex.Lock()
+	defer listenersMutex.Unlock()
+
+	listener, exists := activeListeners[tag]
+	if !exists {
+		return fmt.Errorf("inbound %s not running", tag)
+	}
+
+	log.Printf("🛑 [Dynamic] Stopping inbound %s...", tag)
+
+	// Close listener (will trigger goroutine cleanup)
+	if err := listener.Close(); err != nil {
+		return fmt.Errorf("failed to close listener %s: %w", tag, err)
+	}
+
+	delete(activeListeners, tag)
+	return nil
 }
 
 func main() {
@@ -262,6 +360,17 @@ func createModules(manager *lifecycle.Manager) error {
 		fmt.Println("[DEBUG] Whispera Server: using default config")
 		serverConfig = modconfig.DefaultServerConfig()
 	}
+
+	// Setup dynamic inbound manager callbacks
+	dynamic.Global.SetCallbacks(
+		func(inbound modconfig.InboundConfig) error {
+			return StartInbound(inbound, serverConfig)
+		},
+		func(tag string) error {
+			return StopInbound(tag)
+		},
+	)
+	log.Printf("✅ Dynamic inbound manager initialized")
 
 	// Apply command line overrides
 	if *listenAddr != "" {

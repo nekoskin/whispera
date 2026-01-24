@@ -557,7 +557,10 @@ class WhisperaApp {
 
     showAddInboundModal() {
         const modal = document.getElementById('inboundModal');
-        if (modal) modal.style.display = 'block';
+        if (modal) {
+            modal.classList.add('active');
+            modal.style.display = 'flex';
+        }
         // Reset form
         document.getElementById('inboundForm').reset();
     }
@@ -583,7 +586,10 @@ class WhisperaApp {
         };
 
         try {
-            const res = await api.request('POST', '/api/inbounds/add', inbound);
+            const res = await api.request('/api/inbounds/add', {
+                method: 'POST',
+                body: JSON.stringify(inbound)
+            });
             if (res.success) {
                 this.showSuccessMessage('Входящее подключение добавлено');
                 this.closeModal();
@@ -601,7 +607,10 @@ class WhisperaApp {
         if (!confirm(`Удалить входящее подключение "${tag}"?`)) return;
 
         try {
-            await api.request('POST', '/api/inbounds/delete', { tag });
+            await api.request('/api/inbounds/delete', {
+                method: 'POST',
+                body: JSON.stringify({ tag })
+            });
             this.showSuccessMessage('Подключение удалено');
             this.loadInbounds();
             alert('Для применения изменений необходимо перезагрузить сервис!');
@@ -626,10 +635,143 @@ class WhisperaApp {
         if (!confirm('Вы уверены, что хотите перезагрузить конфигурацию сервиса? Это может разорвать активные соединения.')) return;
 
         try {
-            await api.request('POST', '/api/v1/config/reload');
+            await api.request('/api/v1/config/reload', {
+                method: 'POST'
+            });
             this.showSuccessMessage('Конфигурация перезагружена. Если порты не открылись, перезапустите сервис полностью (systemctl restart).');
         } catch (e) {
             this.showErrorMessage('Ошибка перезагрузки: ' + e.message);
+        }
+    }
+
+    // Заполнить dropdown портов в Quick Connect Modal
+    async populatePortSelector() {
+        const portSelect = document.getElementById('quickConnectPort');
+        if (!portSelect) return;
+
+        try {
+            // Загружаем список inbounds
+            const response = await api.request('/api/inbounds');
+            const inbounds = response.inbounds || [];
+
+            // Очищаем dropdown
+            portSelect.innerHTML = '';
+
+            // Добавляем порты
+            inbounds.forEach(inbound => {
+                const option = document.createElement('option');
+                option.value = inbound.port;
+                option.setAttribute('data-tag', inbound.tag);
+                option.textContent = `${inbound.tag} - Порт ${inbound.port}`;
+                portSelect.appendChild(option);
+            });
+
+            // Если нет inbounds, показываем заглушку
+            if (inbounds.length === 0) {
+                const option = document.createElement('option');
+                option.value = '';
+                option.textContent = 'Нет доступных портов';
+                portSelect.appendChild(option);
+            }
+        } catch (error) {
+            console.error('Error loading inbounds for port selector:', error);
+        }
+    }
+
+    // Обновить Quick Connect данные при выборе порта
+    async updateQuickConnectForPort() {
+        const portSelect = document.getElementById('quickConnectPort');
+        const selectedPort = portSelect?.value;
+
+        if (!selectedPort) {
+            console.warn('No port selected');
+            return;
+        }
+
+        try {
+            // Получаем информацию о сервере
+            const info = await api.getSystemInfo();
+            const serverIP = window.location.hostname || info.server_ip || 'YOUR_SERVER_IP';
+
+            // Получаем публичный ключ для выбранного порта
+            // Если у inbound есть свой ключ, сервер должен вернуть его через API
+            const publicKeyResponse = await api.request(`/api/inbounds/pubkey?port=${selectedPort}`);
+            const serverPubKey = publicKeyResponse.public_key || info.public_key;
+
+            // Получаем текущий приватный ключ пользователя
+            const privateKeyInput = document.getElementById('quickConnectPrivateKey');
+            const privateKey = privateKeyInput?.value || '';
+
+            // Обновляем поля
+            const serverUrlInput = document.getElementById('quickConnectServerUrl');
+            if (serverUrlInput) {
+                serverUrlInput.value = `${serverIP}:${selectedPort}`;
+            }
+
+            // Генерируем полный URL с новым портом
+            const fullUrl = this.generateQuickConnectUrl(serverIP, selectedPort, serverPubKey, privateKey);
+            const fullUrlInput = document.getElementById('quickConnectFullUrl');
+            if (fullUrlInput) {
+                fullUrlInput.value = fullUrl;
+            }
+
+            console.log(`[QuickConnect] Updated for port ${selectedPort}, pubkey: ${serverPubKey?.substring(0, 16)}...`);
+        } catch (error) {
+            console.error('Error updating Quick Connect for port:', error);
+            this.showErrorMessage('Не удалось получить данные для порта: ' + error.message);
+        }
+    }
+
+    // Показать модальное окно Quick Connect для пользователя
+    async showQuickConnectModal(userId) {
+        const user = this.users.find(u => u.id == userId);
+        if (!user || !user.privateKey) {
+            alert('У пользователя нет ключа подключения');
+            return;
+        }
+
+        try {
+            // Получаем информацию о сервере
+            const info = await api.getSystemInfo();
+            const serverIP = window.location.hostname || info.server_ip || 'YOUR_SERVER_IP';
+
+            // Заполняем порты
+            await this.populatePortSelector();
+
+            // Получаем порт по умолчанию (первый inbound)
+            const portSelect = document.getElementById('quickConnectPort');
+            const defaultPort = portSelect?.value || info.port || 443;
+            const serverPubKey = info.public_key || '';
+
+            // Заполняем поля
+            const privateKeyInput = document.getElementById('quickConnectPrivateKey');
+            if (privateKeyInput) {
+                privateKeyInput.value = user.privateKey;
+            }
+
+            const serverUrlInput = document.getElementById('quickConnectServerUrl');
+            if (serverUrlInput) {
+                serverUrlInput.value = `${serverIP}:${defaultPort}`;
+            }
+
+            // Генерируем полный URL
+            const fullUrl = this.generateQuickConnectUrl(serverIP, defaultPort, serverPubKey, user.privateKey);
+            const fullUrlInput = document.getElementById('quickConnectFullUrl');
+            if (fullUrlInput) {
+                fullUrlInput.value = fullUrl;
+            }
+
+            // Показываем модальное окно
+            const modal = document.getElementById('quickConnectModal');
+            if (modal) {
+                modal.classList.add('active');
+                modal.style.display = 'flex';
+            }
+
+            console.log(`[QuickConnect] Opened for user ${user.username}, initial port: ${defaultPort}`);
+        } catch (error) {
+            console.error('Error showing Quick Connect modal:', error);
+            this.showErrorMessage('Не удалось открыть Quick Connect: ' + error.message);
         }
     }
 
@@ -712,7 +854,7 @@ class WhisperaApp {
                 <td><strong>${user.username || '-'}</strong></td>
                 <td>
                     <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-                        <code style="font-size: 0.85rem; background: ${hasKey ? '#e0f2fe' : '#fee2e2'}; color: ${hasKey ? '#0369a1' : '#991b1b'}; padding: 0.4rem 0.75rem; border-radius: 6px; font-weight: 500; border: 1px solid ${hasKey ? '#bae6fd' : '#fecaca'};">
+                        <code style="font-size: 0.85rem; background: ${hasKey ? 'rgba(99, 102, 241, 0.2)' : 'rgba(239, 68, 68, 0.2)'}; color: ${hasKey ? 'var(--secondary-color)' : '#fca5a5'}; padding: 0.4rem 0.75rem; border-radius: 6px; font-weight: 500; border: 1px solid ${hasKey ? 'rgba(99, 102, 241, 0.4)' : 'var(--danger-color)'};">
                             ${keyPreview}
                         </code>
                         ${hasKey ? `
@@ -1513,6 +1655,7 @@ monitoring:
     closeModal() {
         document.querySelectorAll('.modal').forEach(modal => {
             modal.classList.remove('active');
+            modal.style.display = 'none';
         });
         // Сбрасываем превью ключей при закрытии
         this.hideKeyPreview();

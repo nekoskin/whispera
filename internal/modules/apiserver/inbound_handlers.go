@@ -1,13 +1,18 @@
 package apiserver
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"whispera/internal/modules/config"
+
+	"golang.org/x/crypto/curve25519"
 )
 
 // handleGetInbounds returns the list of configured inbounds
@@ -97,11 +102,36 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[API] ✓ Inbound %s saved to config.yaml successfully", req.Tag)
 
+	// ⚡ DYNAMICALLY START THE INBOUND WITHOUT RESTART
+	// Import dynamic manager package
+	if err := startDynamicInbound(req); err != nil {
+		log.Printf("[API] ⚠️ Warning: Inbound saved but failed to start dynamically: %v", err)
+		log.Printf("[API] → Run 'systemctl restart whispera' to activate")
+
+		s.jsonOK(w, map[string]interface{}{
+			"success": true,
+			"message": "Inbound added to config but requires restart to activate",
+			"warning": fmt.Sprintf("Failed to start dynamically: %s. Please restart server.", err.Error()),
+			"inbound": req,
+		})
+		return
+	}
+
+	log.Printf("[API] 🚀 Inbound %s started dynamically on port %d!", req.Tag, req.Port)
+
 	s.jsonOK(w, map[string]interface{}{
 		"success": true,
-		"message": "Inbound added",
+		"message": fmt.Sprintf("Inbound added and started on port %d (no restart needed!)", req.Port),
 		"inbound": req,
 	})
+}
+
+// Helper to start inbound dynamically (bridge to global dynamic manager)
+func startDynamicInbound(inbound config.InboundConfig) error {
+	// This will be implemented via server/dynamic package
+	// For now, return nil to indicate feature not yet connected
+	// TODO: Connect to dynamic.Global.StartInbound(inbound)
+	return fmt.Errorf("dynamic start not yet wired - restart server manually")
 }
 
 // handleUpdateInbound updates an existing inbound
@@ -175,4 +205,91 @@ func (s *Server) handleDeleteInbound(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.jsonOK(w, map[string]string{"message": "Inbound deleted"})
+}
+
+// handleGetInboundPublicKey returns the public key for a specific inbound port
+func (s *Server) handleGetInboundPublicKey(w http.ResponseWriter, r *http.Request) {
+	// Get port from query string
+	portStr := r.URL.Query().Get("port")
+	if portStr == "" {
+		s.jsonError(w, http.StatusBadRequest, "Port parameter required")
+		return
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		s.jsonError(w, http.StatusBadRequest, "Invalid port number")
+		return
+	}
+
+	module, ok := s.registry.Get("config.provider")
+	if !ok {
+		s.jsonError(w, http.StatusInternalServerError, "Config provider not found")
+		return
+	}
+	cfgProvider := module.(*config.Provider)
+	cfg := cfgProvider.GetConfig()
+
+	// Find inbound by port
+	var privateKey string
+	for _, inbound := range cfg.Inbounds {
+		if inbound.Port == port {
+			// Check если у inbound есть свой Phantom ключ
+			if inbound.StreamSettings.Phantom.PrivateKey != "" {
+				privateKey = inbound.StreamSettings.Phantom.PrivateKey
+			}
+			break
+		}
+	}
+
+	// Fallback to server's global key if inbound doesn't have its own
+	if privateKey == "" {
+		privateKey = cfg.Server.PrivateKey
+	}
+
+	if privateKey == "" {
+		s.jsonError(w, http.StatusNotFound, "No private key configured for this port or server")
+		return
+	}
+
+	// Calculate public key from private key
+	privKeyBytes, err := decodeBase64OrHex(privateKey)
+	if err != nil || len(privKeyBytes) != 32 {
+		log.Printf("[API] Invalid private key format for port %d", port)
+		s.jsonError(w, http.StatusInternalServerError, "Invalid private key format")
+		return
+	}
+
+	var privKey [32]byte
+	copy(privKey[:], privKeyBytes)
+
+	// Calculate public key
+	var pubKey [32]byte
+	curve25519.ScalarBaseMult(&pubKey, &privKey)
+
+	// Encode to base64
+	publicKeyB64 := base64Encode(pubKey[:])
+
+	log.Printf("[API] ✓ Returned public key for port %d: %s...", port, publicKeyB64[:16])
+
+	s.jsonOK(w, map[string]interface{}{
+		"success":    true,
+		"port":       port,
+		"public_key": publicKeyB64,
+	})
+}
+
+// Helper function to decode base64 or hex string
+func decodeBase64OrHex(s string) ([]byte, error) {
+	// Try base64 first
+	if data, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return data, nil
+	}
+	// Try hex
+	return hex.DecodeString(s)
+}
+
+// Helper function to encode bytes to base64
+func base64Encode(data []byte) string {
+	return base64.StdEncoding.EncodeToString(data)
 }

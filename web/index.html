@@ -413,82 +413,27 @@
                         </div>
 
                         <div class="settings-section">
-                            <h3><i class="fas fa-network-wired"></i> Управление портами</h3>
+                            <h3><i class="fas fa-shield-alt"></i> Безопасность и Firewall</h3>
                             <div class="settings-grid">
-                                <div class="form-group">
-                                    <label>
-                                        <i class="fas fa-ethernet"></i>
-                                        UDP порт (основной)
+                                <div class="form-group" style="grid-column: 1 / -1;">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="settingsAutoFirewall" checked>
+                                        <span><strong>Автоматически настраивать firewall</strong></span>
                                     </label>
-                                    <div style="position: relative;">
-                                        <input type="number" id="settingsUdpPort" class="form-control" value="51820"
-                                            min="1024" max="65535"
-                                            onblur="app.checkPortAvailability('settingsUdpPort', 'udp')">
-                                        <span id="udpPortStatus" class="port-status"></span>
-                                    </div>
-                                    <small class="form-help" id="udpPortHelp">Основной порт для UDP соединений</small>
+                                    <small class="form-help">
+                                        <i class="fas fa-magic"></i>
+                                        При сохранении настроек автоматически добавлять открытые порты (Inbounds) в
+                                        firewall (UFW/iptables)
+                                    </small>
                                 </div>
-                                <div class="form-group">
-                                    <label>
-                                        <i class="fas fa-plug"></i>
-                                        TCP порт (fallback)
-                                    </label>
-                                    <div style="position: relative;">
-                                        <input type="number" id="settingsTcpPort" class="form-control" value="4443"
-                                            min="1024" max="65535"
-                                            onblur="app.checkPortAvailability('settingsTcpPort', 'tcp')">
-                                        <span id="tcpPortStatus" class="port-status"></span>
-                                    </div>
-                                    <small class="form-help" id="tcpPortHelp">Резервный порт для TCP соединений</small>
+                                <div style="grid-column: 1 / -1;">
+                                    <button type="button" class="btn btn-secondary"
+                                        onclick="app.configureFirewallNow()">
+                                        <i class="fas fa-fire"></i>
+                                        Настроить firewall сейчас
+                                    </button>
                                 </div>
-                                <div class="form-group">
-                                    <label>
-                                        <i class="fas fa-globe"></i>
-                                        WebSocket порт
-                                    </label>
-                                    <div style="position: relative;">
-                                        <input type="number" id="settingsWsPort" class="form-control" value="8080"
-                                            min="1024" max="65535"
-                                            onblur="app.checkPortAvailability('settingsWsPort', 'tcp')">
-                                        <span id="wsPortStatus" class="port-status"></span>
-                                    </div>
-                                    <small class="form-help" id="wsPortHelp">Порт для WebSocket соединений</small>
-                                </div>
-                                <div class="form-group">
-                                    <label>
-                                        <i class="fas fa-lock"></i>
-                                        WebSocket Secure порт
-                                    </label>
-                                    <div style="position: relative;">
-                                        <input type="number" id="settingsWs2Port" class="form-control" value="8443"
-                                            min="1024" max="65535"
-                                            onblur="app.checkPortAvailability('settingsWs2Port', 'tcp')">
-                                        <span id="ws2PortStatus" class="port-status"></span>
-                                    </div>
-                                    <small class="form-help" id="ws2PortHelp">Порт для безопасных WebSocket соединений
-                                        (WSS)</small>
-                                </div>
-                                <button type="button" class="btn btn-secondary" onclick="app.checkAllPorts()"
-                                    style="margin-top: 0.5rem;">
-                                    <i class="fas fa-search"></i>
-                                    Проверить все порты
-                                </button>
                             </div>
-                            <div class="form-group" style="margin-top: 1rem;">
-                                <label class="checkbox-label">
-                                    <input type="checkbox" id="settingsAutoFirewall" checked>
-                                    <span><strong>Автоматически настраивать firewall</strong></span>
-                                </label>
-                                <small class="form-help">
-                                    <i class="fas fa-shield-alt"></i>
-                                    При сохранении настроек автоматически добавить порты в firewall (UFW/iptables)
-                                </small>
-                            </div>
-                            <button type="button" class="btn btn-secondary" onclick="app.configureFirewallNow()"
-                                style="margin-top: 0.5rem;">
-                                <i class="fas fa-fire"></i>
-                                Настроить firewall сейчас
-                            </button>
                         </div>
 
                         <div class="settings-section">
@@ -1198,11 +1143,20 @@
                     </div>
                 </div>
 
+
+                <div class="form-group">
+                    <label><i class="fas fa-network-wired"></i> Выбор порта</label>
+                    <select id="quickConnectPort" class="form-control" onchange="app.updateQuickConnectForPort()">
+                        <!-- Будет заполнено из списка inbounds -->
+                    </select>
+                    <small class="form-help">Выберите порт для генерации ключа подключения</small>
+                </div>
+
                 <div class="form-group">
                     <label><i class="fas fa-key"></i> Приватный ключ (x25519)</label>
                     <div style="display: flex; gap: 0.5rem; align-items: center;">
                         <input type="text" id="quickConnectPrivateKey" readonly
-                            style="flex: 1; font-family: 'Courier New', monospace; font-size: 0.9rem; padding: 0.75rem; background: #f9fafb; border: 2px solid #e5e7eb; border-radius: 8px; word-break: break-all;">
+                            style="flex: 1; font-family: 'Courier New', monospace; font-size: 0.9rem; padding: 0.75rem; background: rgba(15, 15, 35, 0.8); border: 2px solid rgba(148, 163, 184, 0.2); border-radius: 8px; word-break: break-all; color: var(--text-primary);">
                         <button type="button" class="btn btn-primary" onclick="app.copyQuickConnectKeyFromModal()">
                             <i class="fas fa-copy"></i> Копировать
                         </button>
@@ -1214,7 +1168,7 @@
                     <label><i class="fas fa-server"></i> URL сервера</label>
                     <div style="display: flex; gap: 0.5rem; align-items: center;">
                         <input type="text" id="quickConnectServerUrl" readonly
-                            style="flex: 1; font-family: 'Courier New', monospace; font-size: 0.9rem; padding: 0.75rem; background: #f9fafb; border: 2px solid #e5e7eb; border-radius: 8px;">
+                            style="flex: 1; font-family: 'Courier New', monospace; font-size: 0.9rem; padding: 0.75rem; background: rgba(15, 15, 35, 0.8); border: 2px solid rgba(148, 163, 184, 0.2); border-radius: 8px; color: var(--text-primary);">
                         <button type="button" class="btn btn-secondary" onclick="app.copyServerUrl()">
                             <i class="fas fa-copy"></i> Копировать
                         </button>
@@ -1226,7 +1180,7 @@
                     <label><i class="fas fa-link"></i> Полная строка подключения (Quick Connect)</label>
                     <div style="display: flex; gap: 0.5rem; align-items: center;">
                         <input type="text" id="quickConnectFullUrl" readonly
-                            style="flex: 1; font-family: 'Courier New', monospace; font-size: 0.85rem; padding: 0.75rem; background: #eff6ff; border: 2px solid #3b82f6; border-radius: 8px; word-break: break-all; color: #1e40af;">
+                            style="flex: 1; font-family: 'Courier New', monospace; font-size: 0.85rem; padding: 0.75rem; background: rgba(99, 102, 241, 0.1); border: 2px solid var(--primary-color); border-radius: 8px; word-break: break-all; color: var(--secondary-color);">
                         <button type="button" class="btn btn-primary" onclick="app.copyQuickConnectFullUrl()">
                             <i class="fas fa-copy"></i> Копировать всё
                         </button>
@@ -1442,7 +1396,7 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary close-modal-btn">Отмена</button>
+                <button class="btn btn-secondary close-modal-btn" onclick="app.closeModal()">Отмена</button>
                 <button class="btn btn-primary" onclick="app.saveInbound()">Сохранить</button>
             </div>
         </div>
