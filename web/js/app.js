@@ -799,9 +799,8 @@ class WhisperaApp {
             const info = await api.getSystemInfo();
             // Clean IP from port if present just in case
             let serverIP = window.location.hostname || info.server_ip || 'YOUR_SERVER_IP';
-            if (serverIP.includes(':')) {
-                serverIP = serverIP.split(':')[0];
-            }
+            // Regex remove port
+            serverIP = String(serverIP).replace(/:\d+$/, '');
 
             // Получаем публичный ключ для выбранного порта
             // Если у inbound есть свой ключ, сервер должен вернуть его через API
@@ -823,8 +822,13 @@ class WhisperaApp {
 
             // Обновляем поля
             const serverUrlInput = document.getElementById('quickConnectServerUrl');
+
+            // DEBUG ALERT - PLEASE CHECK THIS
+            alert(`DEBUG: IP=${serverIP}, Port=${selectedPort}, Key=${serverPubKey ? serverPubKey.substring(0, 5) + '...' : 'None'}`);
+
             if (serverUrlInput) {
                 serverUrlInput.value = `${serverIP}:${selectedPort}`;
+                console.log(`[QuickConnect] Setting Server URL to: ${serverUrlInput.value}`);
             }
 
             // Генерируем полный URL с новым портом
