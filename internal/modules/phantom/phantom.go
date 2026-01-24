@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -143,8 +144,12 @@ func New(cfg *Config) (*Handler, error) {
 		var keyBytes []byte
 		var err error
 
-		// Base64 Only (Whispera v1)
+		// Try Base64 first
 		keyBytes, err = base64.StdEncoding.DecodeString(cfg.PrivateKey)
+		if err != nil {
+			// Try Hex
+			keyBytes, err = hex.DecodeString(cfg.PrivateKey)
+		}
 
 		if err == nil && len(keyBytes) == 32 {
 			h.privateKey = keyBytes
