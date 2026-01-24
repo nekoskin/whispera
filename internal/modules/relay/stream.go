@@ -325,7 +325,18 @@ func (s *Stream) HandleUDPData(data []byte) error {
 	addr = &net.UDPAddr{IP: ip, Port: int(port)}
 	payload := data[offset:]
 
-	// WriteToUDP
+	// Check if connected
+	if udpConn.RemoteAddr() != nil {
+		// Connected socket - use Write (ignore explicit addr as it must match connected)
+		n, err := udpConn.Write(payload)
+		if err != nil {
+			return err
+		}
+		s.bytesOut += uint64(n)
+		return nil
+	}
+
+	// Unconnected socket - use WriteToUDP
 	n, err := udpConn.WriteToUDP(payload, addr)
 	if err != nil {
 		return err
@@ -412,8 +423,10 @@ func (s *Stream) readUDPFromTarget() {
 		s.Close()
 	}()
 
-	// Buffer with Headroom for Header
-	buf := make([]byte, HeaderSize+65535)
+	// Buffer with large headroom for FrameHeader + UDP Header (IPv6+Domain)
+	// Max UDP header ~260 bytes, FrameHeader 8 bytes. 300 bytes headroom is safe.
+	const Headroom = 300
+	buf := make([]byte, Headroom+65535)
 
 	for {
 		select {
@@ -424,7 +437,7 @@ func (s *Stream) readUDPFromTarget() {
 
 		s.udpConn.SetReadDeadline(time.Now().Add(300 * time.Second))
 		// Read into payload offset
-		n, err := s.udpConn.Read(buf[HeaderSize:])
+		n, err := s.udpConn.Read(buf[Headroom:])
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
@@ -437,15 +450,34 @@ func (s *Stream) readUDPFromTarget() {
 			s.bytesIn += uint64(n)
 			s.lastT = time.Now()
 
-			// Connected UDP uses standard DFRAME
-			WriteFrameHeader(buf, s.ID, FrameData, 0, n)
+			// Resolve Remote Addr for Header
+			rAddr := s.udpConn.RemoteAddr()
+			udpAddr, ok := rAddr.(*net.UDPAddr)
+			if !ok {
+				// Should not happen for UDP conn
+				continue
+			}
+
+			// Determine ATYP
+			atyp := uint8(0x01) // IPv4
+			if udpAddr.IP.To4() == nil {
+				atyp = 0x04 // IPv6
+			}
+
+			// SealUDPData writes headers BEFORE buf[Headroom]
+			// It returns the full frame slice starting from the header
+			// Use FrameUDPData so client gets SOCKS5 header info
+			packet, err := SealUDPData(buf, s.ID, atyp, udpAddr.IP.String(), uint16(udpAddr.Port), Headroom)
+			if err != nil {
+				return
+			}
 
 			// Send with Retry (Seamless Reconnection)
 			retryAttempts := 0
 			const MaxRetryAttempts = 3000 // ~5 minutes
 
 			for {
-				if err := s.writer.Write(buf[:HeaderSize+n]); err != nil {
+				if err := s.writer.Write(packet); err != nil {
 					select {
 					case <-s.closeChan:
 						return
