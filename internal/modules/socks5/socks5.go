@@ -751,12 +751,15 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 				continue
 			}
 
+			// Extract FRAG (byte 2 of original buf which is not in udpPayload)
+			// Actually udpPayload = buf[3:n], so FRAG was at buf[2]
+			frag := buf[2]
+
 			data := udpPayload[dataOffset:]
-			frame := relay.NewUDPDataFrame(streamID, atyp, dstAddr, dstPort, data)
+			frame := relay.NewUDPDataFrame(streamID, frag, atyp, dstAddr, dstPort, data)
 
 			// Send to tunnel
 			// For UDP/RTC: NO RETRY with Sleep. If congestion occurs, we drop.
-			// Blocking here kills Discord voice (jitter/lag).
 			if enc, err := frame.Encode(); err == nil {
 				_ = tunnel.Send(enc)
 			}

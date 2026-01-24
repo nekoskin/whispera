@@ -460,7 +460,7 @@ func NewPongFrame() *Frame {
 }
 
 // NewUDPDataFrame creates a UDP_DATA frame
-func NewUDPDataFrame(streamID uint16, addrType uint8, addr string, port uint16, data []byte) *Frame {
+func NewUDPDataFrame(streamID uint16, frag uint8, addrType uint8, addr string, port uint16, data []byte) *Frame {
 	// Format: [RSV:2][FRAG:1][AddrType:1][Addr:N][Port:2][Data:N]
 
 	// Calculate size
@@ -484,7 +484,7 @@ func NewUDPDataFrame(streamID uint16, addrType uint8, addr string, port uint16, 
 	payload[offset] = 0x00
 	offset++
 	// FRAG (1 byte)
-	payload[offset] = 0x00
+	payload[offset] = frag
 	offset++
 
 	// Address type
