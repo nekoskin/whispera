@@ -450,7 +450,7 @@ func NewPongFrame() *Frame {
 
 // NewUDPDataFrame creates a UDP_DATA frame
 func NewUDPDataFrame(streamID uint16, addrType uint8, addr string, port uint16, data []byte) *Frame {
-	// Format: [AddrType:1][Addr:N][Port:2][Data:N]
+	// Format: [RSV:2][FRAG:1][AddrType:1][Addr:N][Port:2][Data:N]
 
 	// Calculate size
 	addrLen := 0
@@ -463,10 +463,19 @@ func NewUDPDataFrame(streamID uint16, addrType uint8, addr string, port uint16, 
 		addrLen = 1 + len(addr)
 	}
 
-	size := 1 + addrLen + 2 + len(data)
+	size := 2 + 1 + 1 + addrLen + 2 + len(data) // RSV(2) + FRAG(1) + ATYP(1) + ...
 	payload := make([]byte, size)
 
 	offset := 0
+	// RSV (2 bytes)
+	payload[offset] = 0x00
+	offset++
+	payload[offset] = 0x00
+	offset++
+	// FRAG (1 byte)
+	payload[offset] = 0x00
+	offset++
+
 	// Address type
 	payload[offset] = addrType
 	offset++
@@ -601,7 +610,7 @@ func SealRawPacket(buf []byte, streamID uint16, packetID uint32) ([]byte, error)
 
 // SealUDPData performs zero-copy framing for UDP Data.
 // It assumes 'buf' contains the UDP payload starting at 'dataOffset'.
-// It writes Frame Header and UDP Header (ATYP, ADDR, PORT) before 'dataOffset'.
+// It writes Frame Header and UDP Header (RSV, FRAG, ATYP, ADDR, PORT) before 'dataOffset'.
 // NOTE: Caller must calculate 'dataOffset' correctly based on AddrType/Length.
 func SealUDPData(buf []byte, streamID uint16, addrType uint8, addr string, port uint16, dataOffset int) ([]byte, error) {
 	if len(buf) < dataOffset {
@@ -610,15 +619,16 @@ func SealUDPData(buf []byte, streamID uint16, addrType uint8, addr string, port 
 
 	dataLen := len(buf) - dataOffset
 
-	// Calculate UDP Header Size
-	udpHeaderLen := 0
+	// Calculate UDP Header Size (SOCKS5 UDP Header)
+	// RSV(2) + FRAG(1) + ATYP(1) + ADDR + PORT(2)
+	udpHeaderLen := 2 + 1 + 1 + 2
 	switch addrType {
 	case AddrTypeIPv4:
-		udpHeaderLen = 1 + 4 + 2
+		udpHeaderLen += 4
 	case AddrTypeIPv6:
-		udpHeaderLen = 1 + 16 + 2
+		udpHeaderLen += 16
 	case AddrTypeDomain:
-		udpHeaderLen = 1 + 1 + len(addr) + 2
+		udpHeaderLen += 1 + len(addr)
 	}
 
 	if dataOffset < HeaderSize+udpHeaderLen {
@@ -633,6 +643,16 @@ func SealUDPData(buf []byte, streamID uint16, addrType uint8, addr string, port 
 	udpStart := frameStart + HeaderSize
 	current := udpStart
 
+	// RSV
+	buf[current] = 0x00
+	current++
+	buf[current] = 0x00
+	current++
+	// FRAG
+	buf[current] = 0x00
+	current++
+
+	// ATYP
 	buf[current] = addrType
 	current++
 
