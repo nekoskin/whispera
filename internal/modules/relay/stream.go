@@ -183,15 +183,15 @@ func (s *Stream) Connect(ctx context.Context) error {
 
 			go s.readRelayUDP()
 		} else {
-			// Connected UDP socket (P2P)
+			// Connected UDP socket (P2P) - Force IPv4 to avoid IPv6 issues
 			var addr *net.UDPAddr
-			addr, err = net.ResolveUDPAddr("udp", target)
+			addr, err = net.ResolveUDPAddr("udp4", target)
 			if err != nil {
 				s.fsm.Event(EventConnectFail)
 				return err
 			}
 			var conn *net.UDPConn
-			conn, err = net.DialUDP("udp", nil, addr)
+			conn, err = net.DialUDP("udp4", nil, addr)
 			if err != nil {
 				s.fsm.Event(EventConnectFail)
 				return err
