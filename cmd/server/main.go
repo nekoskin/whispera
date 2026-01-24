@@ -548,6 +548,12 @@ func createModules(manager *lifecycle.Manager) error {
 
 			// TCP Inbounds
 			if network == "tcp" {
+				// Skip if Phantom handles this port
+				if serverConfig.Phantom.Enabled && listenAddr == serverConfig.Server.ListenAddr {
+					log.Printf("[Inbound] Skipping %s: Port %s is managed by Phantom module", inbound.Tag, listenAddr)
+					continue
+				}
+
 				tcpTrans, err := tcp.New(&tcp.Config{
 					ListenAddr:   listenAddr,
 					ReadTimeout:  30 * time.Second,
