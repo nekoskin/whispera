@@ -98,12 +98,12 @@ type PhantomStreamConfig struct {
 }
 
 type WebSocketConfig struct {
-	Path string `yaml:"path"`
+	Path string `yaml:"path" json:"path"`
 }
 
 type SniffingConfig struct {
-	Enabled      bool     `yaml:"enabled"`
-	DestOverride []string `yaml:"dest_override"`
+	Enabled      bool     `yaml:"enabled" json:"enabled"`
+	DestOverride []string `yaml:"dest_override" json:"dest_override"`
 }
 
 // PhantomConfig contains Phantom protocol settings for SNI masquerading
@@ -111,38 +111,38 @@ type SniffingConfig struct {
 // Phantom proxies TLS handshakes to real servers while authenticating Whispera clients
 type PhantomConfig struct {
 	// Enabled enables Phantom protocol
-	Enabled bool `yaml:"enabled"`
+	Enabled bool `yaml:"enabled" json:"enabled"`
 
 	// Dest is the target server to proxy TLS handshake to (e.g., "cloudflare.com:443")
 	// When a non-authenticated client connects, traffic is proxied to this server
-	Dest string `yaml:"dest"`
+	Dest string `yaml:"dest" json:"dest"`
 
 	// ServerNames are the allowed SNI values clients can use
-	ServerNames []string `yaml:"server_names"`
+	ServerNames []string `yaml:"server_names" json:"server_names"`
 
 	// PrivateKey is the x25519 private key for client authentication (hex encoded)
-	PrivateKey string `yaml:"private_key"`
+	PrivateKey string `yaml:"private_key" json:"private_key"`
 
 	// ShortIds are the allowed shortId values for client identification
-	ShortIds []string `yaml:"short_ids"`
+	ShortIds []string `yaml:"short_ids" json:"short_ids"`
 
 	// MaxTimeDiff is the maximum allowed time difference for replay protection (ms)
-	MaxTimeDiff int `yaml:"max_time_diff"`
+	MaxTimeDiff int `yaml:"max_time_diff" json:"max_time_diff"`
 
 	// Fingerprint is the default browser fingerprint for outbound connections
-	Fingerprint string `yaml:"fingerprint"`
+	Fingerprint string `yaml:"fingerprint" json:"fingerprint"`
 }
 
 // ServerSettings contains basic server settings
 type ServerSettings struct {
-	Name         string        `yaml:"name"`
-	ListenAddr   string        `yaml:"listen_addr"`
-	TUNName      string        `yaml:"tun_name"`
-	MTU          int           `yaml:"mtu"`
-	Workers      int           `yaml:"workers"`
-	GracefulStop time.Duration `yaml:"graceful_stop"`
-	PrivateKey   string        `yaml:"private_key"`
-	UUID         string        `yaml:"uuid"`
+	Name         string        `yaml:"name" json:"name"`
+	ListenAddr   string        `yaml:"listen_addr" json:"listen_addr"`
+	TUNName      string        `yaml:"tun_name" json:"tun_name"`
+	MTU          int           `yaml:"mtu" json:"mtu"`
+	Workers      int           `yaml:"workers" json:"workers"`
+	GracefulStop time.Duration `yaml:"graceful_stop" json:"graceful_stop"`
+	PrivateKey   string        `yaml:"private_key" json:"private_key"`
+	UUID         string        `yaml:"uuid" json:"uuid"`
 }
 
 // TransportConfig contains transport layer settings
