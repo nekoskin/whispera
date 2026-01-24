@@ -652,8 +652,8 @@ class WhisperaApp {
         if (!dataList || !portInput) return;
 
         try {
-            // Загружаем список inbounds
-            const response = await api.request('/api/inbounds');
+            // Загружаем список inbounds (с защитой от кэша)
+            const response = await api.request(`/api/inbounds?t=${new Date().getTime()}`);
             const inbounds = response.inbounds || [];
 
             // Сохраняем кэш для проверки существования порта
@@ -722,21 +722,10 @@ class WhisperaApp {
                     };
 
                     console.log(`Creating auto-inbound for port ${port}...`);
-                    const addResponse = await api.request('/api/inbounds/add', {
+                    await api.request('/api/inbounds/add', {
                         method: 'POST',
                         body: JSON.stringify(newInbound)
                     });
-
-                    console.log("Inbound Created Response:", addResponse);
-
-                    // Verify if key was generated
-                    if (addResponse && addResponse.inbound) {
-                        const savedLink = addResponse.inbound;
-                        const hasKey = savedLink.stream_settings?.phantom?.private_key;
-                        if (!hasKey) {
-                            alert("CRITICAL: Server created inbound but NO Private Key was returned! This implies JSON mapping issue on server.");
-                        }
-                    }
 
                     this.showSuccessMessage(`Порт ${port} успешно создан и открыт!`);
 
