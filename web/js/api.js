@@ -2,34 +2,20 @@
 
 class WhisperaAPI {
     constructor() {
-        // Always try real API first
-        this.fallbackToDemo = false;  // Only enabled after connection failure
+        // DEMO MODE DISABLED - Always require real server
+        this.fallbackToDemo = false;
 
         // Determine API URL
         if (window.location.protocol === 'file:') {
-            // For file:// protocol, enable demo mode immediately
-            this.fallbackToDemo = true;
+            // For file:// protocol, assume localhost
             this.baseURL = 'http://localhost:8080';
-            console.log('[Whispera] File protocol detected, Demo Mode enabled immediately');
+            console.log('[Whispera] File protocol detected, using localhost:8080');
         } else {
             // Use current origin (protocol + hostname + port)
-            // This works automatically for any IP/port combination
             this.baseURL = window.location.origin;
         }
 
         this.token = localStorage.getItem('whispera_token') || null;
-
-        // Demo mode data storage (persists during session)
-        this.mockUsers = [
-            { id: 1, username: 'demo_user', privateKey: 'wsp_demo_123456abcdef', upload: 1073741824, download: 2147483648, trafficLimit: 10737418240, expiryDate: '2026-12-31', status: 'active' },
-            { id: 2, username: 'test_user', privateKey: 'wsp_test_789012ghijkl', upload: 536870912, download: 1073741824, trafficLimit: 5368709120, expiryDate: '2026-06-30', status: 'active' },
-            { id: 3, username: 'premium_user', privateKey: 'wsp_prem_345678mnopqr', upload: 2147483648, download: 4294967296, trafficLimit: 0, expiryDate: '2027-01-01', status: 'active' },
-        ];
-        this.mockSessions = [
-            { id: 'sess_001', user: 'demo_user', ip: '192.168.1.100', connected_at: new Date().toISOString(), traffic: 52428800 },
-            { id: 'sess_002', user: 'premium_user', ip: '10.0.0.55', connected_at: new Date(Date.now() - 3600000).toISOString(), traffic: 104857600 },
-        ];
-        this.nextUserId = 4;
 
         // Check server connectivity on init
         this.checkServerConnection();
@@ -46,14 +32,14 @@ class WhisperaAPI {
             });
             // 200 or 401 means server is alive (401 just means auth required)
             if (response.ok || response.status === 401) {
-                this.fallbackToDemo = false;
                 console.log('[Whispera] Connected to server at', this.baseURL);
             } else {
                 throw new Error('Server not healthy');
             }
         } catch (error) {
-            this.fallbackToDemo = true;
-            console.warn('[Whispera] Server unavailable, demo mode enabled as fallback');
+            console.error('[Whispera] Server unavailable:', error);
+            // ERROR INSTEAD OF FALLBACK
+            alert('Не удалось подключиться к серверу. Проверьте, что сервер запущен.');
         }
     }
 
@@ -69,11 +55,6 @@ class WhisperaAPI {
 
     // Выполнение запроса к API
     async request(endpoint, options = {}) {
-        // If we know server is down, use demo data
-        if (this.fallbackToDemo) {
-            return this.getMockData(endpoint, options);
-        }
-
         const url = `${this.baseURL}${endpoint}`;
         const headers = {
             'Content-Type': 'application/json',
@@ -121,12 +102,6 @@ class WhisperaAPI {
 
             return data;
         } catch (error) {
-            // Network error - enable fallback mode for future requests
-            if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
-                console.warn('[Whispera] Network error, switching to demo mode');
-                this.fallbackToDemo = true;
-                return this.getMockData(endpoint, options);
-            }
             console.error('API Error:', error);
             throw error;
         }

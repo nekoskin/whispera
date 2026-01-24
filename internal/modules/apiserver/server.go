@@ -143,6 +143,12 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("PUT /api/users/{id}", s.handleUpdateUser)
 	s.Handle("POST /api/users/delete", s.handleDeleteUser)
 
+	// Inbound management endpoints
+	s.Handle("GET /api/inbounds", s.handleGetInbounds)
+	s.Handle("POST /api/inbounds/add", s.handleAddInbound)
+	s.Handle("POST /api/inbounds/update", s.handleUpdateInbound)
+	s.Handle("POST /api/inbounds/delete", s.handleDeleteInbound)
+
 	// Key generation
 	s.Handle("POST /api/keys/generate", s.handleGenerateKeys)
 	s.Handle("POST /api/keys/connection", s.handleGenerateConnectionKey)

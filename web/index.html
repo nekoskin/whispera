@@ -59,10 +59,16 @@
                     <i class="fas fa-users"></i>
                     <span>Пользователи</span>
                 </a>
+                <a href="#inbounds" class="nav-item" data-page="inbounds">
+                    <i class="fas fa-door-open"></i>
+                    <span>Входящие</span>
+                </a>
                 <a href="#sessions" class="nav-item" data-page="sessions">
                     <i class="fas fa-network-wired"></i>
-                    <span>Подключения</span>
+                    <span>Активные сессии</span>
                 </a>
+
+
                 <a href="#stats" class="nav-item" data-page="stats">
                     <i class="fas fa-chart-line"></i>
                     <span>Статистика</span>
@@ -326,6 +332,48 @@
                                 </table>
                             </div>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Страница Inbounds -->
+                <div id="page-inbounds" class="page">
+                    <div class="page-header">
+                        <h2>Входящие подключения</h2>
+                        <button class="btn btn-primary" onclick="app.showAddInboundModal()">
+                            <i class="fas fa-plus"></i>
+                            Добавить подключение
+                        </button>
+                    </div>
+
+                    <div class="info-box info-warning" style="margin-bottom: 1.5rem;">
+                        <i class="fas fa-info-circle"></i>
+                        <div>
+                            <strong>Внимание:</strong> Для применения изменений (добавление/удаление портов) требуется
+                            перезагрузка сервиса.
+                            <button class="btn btn-sm btn-secondary" onclick="app.restartService()"
+                                style="margin-left: 10px;">Перезагрузить</button>
+                        </div>
+                    </div>
+
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Тег</th>
+                                    <th>Протокол</th>
+                                    <th>Адрес:Порт</th>
+                                    <th>Транспорт</th>
+                                    <th>Безопасность</th>
+                                    <th>Приватный ключ (Phantom)</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="inboundsTableBody">
+                                <tr>
+                                    <td colspan="7" class="text-center">Загрузка...</td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 
@@ -1196,7 +1244,8 @@
                             <li>Перейдите на главную страницу</li>
                             <li>Найдите поле "Быстрое подключение"</li>
                             <li>Вставьте скопированную строку в формате
-                                <code>whispera://server:port?pub=...&key=...</code></li>
+                                <code>whispera://server:port?pub=...&key=...</code>
+                            </li>
                             <li>Нажмите "Подключиться по ключу"</li>
                             <li>Все настройки загрузятся автоматически через API!</li>
                         </ol>
@@ -1344,6 +1393,57 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary modal-close">Закрыть</button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно добавления Inbound -->
+    <div id="inboundModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="inboundModalTitle">Добавить входящее подключение</h2>
+                <span class="close-modal">&times;</span>
+            </div>
+            <div class="modal-body">
+                <form id="inboundForm">
+                    <div class="form-group">
+                        <label>Тег (Название)</label>
+                        <input type="text" name="tag" class="form-control" placeholder="inbound-8443" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Порт</label>
+                        <input type="number" name="port" class="form-control" placeholder="8443" required min="1"
+                            max="65535">
+                    </div>
+                    <div class="form-group">
+                        <label>Listen (IP)</label>
+                        <input type="text" name="listen" class="form-control" value="0.0.0.0">
+                    </div>
+                    <div class="form-group">
+                        <label>Приватный ключ (Phantom)</label>
+                        <div style="display: flex; gap: 5px;">
+                            <input type="text" name="private_key" class="form-control"
+                                placeholder="Оставьте пустым для авто-генерации">
+                            <button type="button" class="btn btn-secondary"
+                                onclick="app.generateKeyForInbound()">Gen</button>
+                        </div>
+                        <small class="form-help">Используется для Phantom аутентификации</small>
+                    </div>
+                    <div class="form-group">
+                        <label>SNI назначения (Dest)</label>
+                        <input type="text" name="dest" class="form-control" placeholder="google.com:443">
+                    </div>
+                    <div class="form-group">
+                        <label>Server Names (SNI)</label>
+                        <input type="text" name="server_names" class="form-control"
+                            placeholder="google.com, www.google.com">
+                        <small class="form-help">Через запятую</small>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary close-modal-btn">Отмена</button>
+                <button class="btn btn-primary" onclick="app.saveInbound()">Сохранить</button>
             </div>
         </div>
     </div>

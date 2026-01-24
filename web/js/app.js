@@ -50,17 +50,11 @@ class WhisperaApp {
         const icon = statusDiv.querySelector('i');
         const text = statusDiv.querySelector('span');
 
-        if (api.fallbackToDemo) {
-            icon.className = 'fas fa-circle';
-            icon.style.color = 'var(--warning-color)';
-            text.textContent = 'Demo режим';
-            statusDiv.title = 'Сервер недоступен, используются демо-данные';
-        } else {
-            icon.className = 'fas fa-circle status-online';
-            icon.style.color = '';
-            text.textContent = 'Сервер работает';
-            statusDiv.title = 'Подключено к ' + api.baseURL;
-        }
+        // Always show connected status (no demo mode)
+        icon.className = 'fas fa-circle status-online';
+        icon.style.color = '';
+        text.textContent = 'Сервер работает';
+        statusDiv.title = 'Подключено к ' + api.baseURL;
     }
 
     ensureUsernameFieldWorks() {
@@ -88,11 +82,6 @@ class WhisperaApp {
     }
 
     async checkSetupWizard() {
-        // Skip wizard in demo mode
-        if (api.fallbackToDemo) {
-            console.log('[Whispera] Demo mode - skipping setup wizard');
-            return;
-        }
 
         try {
             // Проверяем, нужна ли первоначальная настройка
@@ -507,9 +496,140 @@ class WhisperaApp {
             case 'outbounds':
                 await this.loadOutbounds();
                 break;
+            case 'inbounds':
+                await this.loadInbounds();
+                break;
             case 'geo':
                 await this.loadGeoStatus();
                 break;
+        }
+    }
+
+    // Inbounds Methods
+    async loadInbounds() {
+        try {
+            const data = await api.request('GET', '/api/inbounds');
+            if (data.success) {
+                this.renderInboundsTable(data.inbounds);
+            }
+        } catch (error) {
+            console.error('Error loading inbounds:', error);
+            this.showErrorMessage('Не удалось загрузить список входящих подключений');
+        }
+    }
+
+    renderInboundsTable(inbounds) {
+        const tbody = document.getElementById('inboundsTableBody');
+        if (!tbody) return;
+
+        if (!inbounds || inbounds.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center">Нет настроенных подключений</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = inbounds.map(inbound => {
+            const net = inbound.stream_settings?.network || 'tcp';
+            const security = inbound.stream_settings?.security || 'none';
+            // Extract private key if exists for quick copy
+            const pk = inbound.stream_settings?.phantom?.private_key ||
+                inbound.stream_settings?.reality?.private_key ||
+                inbound.stream_settings?.tls?.key_file || '';
+            const pkDisplay = pk ? `<code title="${pk}">${pk.substring(0, 8)}...</code>` : '-';
+
+            return `
+            <tr>
+                <td><strong>${inbound.tag}</strong></td>
+                <td>${inbound.protocol}</td>
+                <td>${inbound.listen}:${inbound.port}</td>
+                <td><span class="badge badge-info">${net}</span></td>
+                <td><span class="badge ${security === 'none' ? '' : 'badge-success'}">${security}</span></td>
+                <td>${pkDisplay}</td>
+                <td>
+                    <button class="btn btn-sm btn-danger" onclick="app.deleteInbound('${inbound.tag}')">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                    <!-- Add Edit button later -->
+                </td>
+            </tr>
+            `;
+        }).join('');
+    }
+
+    showAddInboundModal() {
+        const modal = document.getElementById('inboundModal');
+        if (modal) modal.style.display = 'block';
+        // Reset form
+        document.getElementById('inboundForm').reset();
+    }
+
+    async saveInbound() {
+        const form = document.getElementById('inboundForm');
+        const formData = new FormData(form);
+
+        const inbound = {
+            tag: formData.get('tag'),
+            port: parseInt(formData.get('port')),
+            listen: formData.get('listen'),
+            protocol: 'whispera', // Fixed for now
+            stream_settings: {
+                network: 'tcp',
+                security: 'phantom',
+                phantom: {
+                    private_key: formData.get('private_key'),
+                    dest: formData.get('dest'),
+                    server_names: formData.get('server_names') ? formData.get('server_names').split(',').map(s => s.trim()) : []
+                }
+            }
+        };
+
+        try {
+            const res = await api.request('POST', '/api/inbounds/add', inbound);
+            if (res.success) {
+                this.showSuccessMessage('Входящее подключение добавлено');
+                this.closeModal();
+                this.loadInbounds();
+                // Show reminder to restart
+                alert('Для применения изменений необходимо перезагрузить сервис!');
+            }
+        } catch (error) {
+            console.error('Error saving inbound:', error);
+            this.showErrorMessage(error.message || 'Ошибка сохранения');
+        }
+    }
+
+    async deleteInbound(tag) {
+        if (!confirm(`Удалить входящее подключение "${tag}"?`)) return;
+
+        try {
+            await api.request('POST', '/api/inbounds/delete', { tag });
+            this.showSuccessMessage('Подключение удалено');
+            this.loadInbounds();
+            alert('Для применения изменений необходимо перезагрузить сервис!');
+        } catch (error) {
+            this.showErrorMessage('Ошибка удаления: ' + error.message);
+        }
+    }
+
+    async generateKeyForInbound() {
+        try {
+            const keys = await api.generateKeys();
+            if (keys && keys.privateKey) {
+                document.getElementsByName('private_key')[0].value = keys.privateKey;
+            }
+        } catch (error) {
+            console.error('Key gen error:', error);
+            this.showErrorMessage('Ошибка генерации ключа');
+        }
+    }
+
+    async restartService() {
+        if (!confirm('Вы уверены, что хотите перезагрузить конфигурацию сервиса? Это может разорвать активные соединения.')) return;
+
+        try {
+            await api.request('POST', '/api/v1/config/reload');
+            this.showSuccessMessage('Конфигурация перезагружена. Если порты не открылись, перезапустите сервис полностью (systemctl restart).');
+        } catch (e) {
+            this.showErrorMessage('Ошибка перезагрузки: ' + e.message);
         }
     }
 

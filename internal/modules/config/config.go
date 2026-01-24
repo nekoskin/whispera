@@ -52,6 +52,58 @@ type ServerConfig struct {
 
 	// Phantom protocol settings for SNI masquerading and TLS proxying
 	Phantom PhantomConfig `yaml:"phantom"`
+
+	// Inbounds represents a list of listening ports/protocols (Multi-port support)
+	Inbounds []InboundConfig `yaml:"inbounds"`
+}
+
+// InboundConfig represents a single listening port configuration
+type InboundConfig struct {
+	Tag      string `yaml:"tag"`      // Unique identifier
+	Protocol string `yaml:"protocol"` // whispera, vless, trojan, etc.
+	Listen   string `yaml:"listen"`   // 0.0.0.0
+	Port     int    `yaml:"port"`     // 443
+
+	// Protocol specific settings
+	Settings map[string]interface{} `yaml:"settings"`
+
+	// Stream settings (transport)
+	StreamSettings StreamConfig `yaml:"stream_settings"`
+
+	// Sniffing settings
+	Sniffing SniffingConfig `yaml:"sniffing"`
+}
+
+// StreamConfig for inbound transport
+type StreamConfig struct {
+	Network  string              `yaml:"network"`  // tcp, udp, ws, grpc
+	Security string              `yaml:"security"` // none, tls, phantom
+	TLS      TLSConfig           `yaml:"tls"`
+	Phantom  PhantomStreamConfig `yaml:"phantom"`
+	// Deprecated: Kept for backward compatibility
+	Reality PhantomStreamConfig `yaml:"reality,omitempty"`
+	WS      WebSocketConfig     `yaml:"ws"`
+}
+
+type TLSConfig struct {
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+}
+
+type PhantomStreamConfig struct {
+	Dest        string   `yaml:"dest"`
+	ServerNames []string `yaml:"server_names"`
+	PrivateKey  string   `yaml:"private_key"`
+	ShortIds    []string `yaml:"short_ids"`
+}
+
+type WebSocketConfig struct {
+	Path string `yaml:"path"`
+}
+
+type SniffingConfig struct {
+	Enabled      bool     `yaml:"enabled"`
+	DestOverride []string `yaml:"dest_override"`
 }
 
 // PhantomConfig contains Phantom protocol settings for SNI masquerading
@@ -220,6 +272,18 @@ func DefaultServerConfig() *ServerConfig {
 				MaxPacketSize: 65535,
 				BufferSize:    4096,
 				Workers:       8,
+			},
+		},
+		Inbounds: []InboundConfig{
+			{
+				Tag:      "default-inbound",
+				Protocol: "whispera",
+				Listen:   "0.0.0.0",
+				Port:     8443,
+				StreamSettings: StreamConfig{
+					Network:  "tcp",
+					Security: "reality",
+				},
 			},
 		},
 		Session: SessionConfig{

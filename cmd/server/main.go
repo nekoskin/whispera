@@ -77,14 +77,51 @@ var (
 
 // Global module references for packet handler
 var (
-	globalHandshake    *handshake.Handler
-	globalDataPlane    *dataplane.Processor
-	globalSessionMgr   *session.Manager
-	globalUDPTransport *udp.Transport
-	globalTCPTransport *tcp.Transport
-	globalRelay        *relay.Server
-	globalObfuscator   interfaces.Obfuscator
+	globalHandshake      *handshake.Handler
+	globalDataPlane      *dataplane.Processor
+	globalSessionMgr     *session.Manager
+	globalUDPTransport   *udp.Transport
+	globalTCPTransport   *tcp.Transport
+	globalRelay          *relay.Server
+	globalObfuscator     interfaces.Obfuscator
+	globalCryptoProvider interfaces.CryptoProvider
 )
+
+// Helper to create a handshake handler for a specific private key
+func createHandshakeHandler(privateKeyHex string, serverConfig *modconfig.ServerConfig) *handshake.Handler {
+	if privateKeyHex == "" {
+		return nil
+	}
+
+	h, err := handshake.New(&handshake.Config{
+		RateLimit:        100,
+		RateBurst:        50,
+		Timeout:          serverConfig.Session.SessionTimeout,
+		MaxPending:       1000,
+		EnableAntiReplay: true,
+	})
+	if err != nil {
+		log.Printf("⚠ Failed to create handshake handler: %v", err)
+		return nil
+	}
+
+	h.SetDependencies(globalCryptoProvider, globalSessionMgr)
+
+	privKey, err := hex.DecodeString(privateKeyHex)
+	if err != nil || len(privKey) != 32 {
+		log.Printf("⚠ Invalid private key: %v", err)
+		return nil
+	}
+
+	pubKey, err := curve25519.X25519(privKey, curve25519.Basepoint)
+	if err != nil {
+		log.Printf("⚠ Failed to derive public key: %v", err)
+		return nil
+	}
+
+	h.SetStaticKeys(pubKey, privKey)
+	return h
+}
 
 func main() {
 	// CLI Commands - handle FIRST before anything else
@@ -248,6 +285,7 @@ func createModules(manager *lifecycle.Manager) error {
 	if err != nil {
 		return err
 	}
+	globalCryptoProvider = cryptoProvider
 	if err := manager.Register(cryptoProvider); err != nil {
 		return err
 	}
@@ -366,82 +404,147 @@ func createModules(manager *lifecycle.Manager) error {
 		return err
 	}
 
-	// 8.1. TCP Transport
-	if serverConfig.Transport.TCP.Enabled {
-		tcpTransport, err := tcp.New(&tcp.Config{
-			ListenAddr:   serverConfig.Transport.TCP.ListenAddr, // Use TCP-specific address
-			ReadTimeout:  30 * time.Second,
-			WriteTimeout: 30 * time.Second,
-			KeepAlive:    30 * time.Second,
-			MaxConns:     10000,
-			BufferSize:   32 * 1024,
-		})
-		if err != nil {
-			return err
-		}
-		globalTCPTransport = tcpTransport
-		if err := manager.Register(tcpTransport); err != nil {
-			return err
-		}
+	// 8.1. Inbound Listeners (Multi-port support)
+	// Iterate over configured inbounds and start listeners
+	if len(serverConfig.Inbounds) > 0 {
+		log.Printf("[Server] Starting %d inbounds...", len(serverConfig.Inbounds))
+		for _, inbound := range serverConfig.Inbounds {
+			// Skip disabled or invalid
+			if inbound.Port == 0 {
+				continue
+			}
 
-		// Start accepting TCP connections in background
-		go func() {
-			// Wait for start
-			time.Sleep(1 * time.Second)
-			log.Printf("[TCP] Starting accept loop on %s", serverConfig.Transport.TCP.ListenAddr)
+			listenAddr := fmt.Sprintf("%s:%d", inbound.Listen, inbound.Port)
+			protocol := inbound.Protocol
+			network := inbound.StreamSettings.Network
 
-			for {
-				conn, err := tcpTransport.Accept()
+			log.Printf("[Inbound] Starting %s/%s on %s (Tag: %s)", protocol, network, listenAddr, inbound.Tag)
+
+			// Determine which handshake handler to use (Global fallback or Custom Key)
+			var hsHandler *handshake.Handler
+
+			// Check for Phantom private key
+			var privKey string
+			if inbound.StreamSettings.Phantom.PrivateKey != "" {
+				privKey = inbound.StreamSettings.Phantom.PrivateKey
+			}
+
+			if privKey != "" {
+				log.Printf("  ↳ Using custom private key for inbound %s", inbound.Tag)
+				hsHandler = createHandshakeHandler(privKey, serverConfig)
+			} else {
+				// Fallback to global handler (server-wide key)
+				hsHandler = globalHandshake
+			}
+
+			// TCP Inbounds
+			if network == "tcp" {
+				tcpTrans, err := tcp.New(&tcp.Config{
+					ListenAddr:   listenAddr,
+					ReadTimeout:  30 * time.Second,
+					WriteTimeout: 30 * time.Second,
+					KeepAlive:    30 * time.Second,
+					MaxConns:     10000,
+					BufferSize:   32 * 1024,
+				})
 				if err != nil {
-					if serverConfig.Relay.Debug {
-						log.Printf("[TCP] Accept error: %v", err)
-					}
-					time.Sleep(100 * time.Millisecond)
+					log.Printf("⚠ Failed to start inbound %s: %v", inbound.Tag, err)
 					continue
 				}
 
-				// Handle connection in new goroutine
-				go handleTCPConnection(conn)
-			}
-		}()
-		log.Printf("  ✓ TCP Transport enabled on %s", serverConfig.Transport.TCP.ListenAddr)
-	}
+				// If this is the "primary" inbound (matches server config), set as global for backward compat
+				if inbound.Port == 443 || listenAddr == serverConfig.Server.ListenAddr {
+					globalTCPTransport = tcpTrans
+				}
 
-	// 8.2. WebSocket Transport
-	if serverConfig.Transport.WebSocket.Enabled {
-		wsTransport, err := ws.New(&ws.Config{
-			ListenAddr: serverConfig.Transport.WebSocket.ListenAddr,
-			Path:       serverConfig.Transport.WebSocket.Path,
-			MaxConns:   10000,
-		})
-		if err != nil {
-			return err
-		}
-		if err := manager.Register(wsTransport); err != nil {
-			return err
-		}
+				// Start Accept Loop
+				go func(t *tcp.Transport, tag string, h *handshake.Handler) {
+					// Wait for start
+					time.Sleep(1 * time.Second)
+					log.Printf("[TCP] [%s] Starting accept loop on %s", tag, listenAddr)
 
-		// Start accepting WebSocket connections in background
-		go func() {
-			// Wait for start
-			time.Sleep(1 * time.Second)
-			log.Printf("[WS] Starting accept loop on %s%s", serverConfig.Transport.WebSocket.ListenAddr, serverConfig.Transport.WebSocket.Path)
+					for {
+						conn, err := t.Accept()
+						if err != nil {
+							// Check if closed
+							if strings.Contains(err.Error(), "use of closed network connection") {
+								return
+							}
+							log.Printf("[TCP] [%s] Accept error: %v", tag, err)
+							time.Sleep(100 * time.Millisecond)
+							continue
+						}
 
-			for {
-				conn, err := wsTransport.Accept()
-				if err != nil {
-					if serverConfig.Relay.Debug {
-						log.Printf("[WS] Accept error: %v", err)
+						// Handle connection with specific handshake handler
+						go handleTCPConnection(conn, h)
 					}
-					time.Sleep(100 * time.Millisecond)
+				}(tcpTrans, inbound.Tag, hsHandler)
+			}
+
+			// WebSocket Inbounds
+			if network == "ws" {
+				path := inbound.StreamSettings.WS.Path
+				if path == "" {
+					path = "/ws"
+				}
+				wsTrans, err := ws.New(&ws.Config{
+					ListenAddr: listenAddr,
+					Path:       path,
+					MaxConns:   10000,
+				})
+				if err != nil {
+					log.Printf("⚠ Failed to start WS inbound %s: %v", inbound.Tag, err)
 					continue
 				}
 
-				// Handle connection in new goroutine using existing TCP handler
-				// WebSocket provides a net.Conn interface that wraps frames, so logic matches
-				go handleTCPConnection(conn)
+				go func(t *ws.Transport, tag string, h *handshake.Handler) {
+					time.Sleep(1 * time.Second)
+					log.Printf("[WS] [%s] Starting accept loop on %s%s", tag, listenAddr, path)
+					for {
+						conn, err := t.Accept()
+						if err != nil {
+							log.Printf("[WS] [%s] Accept error: %v", tag, err)
+							time.Sleep(100 * time.Millisecond)
+							continue
+						}
+						go handleTCPConnection(conn, h)
+					}
+				}(wsTrans, inbound.Tag, hsHandler)
 			}
-		}()
+		}
+	} else {
+		// Fallback to legacy single-port config if no inbounds defined
+		if serverConfig.Transport.TCP.Enabled {
+			tcpTransport, err := tcp.New(&tcp.Config{
+				ListenAddr:   serverConfig.Transport.TCP.ListenAddr,
+				ReadTimeout:  30 * time.Second,
+				WriteTimeout: 30 * time.Second,
+				KeepAlive:    30 * time.Second,
+				MaxConns:     10000,
+				BufferSize:   32 * 1024,
+			})
+			if err != nil {
+				return err
+			}
+			globalTCPTransport = tcpTransport
+			if err := manager.Register(tcpTransport); err != nil {
+				return err
+			}
+
+			go func() {
+				time.Sleep(1 * time.Second)
+				log.Printf("[TCP] Starting legacy accept loop on %s", serverConfig.Transport.TCP.ListenAddr)
+				for {
+					conn, err := tcpTransport.Accept()
+					if err != nil {
+						time.Sleep(100 * time.Millisecond)
+						continue
+					}
+					// Use global handshake
+					go handleTCPConnection(conn, globalHandshake)
+				}
+			}()
+		}
 	}
 
 	// 8.5. Relay Server (for client traffic relay to internet)
@@ -524,7 +627,7 @@ func createModules(manager *lifecycle.Manager) error {
 	}
 
 	// 11. Phantom Handler (SNI masquerading / TLS proxy)
-	// Auto-generate keys if missing (Critical for REALITY authentication)
+	// Auto-generate keys if missing (Critical for Phantom authentication)
 	if serverConfig.Phantom.PrivateKey == "" {
 		log.Println("Phantom: No Private Key found. Auto-generating new X25519 key pair...")
 		privKey, pubKey, err := phantom.GenerateKeyPair()
@@ -570,12 +673,12 @@ func createModules(manager *lifecycle.Manager) error {
 				}
 
 				// SIMPLIFIED: Skip protocol handshake for Phantom connections.
-				// Phantom already authenticates via REALITY-like HMAC in the ClientHello.
+				// Phantom already authenticates via secure HMAC in the ClientHello.
 				// The additional protocol handshake was causing synchronization issues
 				// (double handshake, EOF errors, frame corruption).
 				// Client now also skips the handshake when EnablePhantom is true.
 
-				log.Printf("Phantom: Starting relay for %s (no extra handshake - REALITY auth sufficient)", clientID)
+				log.Printf("Phantom: Starting relay for %s (no extra handshake - Phantom auth sufficient)", clientID)
 
 				// Pass to relay - client will start sending framed data immediately
 				// Pass nil for obfuscator because Phantom connections use TLS masquerade.
@@ -691,7 +794,7 @@ func handlePacket(data []byte, addr net.Addr) {
 }
 
 // handleTCPConnection processes an incoming TCP connection
-func handleTCPConnection(conn net.Conn) {
+func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 	defer conn.Close()
 
 	addr := conn.RemoteAddr()
@@ -725,17 +828,15 @@ func handleTCPConnection(conn net.Conn) {
 
 		data := buf[:n]
 
-		// [FIX] Try handshake first (Raw, non-obfuscated)
-		// This is required because client sends raw handshake packet and waits for response.
-		// UDP handler has this, but TCP handler was missing it.
-		if len(data) >= 32 && len(data) <= 96 && globalHandshake != nil {
-			sess, err := globalHandshake.HandleHandshake(context.Background(), data, addr)
+		// [FIX] Try handshake first using the SPECIFIC handler
+		if len(data) >= 32 && len(data) <= 96 && hsHandler != nil {
+			sess, err := hsHandler.HandleHandshake(context.Background(), data, addr)
 			if err == nil && sess != nil {
 				if *debug {
-					log.Printf("[TCP] Handshake completed for %v", addr)
+					log.Printf("[TCP] Handshake completed for %v (Session: %d)", addr, sess.ID())
 				}
 				// Send response back
-				if response := globalHandshake.BuildResponse(sess); response != nil {
+				if response := hsHandler.BuildResponse(sess); response != nil {
 					if _, err := conn.Write(response); err != nil {
 						if *debug {
 							log.Printf("[TCP] Failed to send handshake response: %v", err)
