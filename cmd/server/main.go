@@ -548,10 +548,22 @@ func createModules(manager *lifecycle.Manager) error {
 
 			// TCP Inbounds
 			if network == "tcp" {
-				// Skip if Phantom handles this port
-				if serverConfig.Phantom.Enabled && listenAddr == serverConfig.Server.ListenAddr {
-					log.Printf("[Inbound] Skipping %s: Port %s is managed by Phantom module", inbound.Tag, listenAddr)
-					continue
+				// Robust check for Phantom port conflict
+				if serverConfig.Phantom.Enabled {
+					_, phantomPortStr, err := net.SplitHostPort(serverConfig.Server.ListenAddr)
+					// If ListenAddr doesn't have host (e.g. ":443"), SplitHostPort handles it correctly
+					if err == nil {
+						if phantomPortStr == fmt.Sprintf("%d", inbound.Port) {
+							log.Printf("[Inbound] Skipping %s: Port %d is managed by Phantom module", inbound.Tag, inbound.Port)
+							continue
+						}
+					} else {
+						// Fallback: simple suffix check if Split fails
+						if strings.HasSuffix(serverConfig.Server.ListenAddr, fmt.Sprintf(":%d", inbound.Port)) {
+							log.Printf("[Inbound] Skipping %s: Port %d is managed by Phantom module (suffix match)", inbound.Tag, inbound.Port)
+							continue
+						}
+					}
 				}
 
 				tcpTrans, err := tcp.New(&tcp.Config{
