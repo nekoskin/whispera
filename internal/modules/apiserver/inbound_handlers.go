@@ -94,16 +94,25 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 	cfgProvider := module.(*config.Provider)
 
 	err := cfgProvider.Update(func(cfg *config.ServerConfig) {
-		// Dedup check by port
-		for _, in := range cfg.Inbounds {
+		// Dedup check by port - if exists, overwrite/update
+		foundIndex := -1
+		for i, in := range cfg.Inbounds {
 			if in.Port == req.Port {
-				log.Printf("[API] Port %d already in use by inbound %s", req.Port, in.Tag)
-				// Error or overwrite? Let's error for safety
-				return // TODO: Return error properly
+				log.Printf("[API] Port %d already in use by inbound %s. Overwriting.", req.Port, in.Tag)
+				foundIndex = i
+				break
 			}
 		}
-		cfg.Inbounds = append(cfg.Inbounds, req)
-		log.Printf("[API] ✓ Added inbound %s (port %d) to config. Total inbounds: %d",
+
+		if foundIndex != -1 {
+			// Overwrite existing
+			cfg.Inbounds[foundIndex] = req
+		} else {
+			// Append new
+			cfg.Inbounds = append(cfg.Inbounds, req)
+		}
+
+		log.Printf("[API] ✓ Added/Updated inbound %s (port %d) to config. Total inbounds: %d",
 			req.Tag, req.Port, len(cfg.Inbounds))
 	})
 
@@ -245,8 +254,10 @@ func (s *Server) handleGetInboundPublicKey(w http.ResponseWriter, r *http.Reques
 
 	// Find inbound by port
 	var privateKey string
-	for _, inbound := range cfg.Inbounds {
+	var foundInbound *config.InboundConfig
+	for i, inbound := range cfg.Inbounds {
 		if inbound.Port == port {
+			foundInbound = &cfg.Inbounds[i]
 			// Check если у inbound есть свой Phantom ключ
 			if inbound.StreamSettings.Phantom.PrivateKey != "" {
 				privateKey = inbound.StreamSettings.Phantom.PrivateKey
@@ -255,12 +266,26 @@ func (s *Server) handleGetInboundPublicKey(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	if foundInbound != nil {
+		log.Printf("[API] Found inbound for port %d. Has private key: %v", port, privateKey != "")
+	} else {
+		log.Printf("[API] Inbound for port %d NOT found in current config (Total inbounds: %d)", port, len(cfg.Inbounds))
+		// Debug: print all ports
+		for _, in := range cfg.Inbounds {
+			log.Printf("[API] - Available port: %d", in.Port)
+		}
+	}
+
 	// Fallback to server's global key if inbound doesn't have its own
 	if privateKey == "" {
 		privateKey = cfg.Server.PrivateKey
+		if privateKey != "" {
+			log.Printf("[API] Using global server key for port %d", port)
+		}
 	}
 
 	if privateKey == "" {
+		log.Printf("[API] Error: No key found for port %d. Inbound found: %v", port, foundInbound != nil)
 		s.jsonError(w, http.StatusNotFound, "No private key configured for this port or server")
 		return
 	}
