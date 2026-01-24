@@ -822,31 +822,33 @@ class WhisperaApp {
 
             // Обновляем поля
             const serverUrlInput = document.getElementById('quickConnectServerUrl');
+            const fullUrlInput = document.getElementById('quickConnectFullUrl');
+
+            // DIAGNOSTIC ALERT
+            if (!serverUrlInput) alert("CRITICAL: serverUrlInput element NOT FOUND in DOM!");
+            else serverUrlInput.style.background = "#555500"; // Yellowish debug background
 
             // Ensure port is int for safety
             const pInt = parseInt(selectedPort);
 
             // Generate URL
             const fullUrl = this.generateQuickConnectUrl(serverIP, pInt, serverPubKey, privateKey);
-            const fullUrlInput = document.getElementById('quickConnectFullUrl');
 
             const applyValues = () => {
                 if (serverUrlInput) {
                     serverUrlInput.value = `${serverIP}:${pInt}`;
-                    serverUrlInput.style.border = "2px solid red"; // VISUAL CONFIRMATION
                 }
                 if (fullUrlInput) {
                     fullUrlInput.value = fullUrl;
-                    fullUrlInput.style.border = "2px solid red"; // VISUAL CONFIRMATION
                 }
-                console.log(`[QuickConnect] Applied values: ${serverIP}:${pInt}`);
+                // alert(`Debug: Applied ${serverIP}:${pInt}`); // Optional
             };
 
             // Apply immediately
             applyValues();
 
             // Apply again after delay
-            setTimeout(applyValues, 500);
+            setTimeout(applyValues, 200);
 
             console.log(`[QuickConnect] Updated for port ${selectedPort}`);
         } catch (error) {
