@@ -777,16 +777,7 @@ class WhisperaApp {
         }
 
         if (!selectedPort) {
-            console.warn('No port selected');
             return;
-        }
-
-        // Debug visibility
-        const debugCountEl = document.getElementById('debugPortsCount');
-        if (debugCountEl) {
-            // Append or update selection info
-            let text = debugCountEl.textContent.split(' | ')[0];
-            debugCountEl.textContent = `${text} | Selected: ${selectedPort}`;
         }
 
         // Ensure input shows the correct port if provided explicitly
@@ -802,18 +793,19 @@ class WhisperaApp {
             // Regex remove port
             serverIP = String(serverIP).replace(/:\d+$/, '');
 
+            // Ensure port is int
+            const portInt = parseInt(selectedPort);
+
             // Получаем публичный ключ для выбранного порта
             // Если у inbound есть свой ключ, сервер должен вернуть его через API
             let serverPubKey = info.public_key; // Default to global
             try {
-                const publicKeyResponse = await api.request(`/api/inbounds/pubkey?port=${selectedPort}&t=${Date.now()}`);
+                const publicKeyResponse = await api.request(`/api/inbounds/pubkey?port=${portInt}&t=${Date.now()}`);
                 if (publicKeyResponse && publicKeyResponse.public_key) {
                     serverPubKey = publicKeyResponse.public_key;
                 }
             } catch (pkError) {
                 console.warn("Failed to get specific pubkey, using global fallback:", pkError);
-                const debugErrEl = document.getElementById('debugLastError');
-                if (debugErrEl) debugErrEl.textContent = `Pubkey Error: ${pkError.message}`;
             }
 
             // Получаем текущий приватный ключ пользователя
@@ -822,38 +814,19 @@ class WhisperaApp {
 
             // Обновляем поля
             const serverUrlInput = document.getElementById('quickConnectServerUrl');
+            if (serverUrlInput) {
+                serverUrlInput.value = `${serverIP}:${portInt}`;
+            }
+
+            // Генерируем полный URL с новым портом
+            const fullUrl = this.generateQuickConnectUrl(serverIP, portInt, serverPubKey, privateKey);
             const fullUrlInput = document.getElementById('quickConnectFullUrl');
+            if (fullUrlInput) {
+                fullUrlInput.value = fullUrl;
+            }
 
-            // DIAGNOSTIC ALERT
-            if (!serverUrlInput) alert("CRITICAL: serverUrlInput element NOT FOUND in DOM!");
-            else serverUrlInput.style.background = "#555500"; // Yellowish debug background
-
-            // Ensure port is int for safety
-            const pInt = parseInt(selectedPort);
-
-            // Generate URL
-            const fullUrl = this.generateQuickConnectUrl(serverIP, pInt, serverPubKey, privateKey);
-
-            const applyValues = () => {
-                if (serverUrlInput) {
-                    serverUrlInput.value = `${serverIP}:${pInt}`;
-                }
-                if (fullUrlInput) {
-                    fullUrlInput.value = fullUrl;
-                }
-                // alert(`Debug: Applied ${serverIP}:${pInt}`); // Optional
-            };
-
-            // Apply immediately
-            applyValues();
-
-            // Apply again after delay
-            setTimeout(applyValues, 200);
-
-            console.log(`[QuickConnect] Updated for port ${selectedPort}`);
         } catch (error) {
             console.error('Error updating Quick Connect for port:', error);
-            // Don't show alert for default updates to avoid spam
             const debugErrEl = document.getElementById('debugLastError');
             if (debugErrEl) debugErrEl.textContent = 'Update error: ' + error.message;
         }
