@@ -797,8 +797,17 @@ class WhisperaApp {
 
             // Получаем публичный ключ для выбранного порта
             // Если у inbound есть свой ключ, сервер должен вернуть его через API
-            const publicKeyResponse = await api.request(`/api/inbounds/pubkey?port=${selectedPort}&t=${Date.now()}`);
-            const serverPubKey = publicKeyResponse.public_key || info.public_key;
+            let serverPubKey = info.public_key; // Default to global
+            try {
+                const publicKeyResponse = await api.request(`/api/inbounds/pubkey?port=${selectedPort}&t=${Date.now()}`);
+                if (publicKeyResponse && publicKeyResponse.public_key) {
+                    serverPubKey = publicKeyResponse.public_key;
+                }
+            } catch (pkError) {
+                console.warn("Failed to get specific pubkey, using global fallback:", pkError);
+                const debugErrEl = document.getElementById('debugLastError');
+                if (debugErrEl) debugErrEl.textContent = `Pubkey Error: ${pkError.message}`;
+            }
 
             // Получаем текущий приватный ключ пользователя
             const privateKeyInput = document.getElementById('quickConnectPrivateKey');
