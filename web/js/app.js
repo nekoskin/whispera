@@ -676,12 +676,13 @@ class WhisperaApp {
                     option.label = `${inbound.tag || 'Inbound'}`;
                     dataList.appendChild(option);
                 });
-
                 // Если поле пустое, ставим первый порт
                 if (!portInput.value) {
                     portInput.value = inbounds[0].port;
-                    this.updateQuickConnectForPort();
                 }
+
+                // Всегда обновляем UI, чтобы синхронизировать URL
+                this.updateQuickConnectForPort(portInput.value);
             }
         } catch (error) {
             console.error('Error loading inbounds for port selector:', error);
