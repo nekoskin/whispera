@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -976,8 +975,8 @@ func generateX25519Keys() (*KeyPair, error) {
 	}
 
 	return &KeyPair{
-		PrivateKey: hex.EncodeToString(privateBytes),
-		PublicKey:  hex.EncodeToString(publicBytes),
+		PrivateKey: base64.StdEncoding.EncodeToString(privateBytes),
+		PublicKey:  base64.StdEncoding.EncodeToString(publicBytes),
 	}, nil
 }
 

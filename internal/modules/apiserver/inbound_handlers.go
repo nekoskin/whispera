@@ -3,7 +3,6 @@ package apiserver
 import (
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -340,14 +339,9 @@ func (s *Server) handleGetInboundPublicKey(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// Helper function to decode base64 or hex string
+// Helper function to decode base64 string
 func decodeBase64OrHex(s string) ([]byte, error) {
-	// Try base64 first
-	if data, err := base64.StdEncoding.DecodeString(s); err == nil {
-		return data, nil
-	}
-	// Try hex
-	return hex.DecodeString(s)
+	return base64.StdEncoding.DecodeString(s)
 }
 
 // Helper function to encode bytes to base64

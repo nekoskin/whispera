@@ -11,7 +11,6 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -144,12 +143,8 @@ func New(cfg *Config) (*Handler, error) {
 		var keyBytes []byte
 		var err error
 
-		// Try Base64 first (Whispera default)
+		// Base64 Only (Whispera v1)
 		keyBytes, err = base64.StdEncoding.DecodeString(cfg.PrivateKey)
-		if err != nil || len(keyBytes) != 32 {
-			// Fallback to Hex (Legacy/User input)
-			keyBytes, err = hex.DecodeString(cfg.PrivateKey)
-		}
 
 		if err == nil && len(keyBytes) == 32 {
 			h.privateKey = keyBytes
@@ -549,8 +544,8 @@ func (h *Handler) authenticateClientLegacy(authData []byte) (string, bool) {
 	}
 
 	// Check shortId
-	shortId := hex.EncodeToString(authData[8:16])
-	shortId = trimTrailingZeros(shortId)
+	shortId := base64.StdEncoding.EncodeToString(authData[8:16])
+	// shortId = trimTrailingZeros(shortId) // No longer applicable for Base64 effectively, but keep structure if needed or remove
 
 	found := false
 	for _, allowed := range h.config.ShortIds {
@@ -655,9 +650,6 @@ func trimTrailingZeros(s string) string {
 func detectFormat(s string) string {
 	if _, err := base64.StdEncoding.DecodeString(s); err == nil {
 		return "Base64"
-	}
-	if _, err := hex.DecodeString(s); err == nil {
-		return "Hex"
 	}
 	return "Unknown"
 }
