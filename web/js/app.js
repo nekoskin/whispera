@@ -823,20 +823,30 @@ class WhisperaApp {
             // Обновляем поля
             const serverUrlInput = document.getElementById('quickConnectServerUrl');
 
-            // DEBUG ALERT - PLEASE CHECK THIS
-            alert(`DEBUG: IP=${serverIP}, Port=${selectedPort}, Key=${serverPubKey ? serverPubKey.substring(0, 5) + '...' : 'None'}`);
+            // Ensure port is int for safety
+            const pInt = parseInt(selectedPort);
 
-            if (serverUrlInput) {
-                serverUrlInput.value = `${serverIP}:${selectedPort}`;
-                console.log(`[QuickConnect] Setting Server URL to: ${serverUrlInput.value}`);
-            }
-
-            // Генерируем полный URL с новым портом
-            const fullUrl = this.generateQuickConnectUrl(serverIP, selectedPort, serverPubKey, privateKey);
+            // Generate URL
+            const fullUrl = this.generateQuickConnectUrl(serverIP, pInt, serverPubKey, privateKey);
             const fullUrlInput = document.getElementById('quickConnectFullUrl');
-            if (fullUrlInput) {
-                fullUrlInput.value = fullUrl;
-            }
+
+            const applyValues = () => {
+                if (serverUrlInput) {
+                    serverUrlInput.value = `${serverIP}:${pInt}`;
+                    serverUrlInput.style.border = "2px solid red"; // VISUAL CONFIRMATION
+                }
+                if (fullUrlInput) {
+                    fullUrlInput.value = fullUrl;
+                    fullUrlInput.style.border = "2px solid red"; // VISUAL CONFIRMATION
+                }
+                console.log(`[QuickConnect] Applied values: ${serverIP}:${pInt}`);
+            };
+
+            // Apply immediately
+            applyValues();
+
+            // Apply again after delay
+            setTimeout(applyValues, 500);
 
             console.log(`[QuickConnect] Updated for port ${selectedPort}`);
         } catch (error) {
