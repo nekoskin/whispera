@@ -59,42 +59,42 @@ type ServerConfig struct {
 
 // InboundConfig represents a single listening port configuration
 type InboundConfig struct {
-	Tag      string `yaml:"tag"`      // Unique identifier
-	Protocol string `yaml:"protocol"` // whispera, vless, trojan, etc.
-	Listen   string `yaml:"listen"`   // 0.0.0.0
-	Port     int    `yaml:"port"`     // 443
+	Tag      string `yaml:"tag" json:"tag"`           // Unique identifier
+	Protocol string `yaml:"protocol" json:"protocol"` // whispera, vless, trojan, etc.
+	Listen   string `yaml:"listen" json:"listen"`     // 0.0.0.0
+	Port     int    `yaml:"port" json:"port"`         // 443
 
 	// Protocol specific settings
-	Settings map[string]interface{} `yaml:"settings"`
+	Settings map[string]interface{} `yaml:"settings" json:"settings"`
 
 	// Stream settings (transport)
-	StreamSettings StreamConfig `yaml:"stream_settings"`
+	StreamSettings StreamConfig `yaml:"stream_settings" json:"stream_settings"`
 
 	// Sniffing settings
-	Sniffing SniffingConfig `yaml:"sniffing"`
+	Sniffing SniffingConfig `yaml:"sniffing" json:"sniffing"`
 }
 
 // StreamConfig for inbound transport
 type StreamConfig struct {
-	Network  string              `yaml:"network"`  // tcp, udp, ws, grpc
-	Security string              `yaml:"security"` // none, tls, phantom
-	TLS      TLSConfig           `yaml:"tls"`
-	Phantom  PhantomStreamConfig `yaml:"phantom"`
+	Network  string              `yaml:"network" json:"network"`   // tcp, udp, ws, grpc
+	Security string              `yaml:"security" json:"security"` // none, tls, phantom
+	TLS      TLSConfig           `yaml:"tls" json:"tls"`
+	Phantom  PhantomStreamConfig `yaml:"phantom" json:"phantom"`
 	// Deprecated: Kept for backward compatibility
-	Reality PhantomStreamConfig `yaml:"reality,omitempty"`
-	WS      WebSocketConfig     `yaml:"ws"`
+	Reality PhantomStreamConfig `yaml:"reality,omitempty" json:"reality,omitempty"`
+	WS      WebSocketConfig     `yaml:"ws" json:"ws"`
 }
 
 type TLSConfig struct {
-	CertFile string `yaml:"cert_file"`
-	KeyFile  string `yaml:"key_file"`
+	CertFile string `yaml:"cert_file" json:"cert_file"`
+	KeyFile  string `yaml:"key_file" json:"key_file"`
 }
 
 type PhantomStreamConfig struct {
-	Dest        string   `yaml:"dest"`
-	ServerNames []string `yaml:"server_names"`
-	PrivateKey  string   `yaml:"private_key"`
-	ShortIds    []string `yaml:"short_ids"`
+	Dest        string   `yaml:"dest" json:"dest"`
+	ServerNames []string `yaml:"server_names" json:"server_names"`
+	PrivateKey  string   `yaml:"private_key" json:"private_key"`
+	ShortIds    []string `yaml:"short_ids" json:"short_ids"`
 }
 
 type WebSocketConfig struct {
