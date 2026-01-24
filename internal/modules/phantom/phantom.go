@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -138,19 +139,28 @@ func New(cfg *Config) (*Handler, error) {
 		activeConns: make(map[string]net.Conn),
 	}
 
-	// Decode and set private key from hex string
+	// Decode and set private key (Support BOTH Hex and Base64)
 	if len(cfg.PrivateKey) > 0 {
-		keyBytes, err := hex.DecodeString(cfg.PrivateKey)
+		var keyBytes []byte
+		var err error
+
+		// Try Base64 first (Whispera default)
+		keyBytes, err = base64.StdEncoding.DecodeString(cfg.PrivateKey)
+		if err != nil || len(keyBytes) != 32 {
+			// Fallback to Hex (Legacy/User input)
+			keyBytes, err = hex.DecodeString(cfg.PrivateKey)
+		}
+
 		if err == nil && len(keyBytes) == 32 {
 			h.privateKey = keyBytes
 			// Derive public key for verification/logging
 			pubKey, err := curve25519.X25519(h.privateKey, curve25519.Basepoint)
 			if err == nil {
 				cfg.PublicKey = pubKey
-				log.Printf("Phantom: Loaded Private Key (PubKey: %x)", pubKey)
+				log.Printf("Phantom: Loaded Private Key (Format: %s, PubKey: %x)", detectFormat(cfg.PrivateKey), pubKey)
 			}
 		} else {
-			log.Printf("Phantom: Invalid Private Key format (must be 32 bytes hex)")
+			log.Printf("Phantom: Invalid Private Key format (must be 32 bytes Hex or Base64)")
 		}
 	} else {
 		log.Printf("Phantom: No Private Key configured - RUNNING IN OPEN/DEV MODE (Accepting all Whispera Traffic)")
@@ -639,6 +649,17 @@ func trimTrailingZeros(s string) string {
 		s = s[:len(s)-1]
 	}
 	return s
+}
+
+// detectFormat helper to identify key format for logging
+func detectFormat(s string) string {
+	if _, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return "Base64"
+	}
+	if _, err := hex.DecodeString(s); err == nil {
+		return "Hex"
+	}
+	return "Unknown"
 }
 
 // Ensure Handler implements TLS check
