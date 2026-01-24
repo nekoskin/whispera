@@ -781,6 +781,14 @@ class WhisperaApp {
             return;
         }
 
+        // Debug visibility
+        const debugCountEl = document.getElementById('debugPortsCount');
+        if (debugCountEl) {
+            // Append or update selection info
+            let text = debugCountEl.textContent.split(' | ')[0];
+            debugCountEl.textContent = `${text} | Selected: ${selectedPort}`;
+        }
+
         // Ensure input shows the correct port if provided explicitly
         if (explicitPort && portSelect && portSelect.value != explicitPort) {
             portSelect.value = explicitPort;
