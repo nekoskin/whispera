@@ -211,6 +211,7 @@ func WriteFrame(w io.Writer, f *Frame) error {
 
 // ConnectPayload represents a CONNECT frame payload
 type ConnectPayload struct {
+	Profile  uint8  // Behavior profile (Optimized, Balanced, etc)
 	AddrType uint8  // Address type
 	Addr     string // Address (IP or domain)
 	Port     uint16 // Port number
@@ -234,6 +235,9 @@ const (
 // Encode serializes the connect payload
 func (p *ConnectPayload) Encode() []byte {
 	var buf []byte
+
+	// Profile (NEW field to match main branch likely)
+	buf = append(buf, p.Profile)
 
 	// Protocol
 	buf = append(buf, p.Protocol)
@@ -270,11 +274,12 @@ func DecodeConnectPayload(data []byte) (*ConnectPayload, error) {
 	}
 
 	p := &ConnectPayload{
-		Protocol: data[0],
-		AddrType: data[1],
+		Profile:  data[0],
+		Protocol: data[1],
+		AddrType: data[2],
 	}
 
-	offset := 2
+	offset := 3 // Start after Profile(1) + Proto(1) + ATYP(1)
 
 	switch p.AddrType {
 	case AddrTypeIPv4:
@@ -380,6 +385,7 @@ func parseIPv6(addr string) []byte {
 // NewConnectFrame creates a CONNECT frame
 func NewConnectFrame(streamID uint16, proto uint8, addrType uint8, addr string, port uint16) *Frame {
 	payload := &ConnectPayload{
+		Profile:  ProfileBalanced, // Default profile
 		Protocol: proto,
 		AddrType: addrType,
 		Addr:     addr,
