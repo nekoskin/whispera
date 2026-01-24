@@ -125,7 +125,8 @@ func (s *Stream) Connect(ctx context.Context) error {
 	case ProtoTCP:
 		if s.dialer != nil {
 			var conn net.Conn
-			conn, err = s.dialer.Dial("tcp", target)
+			// Force "tcp4" to avoid IPv6 issues on servers with restricted network
+			conn, err = s.dialer.Dial("tcp4", target)
 			if err != nil {
 				s.fsm.Event(EventConnectFail)
 				return err
