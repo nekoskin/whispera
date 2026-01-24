@@ -32,10 +32,19 @@ func (s *Server) handleGetInbounds(w http.ResponseWriter, r *http.Request) {
 	cfg := cfgProvider.GetConfig()
 
 	// Wrap in a response structure compatible with frontend expectations
+
+	// Debug info
+	debugPorts := make([]string, 0, len(cfg.Inbounds))
+	for _, in := range cfg.Inbounds {
+		debugPorts = append(debugPorts, fmt.Sprintf("%d (%s)", in.Port, in.Tag))
+	}
+
 	s.jsonOK(w, map[string]interface{}{
-		"success":  true,
-		"inbounds": cfg.Inbounds,
-		"count":    len(cfg.Inbounds),
+		"success":     true,
+		"inbounds":    cfg.Inbounds,
+		"count":       len(cfg.Inbounds),
+		"debug_ports": debugPorts,
+		"config_path": cfgProvider.GetConfigPath(), // Need to check if GetConfigPath exists or add it
 	})
 }
 

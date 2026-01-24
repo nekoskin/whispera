@@ -600,6 +600,13 @@ func (p *Provider) notifyChanges(old, new *ServerConfig) {
 	}
 }
 
+// GetConfigPath returns the path to the configuration file
+func (p *Provider) GetConfigPath() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.configPath
+}
+
 // watchConfigFile watches the config file for changes
 func (p *Provider) watchConfigFile() {
 	ticker := time.NewTicker(5 * time.Second)
