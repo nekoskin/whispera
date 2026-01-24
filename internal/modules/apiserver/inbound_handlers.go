@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"whispera/internal/modules/config"
+	"whispera/internal/server/dynamic"
 
 	"golang.org/x/crypto/curve25519"
 )
@@ -190,10 +191,7 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 
 // Helper to start inbound dynamically (bridge to global dynamic manager)
 func startDynamicInbound(inbound config.InboundConfig) error {
-	// This will be implemented via server/dynamic package
-	// For now, return nil to indicate feature not yet connected
-	// TODO: Connect to dynamic.Global.StartInbound(inbound)
-	return fmt.Errorf("dynamic start not yet wired - restart server manually")
+	return dynamic.Global.StartInbound(inbound)
 }
 
 // handleUpdateInbound updates an existing inbound
