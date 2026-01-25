@@ -547,7 +547,11 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 				sm.HandleData(fr.StreamID, fr.Payload)
 
 			case FrameUDPData:
-				sm.HandleUDPData(fr.StreamID, fr.Payload)
+				// ASYNC HANDLING: Vital for VoIP to prevent Head-of-Line Blocking
+				// Deep copy payload as the buffer will be compacted
+				payload := make([]byte, len(fr.Payload))
+				copy(payload, fr.Payload)
+				go sm.HandleUDPData(fr.StreamID, payload)
 
 			case FrameClose:
 				sm.HandleClose(fr.StreamID)

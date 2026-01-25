@@ -367,7 +367,9 @@ func (s *Stream) readFromTarget() {
 		// We cannot reuse a buffer because the writer might queue the slice
 		// and return immediately. Reusing would overwrite the queued data.
 		// GC handles the cleanup.
-		buf := make([]byte, HeaderSize+32*1024)
+		// Optimize MTU: Read in small chunks (1280) to fit in QUIC packets without fragmentation.
+		// Large reads (e.g. 32KB) cause large frames which get dropped or fragmented poorly.
+		buf := make([]byte, HeaderSize+1280)
 
 		// Read with deadline
 		s.conn.SetReadDeadline(time.Now().Add(180 * time.Second))
