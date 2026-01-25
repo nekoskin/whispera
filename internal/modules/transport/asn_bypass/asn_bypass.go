@@ -274,10 +274,25 @@ func (d *Dialer) dialWithStrategy(ctx context.Context, network, addr string, str
 	}
 }
 
-// dialDirect performs a direct connection
+// dialDirect performs a direct connection with socket optimizations
 func (d *Dialer) dialDirect(ctx context.Context, network, addr string) (net.Conn, error) {
-	var dialer net.Dialer
-	return dialer.DialContext(ctx, network, addr)
+	// Force IPv4 to avoid IPv6 latency
+	conn, err := (&net.Dialer{
+		KeepAlive: 30 * time.Second,
+	}).DialContext(ctx, "tcp4", addr)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Optimize socket buffers for high throughput and low latency
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetNoDelay(true)                // Disable Nagle's algo (Lower Latency for small packets/Voice)
+		_ = tcpConn.SetReadBuffer(12 * 1024 * 1024)  // 4MB Read Buffer (Higher Speed)
+		_ = tcpConn.SetWriteBuffer(12 * 1024 * 1024) // 4MB Write Buffer (Higher Speed)
+	}
+
+	return conn, nil
 }
 
 // dialTLSMasquerade connects using uTLS with browser fingerprint

@@ -481,7 +481,8 @@ func (s *Stream) readUDPFromTarget() {
 			// SealUDPData writes headers BEFORE buf[Headroom]
 			// It returns the full frame slice starting from the header
 			// Use FrameUDPData so client gets SOCKS5 header info
-			packet, err := SealUDPData(buf, s.ID, atyp, udpAddr.IP.String(), uint16(udpAddr.Port), Headroom)
+			// BUGFIX: Slice buf to Headroom+n so we don't send the full capacity (garbage/zeros)
+			packet, err := SealUDPData(buf[:Headroom+n], s.ID, atyp, udpAddr.IP.String(), uint16(udpAddr.Port), Headroom)
 			if err != nil {
 				return
 			}
@@ -541,40 +542,15 @@ func (s *Stream) readRelayUDP() {
 			}
 
 			if err := s.writer.Write(packet); err != nil {
-				// Retry Strategy for UDP Relay
-				select {
-				case <-s.closeChan:
-					return
-				default:
-				}
-				// For UDP, we can be less aggressive, but let's try a few times.
-				// Actually, seamless UDP is tricky. If we block, we block the read loop.
-				// But that's fine.
-				for i := 0; i < 3000; i++ {
-					time.Sleep(100 * time.Millisecond)
-					if err := s.writer.Write(packet); err == nil {
-						break
-					}
-					select {
-					case <-s.closeChan:
-						return
-					default:
-					}
-				}
-				// If still fail, we likely return.
-				// Actually, strict "return" here closes the stream.
-				// If we want seamless, we should probably return ONLY if closeChan.
-				// But dropping one UDP packet is fine.
-				// Returning kills the listener?
-				// readRelayUDP loops.
-				// If we return, we stop reading from local UDP.
-				// Yes, providing seamless means we must NOT return.
-				// We should just continue loop?
-				// But we must send THIS packet?
-				// The retry loop above tries to send THIS packet.
-				// If it fails after 5 mins, we probably should drop it and continue.
-				// Or return.
-				// Let's stick to "return" after timeout to avoid zombie state.
+				// UDP Strategy: Drop if congested.
+				// Do NOT block or retry for long periods. Real-time traffic (Voice/Games)
+				// prefers packet loss over high latency (Bufferbloat).
+
+				// Optional: Short retry (e.g. 1ms) just in case of lock contention,
+				// but avoiding channel/network checking loop.
+
+				// For now: Just drop. The tunnel (TCP) is likely backing off.
+				// Pushing more data will just increase latency.
 				return
 			}
 		}

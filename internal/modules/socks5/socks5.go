@@ -10,6 +10,7 @@ import (
 	"io"
 	stdlog "log"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -253,11 +254,20 @@ func (m *Module) receiveFrames() {
 		// Non-Blocking Dispatch to Worker Queue.
 		// If a specific worker is backed up, we drop the packet for THAT shard
 		// to avoid blocking the entire tunnel for everyone.
+		// Non-Blocking Dispatch with Backpressure
 		select {
 		case workerChans[shardID] <- packetReq{pkt: pkt, tunnel: tunnel}:
-			// Successfully dispatched
+			continue
 		default:
-			// Worker queue is full - drop packet to maintain tunnel throughput
+			// Queue full - Retry with timeout (Backpressure)
+			// This prevents dropping TCP packets during micro-bursts of CPU activity
+		}
+
+		select {
+		case workerChans[shardID] <- packetReq{pkt: pkt, tunnel: tunnel}:
+			// Recovered
+		case <-time.After(5 * time.Millisecond):
+			// Still full after backpressure - drop to prevent HoL blocking
 			tunnel.Recycle(pkt)
 		}
 	}
@@ -635,24 +645,33 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 	if err != nil {
 		return fmt.Errorf("failed to create UDP listener: %w", err)
 	}
-	udpListener.SetReadBuffer(4 * 1024 * 1024)
-	udpListener.SetWriteBuffer(4 * 1024 * 1024)
+	udpListener.SetReadBuffer(8 * 1024 * 1024)
+	udpListener.SetWriteBuffer(8 * 1024 * 1024)
 	defer udpListener.Close()
 
 	localAddr := udpListener.LocalAddr().(*net.UDPAddr)
 
 	// Send success reply with relay address
 	// SOCKS5 reply: VER REP RSV ATYP BND.ADDR BND.PORT
-	// Note: We reply with the interface IP we listened on (or 127.0.0.1 if 0.0.0.0)
-	// to tell the client where to send packets.
+	// Note: We reply with the interface IP we listened on.
+	// If listening on 0.0.0.0, we must report the specific IP the client connected to (from control TCP),
+	// otherwise clients on LAN/VMs will try to send to their own localhost (127.0.0.1) and fail.
 	reply := []byte{0x05, 0x00, 0x00, 0x01}
 
-	// If bound to 0.0.0.0, we should tell client to send to 127.0.0.1 (or local LAN IP, but 127.0.0.1 is safest for local apps)
+	var bindIP net.IP
 	if localAddr.IP.IsUnspecified() {
-		reply = append(reply, net.ParseIP("127.0.0.1").To4()...)
+		// Dynamic IP detection: Use the LocalAddr of the control TCP connection
+		if tcpAddr, ok := tcpConn.LocalAddr().(*net.TCPAddr); ok && tcpAddr.IP.To4() != nil {
+			bindIP = tcpAddr.IP.To4()
+		} else {
+			// Fallback if detection fails or is IPv6 (while using ATYP 0x01)
+			bindIP = net.ParseIP("127.0.0.1").To4()
+		}
 	} else {
-		reply = append(reply, localAddr.IP.To4()...)
+		bindIP = localAddr.IP.To4()
 	}
+	reply = append(reply, bindIP...)
+
 	portBuf := make([]byte, 2)
 	binary.BigEndian.PutUint16(portBuf, uint16(localAddr.Port))
 	reply = append(reply, portBuf...)
@@ -724,10 +743,41 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 			}
 
 			// Store/Update client address
-			clientAddr.Store(addr)
+			// Only update on first packet or if we decide to support roaming (not recommended for strict SOCKS5)
+			// But since we bind 0.0.0.0, we must be careful not to forward random noise.
+			currentClient := clientAddr.Load()
+			if currentClient == nil {
+				clientAddr.Store(addr)
+				if m.config.Debug {
+					stdlog.Printf("[SOCKS5-UDP] Associated client: %s", addr.String())
+				}
+			} else {
+				// Verify sender matches associated client
+				// Note: Some clients might switch ports slightly (NAT), but strictly it should match.
+				// For now, we trust the stored address. If different, we might be receiving our own echo or noise.
+				cAddr := currentClient.(*net.UDPAddr)
+				if !cAddr.IP.Equal(addr.IP) || cAddr.Port != addr.Port {
+					// Check if it's loop protection (don't forward own packets if we somehow read them)
+					// But we are reading from the listener, so valid packets come from client.
+					// Just log for debug.
+					// stdlog.Printf("[SOCKS5-UDP] Packet from unknown source: %s (Expected: %s)", addr, cAddr)
+					// Verify IP at least
+					if !cAddr.IP.Equal(addr.IP) {
+						if m.config.Debug {
+							stdlog.Printf("[SOCKS5-UDP] Dropping packet from foreign IP: %s (Client: %s)", addr, cAddr)
+						}
+						continue
+					}
+					// If Port differs, allow it (NAT traversal / Client socket change), just update.
+					clientAddr.Store(addr)
+				}
+			}
 
 			// SOCKS5 UDP Header: RSV(2) FRAG(1) ATYP(1) ...
 			if n < 3 {
+				if m.config.Debug {
+					stdlog.Printf("[SOCKS5-UDP] Dropping short packet: len=%d", n)
+				}
 				continue
 			}
 
@@ -735,6 +785,9 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 
 			// Parse SOCKS5 header from udpPayload
 			if len(udpPayload) < 4 {
+				if m.config.Debug {
+					stdlog.Printf("[SOCKS5-UDP] Dropping short payload: len=%d", len(udpPayload))
+				}
 				continue
 			}
 			atyp := udpPayload[0]
@@ -745,6 +798,9 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 			switch atyp {
 			case 0x01: // IPv4
 				if len(udpPayload) < 1+4+2 {
+					if m.config.Debug {
+						stdlog.Printf("[SOCKS5-UDP] Short IPv4 header")
+					}
 					continue
 				}
 				dstAddr = net.IP(udpPayload[1:5]).String()
@@ -756,6 +812,9 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 				}
 				dlen := int(udpPayload[1])
 				if len(udpPayload) < 2+dlen+2 {
+					if m.config.Debug {
+						stdlog.Printf("[SOCKS5-UDP] Short Domain header")
+					}
 					continue
 				}
 				dstAddr = string(udpPayload[2 : 2+dlen])
@@ -763,16 +822,26 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 				dataOffset = 2 + dlen + 2
 			case 0x04: // IPv6
 				if len(udpPayload) < 1+16+2 {
+					if m.config.Debug {
+						stdlog.Printf("[SOCKS5-UDP] Short IPv6 header")
+					}
 					continue
 				}
 				dstAddr = net.IP(udpPayload[1:17]).String()
 				dstPort = binary.BigEndian.Uint16(udpPayload[17:19])
 				dataOffset = 19
 			default:
+				if m.config.Debug {
+					stdlog.Printf("[SOCKS5-UDP] Unknown ATYP: 0x%02x (Packet Header: %x)", atyp, buf[:min(n, 16)])
+				}
 				continue
 			}
 
 			data := udpPayload[dataOffset:]
+
+			// QUIC unblocked to allow YouTube/Browsers to negotiate HTTP/3
+			// Previous optimization removed to fix "slow video load" issues.
+
 			frame := relay.NewUDPDataFrame(streamID, atyp, dstAddr, dstPort, data)
 
 			// Send to tunnel
@@ -793,27 +862,38 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 					continue
 				}
 
-				// Reconstruct SOCKS5 UDP header (RSV:2, FRAG:1)
-				// The tunnel sends [ATYP][ADDR][PORT][DATA]
-				// We need [RSV][RSV][FRAG][ATYP][ADDR][PORT][DATA]
-				packet := make([]byte, 3+len(payload))
-				packet[0] = 0x00 // RSV
-				packet[1] = 0x00 // RSV
-				packet[2] = 0x00 // FRAG
-				copy(packet[3:], payload)
+				// Send payload directly
+				// Remove legacy workaround for trailing zeros as header length is now trusted.
 
-				// Determine client addr (use stored or remote addr)
-				val := clientAddr.Load()
-				if val == nil {
-					tunnel.Recycle(dp.Raw)
-					continue
-				}
-				addr := val.(net.Addr)
+				// Helper to encapsulate and send
+				sendFunc := func(data []byte) {
+					pkt := make([]byte, 3+len(data))
+					pkt[0] = 0x00 // RSV
+					pkt[1] = 0x00 // RSV
+					pkt[2] = 0x00 // FRAG
+					copy(pkt[3:], data)
 
-				_, err := udpListener.WriteToUDP(packet, addr.(*net.UDPAddr))
-				if err != nil {
-					// log.Error("Failed to write to UDP", "error", err)
+					// Determine client addr (use stored or remote addr)
+					val := clientAddr.Load()
+					if val == nil {
+						return
+					}
+					addr := val.(net.Addr)
+
+					_, err := udpListener.WriteToUDP(pkt, addr.(*net.UDPAddr))
+					if err != nil {
+						if !strings.Contains(err.Error(), "connection refused") && !strings.Contains(err.Error(), "closed") {
+							if m.config.Debug {
+								stdlog.Printf("[SOCKS5-UDP] Write error: %v", err)
+							}
+						}
+					}
 				}
+
+				sendFunc(payload)
+
+				tunnel.Recycle(dp.Raw)
+
 				tunnel.Recycle(dp.Raw)
 
 			case <-stream.closeChan:
