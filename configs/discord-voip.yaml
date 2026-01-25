@@ -1,0 +1,251 @@
+# Whispera Discord VoIP Optimization Profile
+# Optimized for minimal latency and jitter
+
+version: "2.0"
+
+# Profile metadata
+profile:
+  name: "Discord VoIP"
+  description: "Optimized for Discord voice calls with minimal latency"
+  version: "1.0"
+  target_apps: ["Discord"]
+
+# Connection optimizations for VoIP
+connection:
+  # Use UDP for low-latency voice
+  transport: "udp"
+  server_address: "${SERVER_ADDRESS:vpn.example.com:443}"
+  
+  # VoIP-specific timeouts
+  timeout: 10s                    # Aggressive timeout for voice
+  keepalive_interval: 5s          # Frequent keepalive to maintain connection
+  reconnect_interval: 2s          # Quick reconnection
+  max_reconnect_attempts: 20
+  
+  # UDP specific options
+  udp:
+    # Increase buffer sizes for voice traffic
+    send_buffer_size: 2097152     # 2MB for smooth voice transmission
+    recv_buffer_size: 2097152     # 2MB for jitter absorption
+    
+    # Optimize for low-latency
+    no_delay: true                # Disable Nagle-like algorithms
+    low_latency: true             # Set SO_PRIORITY for voice
+    dscp_class: "EF"              # Expedited Forwarding (voice priority)
+    ecn_enabled: false            # Disable ECN for voice
+    
+    # Fragment size optimization
+    fragment_size: 1200           # Prevent fragmentation (typical RTP voice ~200-400 bytes)
+    
+    # Connection coalescing
+    enable_gso: true              # Generic Segmentation Offload
+    gso_segment_size: 1200
+
+# TUN Interface settings optimized for voice
+tun:
+  enabled: true
+  name: "whispera_voice"
+  ip: "10.8.0.2"
+  gateway: "10.8.0.1"
+  netmask: "255.255.255.0"
+  
+  # CRITICAL: Larger MTU for voice packets
+  # Discord RTP typically 200-400 bytes + overhead
+  # This prevents fragmentation
+  mtu: 1500                       # Full Ethernet MTU
+  
+  buffer_size: 131072             # 128KB for smooth voice
+  metric: 50                      # Higher priority in routing
+  
+  # TCP window scaling for UDP-based VoIP
+  udp_receive_window: 262144      # 256KB window
+  udp_send_window: 262144
+
+# QoS Settings for Voice Priority
+qos:
+  enabled: true
+  mode: "voip"                    # Special VoIP mode
+  
+  # Packet prioritization
+  priority_queue:
+    rtp_voice_capacity: 5000      # Large RTP voice queue
+    rtp_video_capacity: 1000
+    control_capacity: 500
+    
+    # Reordering protection
+    max_reorder_delay: 5ms
+    strict_ordering: false        # Allow some reordering for voice
+  
+  # Jitter buffer settings
+  jitter_buffer:
+    enabled: true
+    min_jitter: 5ms
+    max_jitter: 50ms
+    target_jitter: 20ms           # Optimal for Discord
+    adapt_dynamic: true           # Adapt to network conditions
+  
+  # Bandwidth allocation for voice
+  bandwidth:
+    max_bitrate: 384000           # 384 kbps peak
+    target_bitrate: 128000        # 128 kbps typical (64 kbps codec + overhead)
+    adaptive: true                # Adapt to network
+    fallback_bitrate: 64000       # 64 kbps fallback
+  
+  # Loss protection
+  fec_enabled: false              # Disable FEC (adds latency)
+  retransmit_timeout: 20ms        # Quick retransmit
+  max_retransmits: 3
+
+# DNS for Discord (use fast resolvers)
+dns:
+  enabled: true
+  # Cloudflare 1.1.1.1 is fastest for Discord CDN
+  upstream: "1.1.1.1:53"
+  backup_upstream: "8.8.8.8:53"
+  
+  fake_ip: true
+  fake_ip_range: "198.18.0.0/15"
+  cache_size: 20000
+  
+  # Discord-specific optimization
+  cache_ttl: 3600
+  min_ttl: 60
+  cache_negative: true
+  negative_ttl: 300
+
+# Routing for Discord traffic
+routing:
+  enabled: true
+  rules:
+    # Discord voice traffic (UDP 50000-65000)
+    - name: "discord_voip"
+      protocol: "udp"
+      port_range: "50000-65000"
+      priority: 10
+      action: "route_priority"
+      metadata:
+        application: "discord_voice"
+        qos_class: "ef"
+    
+    # Discord signaling (TCP 443)
+    - name: "discord_signaling"
+      protocol: "tcp"
+      port: 443
+      priority: 5
+      action: "route_normal"
+      metadata:
+        application: "discord"
+    
+    # Discord API
+    - name: "discord_api"
+      host: "*.discord.com"
+      priority: 5
+      action: "route_normal"
+
+# Security settings (minimal for VoIP - security shouldn't hurt latency)
+crypto:
+  cipher: "chacha20-poly1305"     # Fast cipher
+  enable_key_pool: true
+  key_rotation_interval: 3600s    # 1 hour
+  
+  # Connection security
+  tls:
+    version: "1.3"                # TLS 1.3 for speed
+    ciphers: "TLS_CHACHA20_POLY1305_SHA256,TLS_AES_256_GCM_SHA384"
+
+# Obfuscation (optional, can impact latency)
+obfuscator:
+  enabled: false                  # Disable for maximum speed
+  # If needed for circumvention:
+  # profile: "minimal"
+  # threat_level: 3               # Low threat = minimal overhead
+
+# NAT and Port Forwarding
+nat:
+  enabled: true
+  port_range_start: 10000
+  port_range_end: 20000
+  
+  # Port prediction for voice
+  predict_ports: true
+  prediction_window: 10
+
+# Monitoring and Metrics
+metrics:
+  enabled: true
+  address: ":9091"
+  path: "/metrics"
+  
+  # VoIP-specific metrics
+  collect_latency: true
+  collect_jitter: true
+  collect_packet_loss: true
+  
+  # Report interval (for live monitoring)
+  report_interval: 5s
+  
+  # Save metrics history
+  save_history: true
+  history_retention: 24h
+
+# Advanced VoIP Options
+voip:
+  enabled: true
+  
+  # Application detection
+  detect_apps: true
+  apps:
+    - name: "Discord"
+      port_ranges: ["50000-65000"]
+      protocols: ["udp"]
+      codec: "opus"
+    
+    - name: "Telegram VoIP"
+      port_ranges: ["49152-65535"]
+      protocols: ["udp"]
+      codec: "opus"
+  
+  # Echo cancellation hint (system level)
+  echo_cancellation_hint: true
+  
+  # Audio codec optimization
+  audio_codec: "opus"             # Opus is most efficient
+  audio_bitrate: 128000           # 128 kbps
+  audio_sample_rate: 48000        # 48 kHz
+  audio_channels: 1               # Mono optimal for latency
+
+# Fallback settings (for when primary connection fails)
+fallback:
+  enabled: true
+  timeout: 5s
+  strategies:
+    - transport: "tcp"
+      priority: 2
+    - transport: "ws"
+      priority: 3
+
+# Performance tuning
+performance:
+  # CPU optimization
+  num_workers: 0                  # Auto-detect based on CPU cores
+  worker_priority: "high"         # Prioritize worker threads
+  
+  # Memory settings
+  buffer_pool_size: 1000
+  enable_memory_pooling: true
+  gc_interval: 30s
+  
+  # Congestion control
+  congestion_control: "cubic"     # CUBIC is good for voice
+  slow_start: true
+  initial_cwnd: 10
+
+# Logging (minimal for VoIP - logging impacts latency)
+logging:
+  enabled: true
+  level: "warn"                   # Only warnings and errors
+  output: "syslog"                # Don't log to disk
+  
+  # Don't log every packet
+  log_packets: false
+  packet_sample_rate: 0           # 0% sampling
