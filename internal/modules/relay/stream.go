@@ -257,8 +257,8 @@ func (s *Stream) Write(data []byte) error {
 func (s *Stream) UpdateWindow(increment uint32) {
 	s.mu.Lock()
 	s.sendWindow += int64(increment)
-	if s.sendWindow > 50*1024*1024 { // Cap at 50MB to prevent overflow
-		s.sendWindow = 50 * 1024 * 1024
+	if s.sendWindow > 80*1024*1024 { // Cap at 50MB to prevent overflow
+		s.sendWindow = 80 * 1024 * 1024
 	}
 	s.windowCond.Broadcast() // Wake up writer
 	s.mu.Unlock()
@@ -436,7 +436,8 @@ func (s *Stream) readUDPFromTarget() {
 		}
 
 		// ALLOC PER PACKET: Safe Zero-Copy for Async Writers
-		buf := make([]byte, Headroom+65535)
+		// OPTIMIZATION: Use smaller buffer (4KB) instead of 64KB since we cap at 1200 anyway
+		buf := make([]byte, Headroom+4096)
 
 		// Optimize: Use longer deadline and check for specific errors
 		s.udpConn.SetReadDeadline(time.Now().Add(5 * time.Minute)) // Keepalive is 30s-60s, so 5m is safe
@@ -514,7 +515,8 @@ func (s *Stream) readRelayUDP() {
 		}
 
 		// ALLOC PER PACKET: Safe Zero-Copy for Async Writers
-		buf := make([]byte, Headroom+65535)
+		// OPTIMIZATION: Use smaller buffer (4KB) instead of 64KB
+		buf := make([]byte, Headroom+4096)
 
 		s.udpConn.SetReadDeadline(time.Now().Add(300 * time.Second))
 		n, addr, err := s.udpConn.ReadFromUDP(buf[Headroom:])

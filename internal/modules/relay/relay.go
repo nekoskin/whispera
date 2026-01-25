@@ -358,6 +358,20 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 	clientID := conn.RemoteAddr().String()
 	s.log.Info("Starting tunnel session for %s", clientID)
 
+	// OPTIMIZATION: Tune TCP connection for low latency (VoIP/Gaming)
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		// Disable Nagle's algorithm (Critical for real-time protocols)
+		if err := tcpConn.SetNoDelay(true); err != nil {
+			s.log.Debug("Failed to set NoDelay on tunnel: %v", err)
+		}
+		// Reduce buffers to prevent bufferbloat
+		// 64KB is enough for high throughput but small enough to keep queues short
+		_ = tcpConn.SetReadBuffer(64 * 1024)
+		_ = tcpConn.SetWriteBuffer(64 * 1024)
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
+	}
+
 	// Write lock for the tunnel
 	var writeMu sync.Mutex
 
@@ -371,8 +385,18 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 	// Create LOCAL StreamManager for this tunnel to ensure isolation and features (UDP)
 	sm := NewStreamManager(s.proxyDialer)
 	defer sm.CloseAll()
+	// Track exit reason for logging
+	var exitReason string = "clean exit"
+	var exitLevel logger.Level = logger.LevelInfo
+
 	defer func() {
-		s.log.Info("Tunnel closed for %s", clientID)
+		if exitLevel == logger.LevelWarn {
+			s.log.Warn("Tunnel closed for %s (Reason: %s)", clientID, exitReason)
+		} else if exitLevel == logger.LevelError {
+			s.log.Error("Tunnel closed for %s (Reason: %s)", clientID, exitReason)
+		} else {
+			s.log.Info("Tunnel closed for %s (Reason: %s)", clientID, exitReason)
+		}
 	}()
 
 	// Helper to send frame
@@ -384,45 +408,48 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 		return writer.Write(encoded)
 	}
 
-	// Read buffer
-	buf := make([]byte, 64*1024)
-	var packetBuf []byte // Accumulator for partial frames
+	// READ BUFFER: Fixed size sliding window to prevent "append" allocations (Zero Copy)
+	// 128KB + 64KB headroom for read
+	const bufSize = 192 * 1024
+	packetBuf := make([]byte, bufSize)
+	bufOffset := 0 // Current write position in packetBuf
+
+	// Temp buffer for socket reads (before obfuscation/copy)
+	readBuf := make([]byte, 64*1024)
 
 	// Send immediate PONG to break potential deadlock
-	// Client's readLoop is waiting for data, and we're waiting for client data
-	// By sending PONG first, we unblock the client's readLoop
 	welcomeFrame := NewPongFrame()
 	if err := sendFrame(welcomeFrame); err != nil {
 		s.log.Warn("Failed to send welcome PONG: %v", err)
-		// Continue anyway - client might send PING first
 	} else {
 		s.log.Debug("Sent welcome PONG to %s", clientID)
 	}
 
 	for {
 		conn.SetReadDeadline(time.Now().Add(300 * time.Second)) // 5 min idle
-		n, err := conn.Read(buf)
+		n, err := conn.Read(readBuf)
 		if err != nil {
-			if err != io.EOF {
-				s.log.Debug("Tunnel read error from %s: %v", clientID, err)
+			if err == io.EOF {
+				exitReason = "client disconnected (EOF)"
+				return
 			}
+			exitReason = fmt.Sprintf("read error: %v", err)
+			exitLevel = logger.LevelWarn
 			return
 		}
 
-		data := buf[:n]
+		data := readBuf[:n]
 
-		// DEBUG: Log first bytes of incoming data
-		if n >= 8 {
+		// DEBUG: Log first bytes
+		if n >= 8 && s.config.Debug {
 			s.log.Debug("Tunnel data from %s: first 8 bytes = [%02x %02x %02x %02x %02x %02x %02x %02x]",
 				clientID, data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7])
 		}
 
-		// Check for TLS data (leftover from masquerade handshake)
-		// TLS record types: 0x14 (ChangeCipherSpec), 0x15 (Alert), 0x16 (Handshake), 0x17 (ApplicationData)
+		// Check for TLS data (leftover) - on the FRESH read buffer
 		if n >= 5 && data[0] >= 0x14 && data[0] <= 0x17 && data[1] == 0x03 {
 			tlsLen := int(data[3])<<8 | int(data[4])
 			s.log.Warn("Detected TLS data from %s (type=0x%02x, len=%d), skipping...", clientID, data[0], tlsLen)
-			// Skip this TLS record - don't add to packetBuf
 			continue
 		}
 
@@ -436,110 +463,117 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 			data = deobfuscated
 		}
 
-		// Append to accumulator
-		packetBuf = append(packetBuf, data...)
+		// Sliding Window: Copy data to packetBuf
+		if bufOffset+len(data) > len(packetBuf) {
+			s.log.Warn("Buffer overflow from %s (offset=%d, len=%d), disconnecting", clientID, bufOffset, len(data))
+			return
+		}
+		copy(packetBuf[bufOffset:], data)
+		bufOffset += len(data)
 
-		// Process frames
-		for len(packetBuf) >= HeaderSize {
+		// Process frames from packetBuf
+		processed := 0
+		currentBuf := packetBuf[:bufOffset]
+
+		for len(currentBuf) >= HeaderSize {
 			// Check for TLS data in accumulated buffer
-			if packetBuf[0] >= 0x14 && packetBuf[0] <= 0x17 && packetBuf[1] == 0x03 && len(packetBuf) >= 5 {
-				tlsLen := int(packetBuf[3])<<8 | int(packetBuf[4])
+			if currentBuf[0] >= 0x14 && currentBuf[0] <= 0x17 && currentBuf[1] == 0x03 && len(currentBuf) >= 5 {
+				tlsLen := int(currentBuf[3])<<8 | int(currentBuf[4])
 				skipLen := 5 + tlsLen
-				if skipLen <= len(packetBuf) {
+				if skipLen <= len(currentBuf) {
 					s.log.Warn("Skipping TLS record in buffer from %s (len=%d)", clientID, tlsLen)
-					packetBuf = packetBuf[skipLen:]
+					processed += skipLen
+					currentBuf = currentBuf[skipLen:]
 					continue
 				}
 				break // Wait for more data
 			}
 
-			// Check potential frame length
-			payloadLen := binary.BigEndian.Uint32(packetBuf[4:8])
+			// Check frame length
+			payloadLen := binary.BigEndian.Uint32(currentBuf[4:8])
 			frameSize := HeaderSize + int(payloadLen)
 
-			// Sanity check for frame size
 			if frameSize > MaxPayloadLen+HeaderSize {
 				s.log.Error("Frame too large from %s: %d", clientID, frameSize)
 				return
 			}
 
-			if len(packetBuf) < frameSize {
-				// Wait for more data
-				break
+			if len(currentBuf) < frameSize {
+				break // Wait for more data
 			}
 
-			// Extract frame data
-			frameData := packetBuf[:frameSize]
-			packetBuf = packetBuf[frameSize:] // Shift buffer
+			// Extract frame (ZERO COPY: slice of packetBuf)
+			frameData := currentBuf[:frameSize]
 
-			f, err := Decode(frameData)
+			// Decode (ZERO COPY: uses slice)
+			fr, err := Decode(frameData)
 			if err != nil {
 				s.log.Error("Frame decode error from %s: %v", clientID, err)
-				return // Protocol violation
+				return
 			}
 
-			// Handle Frame via StreamManager
-			switch f.Type {
+			// Handle Frame
+			switch fr.Type {
 			case FrameConnect:
-				// Handle Connect Async to avoid blocking the tunnel read loop
-				// Payload parsing and stream creation happens here
-				go func(fr *Frame) {
-					// Recover from panic to prevent crashing the server
+				go func(f *Frame) {
 					defer func() {
 						if r := recover(); r != nil {
 							s.log.Error("Panic in Connect handler: %v", r)
-							sendFrame(NewConnectFailFrame(fr.StreamID, "Internal Error"))
+							sendFrame(NewConnectFailFrame(f.StreamID, "Internal Error"))
 						}
 					}()
 
-					// Deep copy payload as the buffer is reused
-					payloadCopy := make([]byte, len(fr.Payload))
-					copy(payloadCopy, fr.Payload)
-					fr.Payload = payloadCopy // Swap with copy
+					// Deep copy payload as the buffer WILL be compacted/overwritten
+					payloadCopy := make([]byte, len(f.Payload))
+					copy(payloadCopy, f.Payload)
+					f.Payload = payloadCopy
 
-					connPayload, err := DecodeConnectPayload(fr.Payload)
+					connPayload, err := DecodeConnectPayload(f.Payload)
 					if err != nil {
-						sendFrame(NewConnectFailFrame(fr.StreamID, "InvPayload: "+err.Error()))
+						sendFrame(NewConnectFailFrame(f.StreamID, "InvPayload: "+err.Error()))
 						return
 					}
-					// Permission check (optional, but good practice)
 					if connPayload.Protocol == ProtoUDP && !s.config.EnableUDP {
-						sendFrame(NewConnectFailFrame(fr.StreamID, "UDP disabled"))
+						sendFrame(NewConnectFailFrame(f.StreamID, "UDP disabled"))
 						return
 					}
-
-					// Delegate to SM
-					if err := sm.HandleConnect(fr.StreamID, connPayload, writer); err != nil {
-						s.log.Warn("Stream %d connect failed: %v", fr.StreamID, err)
-						sendFrame(NewConnectFailFrame(fr.StreamID, err.Error()))
+					if err := sm.HandleConnect(f.StreamID, connPayload, writer); err != nil {
+						s.log.Warn("Stream %d connect failed: %v", f.StreamID, err)
+						sendFrame(NewConnectFailFrame(f.StreamID, err.Error()))
 					}
-				}(f)
+				}(fr)
 
 			case FrameData:
-				sm.HandleData(f.StreamID, f.Payload)
+				sm.HandleData(fr.StreamID, fr.Payload)
 
 			case FrameUDPData:
-				// UDP Support!
-				sm.HandleUDPData(f.StreamID, f.Payload)
+				sm.HandleUDPData(fr.StreamID, fr.Payload)
 
 			case FrameClose:
-				sm.HandleClose(f.StreamID)
+				sm.HandleClose(fr.StreamID)
 
 			case FramePing:
 				sendFrame(NewPongFrame())
 
 			case FrameWindowUpdate:
-				if len(f.Payload) >= 4 {
-					increment := binary.BigEndian.Uint32(f.Payload)
-					sm.HandleWindowUpdate(f.StreamID, increment)
+				if len(fr.Payload) >= 4 {
+					increment := binary.BigEndian.Uint32(fr.Payload)
+					sm.HandleWindowUpdate(fr.StreamID, increment)
 				}
 			}
+
+			// Advance
+			processed += frameSize
+			currentBuf = currentBuf[frameSize:]
 		}
 
-		// Protection against buffer bloat attack
-		if len(packetBuf) > 80*1024*1024 {
-			s.log.Warn("Buffer overflow from %s, disconnecting", clientID)
-			return
+		// Compact buffer
+		if processed > 0 {
+			remaining := bufOffset - processed
+			if remaining > 0 {
+				copy(packetBuf, packetBuf[processed:bufOffset])
+			}
+			bufOffset = remaining
 		}
 	}
 }
