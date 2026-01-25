@@ -494,17 +494,18 @@ Loop:
 		// ZERO-COPY OPTIMIZATION with sync.Pool
 		// Use pooled buffer to avoid GC on every new connection
 		// Optimize MTU: Limit read size to prevent fragmentation/drops in tunnel
+		// Optimize MTU: Limit read size to prevent fragmentation/drops in tunnel
 		// Standard MTU 1500 - overheads = ~1350 is safe.
-		// Reading full 64KB causes 1 packet > 1500 bytes -> Drop/Frag -> Retransmit storm.
 		const safeMTU = 1350
 		const headerSize = 8 // relay.HeaderSize
-		buf := streamBufferPool.Get().([]byte)
-		defer streamBufferPool.Put(buf)
 
 		for {
-			// Read directly into the payload area, limiting to safeMTU
-			// buf[headerSize:] is large, but we splice it to [:safeMTU]
-			readBuf := buf[headerSize : headerSize+safeMTU]
+			// Alloc per packet for safety with Async Sends
+			// This ensures no data corruption if the buffer is queued.
+			buf := make([]byte, headerSize+safeMTU)
+
+			// Read directly into the payload area
+			readBuf := buf[headerSize:]
 			n, err := clientConn.Read(readBuf)
 
 			// Check if stream was closed remotely (Graceful Drain Mode)
