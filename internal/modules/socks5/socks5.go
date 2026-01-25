@@ -10,7 +10,6 @@ import (
 	"io"
 	stdlog "log"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -650,46 +649,21 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 	}
 
 	// Create UDP listener for relay
-	// BIND FIX: Listen on 127.0.0.1 to match Source IP expectation of localhost clients.
-	// Force IPv4 (udp4) to prevent Windows "wsasendto" errors when writing to IPv4 from IPv6 socket
-	udpListener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	udpListener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		return fmt.Errorf("failed to create UDP listener: %w", err)
 	}
-	udpListener.SetReadBuffer(8 * 1024 * 1024)
-	udpListener.SetWriteBuffer(8 * 1024 * 1024)
 	defer udpListener.Close()
 
 	localAddr := udpListener.LocalAddr().(*net.UDPAddr)
 
 	// Send success reply with relay address
-	// Send success reply with relay address
 	// SOCKS5 reply: VER REP RSV ATYP BND.ADDR BND.PORT
-	// Fixed size for IPv4: 10 bytes (4 header + 4 IP + 2 Port)
-	// We only support/detected IPv4 bind in the logic below usually.
-
-	// Determine Bind IP
-	var bindIP net.IP
-	if localAddr.IP.IsUnspecified() {
-		if tcpAddr, ok := tcpConn.LocalAddr().(*net.TCPAddr); ok && tcpAddr.IP.To4() != nil {
-			bindIP = tcpAddr.IP.To4()
-		} else {
-			bindIP = net.ParseIP("127.0.0.1").To4()
-		}
-	} else {
-		bindIP = localAddr.IP.To4()
-	}
-
-	// Construct reply buffer (10 bytes for IPv4)
-	reply := make([]byte, 10)
-	reply[0] = 0x05 // VER
-	reply[1] = 0x00 // REP (Success)
-	reply[2] = 0x00 // RSV
-	reply[3] = 0x01 // ATYP (IPv4)
-
-	copy(reply[4:8], bindIP)
-
-	binary.BigEndian.PutUint16(reply[8:10], uint16(localAddr.Port))
+	reply := []byte{0x05, 0x00, 0x00, 0x01}
+	reply = append(reply, localAddr.IP.To4()...)
+	portBuf := make([]byte, 2)
+	binary.BigEndian.PutUint16(portBuf, uint16(localAddr.Port))
+	reply = append(reply, portBuf...)
 
 	if _, err := tcpConn.Write(reply); err != nil {
 		return err
@@ -726,19 +700,9 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 
 	// Monitor TCP connection closing (signals end of association)
 	go func() {
-		buf := make([]byte, 1024)
-		for {
-			// SOCKS5 UDP Associate check:
-			// The TCP connection must be kept alive. If it closes, we close UDP.
-			// Users might send Keep-Alive data, so we must drain it, not exit on first byte.
-			_, err := tcpConn.Read(buf)
-			if err != nil {
-				// EOF or Error -> Connection closed
-				udpListener.Close()
-				break
-			}
-			// Received data (KeepAlive?) -> Ignore and continue monitoring
-		}
+		buf := make([]byte, 1)
+		tcpConn.Read(buf)
+		udpListener.Close() // Force close listener to break loop
 	}()
 
 	// Bidirectional Copy
@@ -749,109 +713,71 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 
 	// UDP -> Tunnel
 	go func() {
-		// ZERO-COPY UDP ALIGNMENT MAGIC:
-		// SOCKS5 UDP Packet: [RSV:2][FRAG:1][ATYP:1][ADDR:L][PORT:2][DATA...]
-		// Relay UDP Frame:   [FrameHeader:8][ATYP:1][ADDR:L][PORT:2][DATA...]
-		//
-		// We want 'DATA' to align.
-		// SOCKS Data starts at: ReadOffset + 3 (RSV+FRAG) + UDP_HDR_LEN
-		// Relay Data starts at: 8 (FrameHeader) + UDP_HDR_LEN
-		// Equation: ReadOffset + 3 = 8  =>  ReadOffset = 5
-		//
-		// If we read SOCKS packet into buf[5:], the ATYP/ADDR/PORT fields
-		// align perfectly with where Relay expects them at buf[8:].
-		// We just need to overwrite buf[0:8] with the FrameHeader,
-		// putting the header "on top" of the unused pre-read space and SOCKS RSV/FRAG.
-
-		const ReadOffset = 5
-		const SOCKS_RSV_FRAG = 3
-		const FrameHeaderSize = 8
-
-		// Max UDP payload safe size + headroom
-		buf := make([]byte, 65535+ReadOffset)
-
+		buf := make([]byte, 65535)
 		for {
-			// Read at Offset 5
-			n, addr, err := udpListener.ReadFromUDP(buf[ReadOffset:])
+			n, addr, err := udpListener.ReadFromUDP(buf)
 			if err != nil {
 				errChan <- err
 				return
 			}
 
 			// Store/Update client address
-			currentClient := clientAddr.Load()
-			if currentClient == nil {
-				clientAddr.Store(addr)
-				if m.config.Debug {
-					stdlog.Printf("[SOCKS5-UDP] Associated client: %s", addr.String())
-				}
-			} else {
-				cAddr := currentClient.(*net.UDPAddr)
-				if !cAddr.IP.Equal(addr.IP) || cAddr.Port != addr.Port {
-					// Update client for NAT/roaming if IP matches
-					if !cAddr.IP.Equal(addr.IP) {
-						if m.config.Debug {
-							stdlog.Printf("[SOCKS5-UDP] Dropping foreign packet: %s", addr)
-						}
-						continue
-					}
-					clientAddr.Store(addr)
-				}
-			}
+			clientAddr.Store(addr)
 
-			// Sanity check SOCKS header (RSV+FRAG+ATYP)
-			if n < 4 {
+			// SOCKS5 UDP Header: RSV(2) FRAG(1) ATYP(1) ...
+			if n < 3 {
 				continue
 			}
 
-			// Bytes read start at buf[5]
-			// SOCKS Header:
-			// buf[5]: RSV
-			// buf[6]: RSV
-			// buf[7]: FRAG
-			// buf[8]: ATYP (This MUST correspond to Relay ATYP)
+			udpPayload := buf[3:n]
 
-			// Validate FRAG (Must be 0 for standard SOCKS5 UDP)
-			if buf[7] != 0 {
-				if m.config.Debug {
-					stdlog.Printf("[SOCKS5-UDP] Dropping fragmented packet")
+			// Parse SOCKS5 header from udpPayload
+			if len(udpPayload) < 4 {
+				continue
+			}
+			atyp := udpPayload[0]
+			var dstAddr string
+			var dstPort uint16
+			var dataOffset int
+
+			switch atyp {
+			case 0x01: // IPv4
+				if len(udpPayload) < 1+4+2 {
+					continue
 				}
+				dstAddr = net.IP(udpPayload[1:5]).String()
+				dstPort = binary.BigEndian.Uint16(udpPayload[5:7])
+				dataOffset = 7
+			case 0x03: // Domain
+				if len(udpPayload) < 2 {
+					continue
+				}
+				dlen := int(udpPayload[1])
+				if len(udpPayload) < 2+dlen+2 {
+					continue
+				}
+				dstAddr = string(udpPayload[2 : 2+dlen])
+				dstPort = binary.BigEndian.Uint16(udpPayload[2+dlen : 2+dlen+2])
+				dataOffset = 2 + dlen + 2
+			case 0x04: // IPv6
+				if len(udpPayload) < 1+16+2 {
+					continue
+				}
+				dstAddr = net.IP(udpPayload[1:17]).String()
+				dstPort = binary.BigEndian.Uint16(udpPayload[17:19])
+				dataOffset = 19
+			default:
 				continue
 			}
 
-			// Calculate Total Frame Length
-			// Input N = 3 (RSV/FRAG) + UDP_HDR + DATA
-			// Relay N = 8 (Frame) + UDP_HDR + DATA
-			// Diff = 5 bytes
-			// TotalLen = N + 5
-			totalLen := n + 5
+			data := udpPayload[dataOffset:]
+			frame := relay.NewUDPDataFrame(streamID, atyp, dstAddr, dstPort, data)
 
-			// Construct FrameHeader at buf[0:8]
-			// StreamID (big-endian)
-			binary.BigEndian.PutUint16(buf[0:2], streamID)
-			// Type (FrameUDPData)
-			buf[2] = relay.FrameUDPData
-			// Flags
-			buf[3] = 0
-			// Length (Payload Length)
-			// Payload = UDP_HDR + DATA
-			// UDP_HDR starts at buf[8] (ATYP)
-			// SOCKS read N bytes. PayloadLen for Relay = N - 3 (RSV/FRAG)
-			payloadLen := n - 3
-			binary.BigEndian.PutUint32(buf[4:8], uint32(payloadLen))
-
-			// Buffer is now a valid Relay Frame!
-			// [0-7] FrameHeader
-			// [8]   ATYP
-			// ...   ADDR/PORT/DATA
-
-			// Zero-Copy Send
-			if err := tunnel.Send(buf[:totalLen]); err != nil {
-				// Retry / Log logic omitted for speed in this block
-				// Just UDP, safe to drop or retry once
-				if !tunnel.IsConnected() {
-					time.Sleep(100 * time.Millisecond)
-				}
+			// Send to tunnel
+			enc, _ := frame.Encode()
+			if err := tunnel.Send(enc); err != nil {
+				time.Sleep(10 * time.Millisecond)
+				tunnel.Send(enc)
 			}
 		}
 	}()
@@ -862,58 +788,27 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 			select {
 			case dp := <-stream.dataChan:
 				payload := dp.Payload
-				if len(payload) == 0 {
+
+				// Payload is [ATYP][ADDR][PORT][DATA]
+
+				// Get Client Address
+				addrVal := clientAddr.Load()
+				if addrVal == nil {
+					// Drop if we don't know where to send yet
+					tunnel.Recycle(dp.Raw)
 					continue
 				}
+				addr := addrVal.(*net.UDPAddr)
 
-				// Send payload directly
-				// Remove legacy workaround for trailing zeros as header length is now trusted.
+				// Construct SOCKS5 Packet: [00 00 00] + payload
+				pkt := make([]byte, 3+len(payload))
+				pkt[0], pkt[1], pkt[2] = 0, 0, 0 // RSV, FRAG
+				copy(pkt[3:], payload)
 
-				// Helper to encapsulate and send
-				sendFunc := func(data []byte) {
-					pkt := make([]byte, 3+len(data))
-					pkt[0] = 0x00 // RSV
-					pkt[1] = 0x00 // RSV
-					pkt[2] = 0x00 // FRAG
-					copy(pkt[3:], data)
-
-					// Determine client addr (use stored or remote addr)
-					val := clientAddr.Load()
-					if val == nil {
-						return
-					}
-					addr := val.(net.Addr)
-
-					_, err := udpListener.WriteToUDP(pkt, addr.(*net.UDPAddr))
-					if err != nil {
-						// Filter out benign errors:
-						// 1. "connection refused" / "reset": Target closed port (normal)
-						// 2. "wsasendto" / "message too large": PMTUD probes > MTU (normal for QUIC/Discord)
-						errStr := err.Error()
-						if !strings.Contains(errStr, "connection refused") &&
-							!strings.Contains(errStr, "closed") &&
-							!strings.Contains(errStr, "wsasendto") &&
-							!strings.Contains(errStr, "message too large") {
-
-							if m.config.Debug {
-								stdlog.Printf("[SOCKS5-UDP] Write error: %v", err)
-							}
-						}
-					}
+				_, err := udpListener.WriteToUDP(pkt, addr)
+				if err != nil {
+					// log or ignore
 				}
-
-				// WORKAROUND: Restore logic for stripping trailing zeros and capping MTU.
-				// Windows localhost MTU can handle large packets, but 'wsasendto' often fails
-				// if the packet exceeds standard Ethernet MTU (1500) due to driver/stack limits.
-				// Also, if the tunnel sends padded data, we must strip it.
-
-				// Send payload directly without modification.
-				// Removing "trailing zero strip" and "1200 cap" because it corrupts valid binary data.
-				sendFunc(payload)
-
-				// If we stripped significant data (zeros), sends specific variations if needed
-				// (But for now, just sending the stripped/capped payload is usually sufficient for Discord/Game protocols)
-
 				tunnel.Recycle(dp.Raw)
 
 			case <-stream.closeChan:
