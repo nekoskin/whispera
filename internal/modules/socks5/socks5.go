@@ -773,11 +773,15 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 			data := udpPayload[dataOffset:]
 			frame := relay.NewUDPDataFrame(streamID, atyp, dstAddr, dstPort, data)
 
-			// Send to tunnel
+			// Send to tunnel with robust retry
 			enc, _ := frame.Encode()
-			if err := tunnel.Send(enc); err != nil {
-				time.Sleep(10 * time.Millisecond)
-				tunnel.Send(enc)
+			// Try 3 times to send
+			for i := 0; i < 3; i++ {
+				if err := tunnel.Send(enc); err != nil {
+					time.Sleep(time.Duration(i*5) * time.Millisecond)
+					continue
+				}
+				break
 			}
 		}
 	}()

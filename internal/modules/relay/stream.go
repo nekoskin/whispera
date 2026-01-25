@@ -519,11 +519,16 @@ func (s *Stream) readRelayUDP() {
 		s.udpConn.SetReadDeadline(time.Now().Add(300 * time.Second))
 		n, addr, err := s.udpConn.ReadFromUDP(buf[Headroom:])
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			if netErr, ok := err.(net.Error); ok && (netErr.Timeout() || netErr.Temporary()) {
 				continue
 			}
-			s.fsm.Event(EventError)
-			return
+			// Don't close immediately on other errors for UDP receive, just log and continue
+			// except for closed connection
+			if isClosedConnError(err) {
+				return
+			}
+			// Log error but continue scanning (ICMP errors shouldn't kill the relay)
+			continue
 		}
 
 		if n > 0 {
