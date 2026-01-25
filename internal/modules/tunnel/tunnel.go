@@ -1017,6 +1017,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 			m.handleReadError(mc, err)
 			return
 		}
+		// fmt.Printf("[DEBUG] Tunnel: Read Header: %x\n", header)
 
 		// 3. Parse Payload Length
 		// Format: [StreamID:2][Type:1][Flags:1][Length:4]
@@ -1098,15 +1099,13 @@ func (m *Manager) readLoop(mc *managedConn) {
 
 		// 4. Read Payload
 		needed := FrameHeaderSize + int(payloadLen)
-		var frameData []byte
-
-		// Use pool for standard sizes to avoid GC churn
-		if needed <= 66048 {
-			frameData = bufferPool.Get().([]byte)
-			frameData = frameData[:needed]
-		} else {
-			frameData = make([]byte, needed) // Fallback for huge/abnormal frames
-		}
+		// DISABLE POOL: Use safe allocation to prevent corruption
+		// if needed <= 66048 {
+		// 	frameData = bufferPool.Get().([]byte)
+		// 	frameData = frameData[:needed]
+		// } else {
+		frameData := make([]byte, needed)
+		// }
 
 		copy(frameData, header)
 
@@ -1198,11 +1197,10 @@ func (m *Manager) ReceivePacket() ([]byte, error) {
 	return packet, nil
 }
 
-// Recycle returns a buffer to the pool
+// Recycle indicates that the buffer is no longer needed.
+// With pool disabled, this is a no-op (let GC handle it).
 func (m *Manager) Recycle(buf []byte) {
-	if cap(buf) == 66048 {
-		bufferPool.Put(buf)
-	}
+	// bufferPool.Put(buf)
 }
 
 // Send sends data through the tunnel

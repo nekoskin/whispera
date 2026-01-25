@@ -305,6 +305,14 @@ func (m *Module) handleIncomingFrame(streamID uint16, fType byte, dp DataPacket,
 	case relay.FrameData, relay.FrameUDPData:
 		// Push DataPacket to channel (BLOCKING with Backpressure)
 		// We are now inside a Sharded Worker. Blocking here only stalls this shard (1/16th of streams).
+
+		// DEEP COPY Reversion: Detach payload from the underlying buffer
+		// This fixes memory safety issues if the underlying buffer is reused/recycled too early,
+		// and matches the original "append" behavior stability.
+		payloadCopy := make([]byte, len(dp.Payload))
+		copy(payloadCopy, dp.Payload)
+		dp.Payload = payloadCopy
+
 		select {
 		case stream.dataChan <- dp:
 			// Success
@@ -495,8 +503,9 @@ Loop:
 		// Use pooled buffer to avoid GC on every new connection
 		// Optimize MTU: Limit read size to prevent fragmentation/drops in tunnel
 		// Optimize MTU: Limit read size to prevent fragmentation/drops in tunnel
-		// Standard MTU 1500 - overheads = ~1350 is safe.
-		const safeMTU = 1350
+		// Optimize MTU: Use standard 32KB buffer.
+		// Small buffers (1350) cause too much fragmentation overhead.
+		const safeMTU = 32768
 		const headerSize = 8 // relay.HeaderSize
 
 		for {
@@ -590,11 +599,11 @@ Loop:
 				// Flow Control: Send WINDOW_UPDATE
 				if n > 0 {
 					pendingWindow += uint32(n)
-					if pendingWindow >= 65536 { // 64KB threshold
+					if pendingWindow >= 131072 { // 128KB threshold appropriate for high latency
 						// Create and send WindowUpdate frame
-						// We use a simple allocation here as it happens relatively infrequently (once per 64KB)
 						wf := relay.NewWindowUpdateFrame(streamID, pendingWindow)
 						if data, err := wf.Encode(); err == nil {
+							// Send synchronously. If this fails, we likely have bigger tunnel issues.
 							tunnel.Send(data)
 						}
 						pendingWindow = 0

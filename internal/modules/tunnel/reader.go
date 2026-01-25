@@ -15,14 +15,14 @@ func (dr *deobfuscatingReader) Read(p []byte) (int, error) {
 	// 1. Read raw data
 	n, err := dr.r.Read(p)
 	if n > 0 {
-		// 2. Deobfuscate in-place (if possible) or allocate
-		// We pass 'p[:n]' which contains the data
-		// 'Process' returns new slice usually.
+		// fmt.Printf("[DEBUG] DR: Read %d bytes from TCP\n", n)
+		// 2. Deobfuscate in-place
 		res, _, derr := dr.obf.Process(p[:n], interfaces.DirectionInbound)
 		if derr != nil {
+			// fmt.Printf("[ERROR] DR: Deobfuscation failed: %v\n", derr)
 			return 0, derr
 		}
-		// Copy back
+		// fmt.Printf("[DEBUG] DR: Decrypted %d bytes\n", len(res))
 		copy(p, res)
 		return len(res), err
 	}
