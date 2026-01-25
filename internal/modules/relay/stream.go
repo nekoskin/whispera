@@ -171,7 +171,7 @@ func (s *Stream) Connect(ctx context.Context) error {
 		// Check for Relay Mode (0.0.0.0 or ::)
 		if s.TargetAddr == "0.0.0.0" || s.TargetAddr == "::" {
 			// Unconnected UDP socket for Relay
-			conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: 443})
+			conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: 0})
 			if err != nil {
 				s.fsm.Event(EventConnectFail)
 				return err
@@ -457,11 +457,9 @@ func (s *Stream) readUDPFromTarget() {
 		}
 
 		if n > 0 {
-			// SAFETY CAP (Server Side): Trim large UDP packets (Jumbo/Probe) to 1200 bytes
-			// to prevent fragmentation/drops on the client tunnel link.
-			if n > 1200 {
-				n = 1200
-			}
+			// SAFETY CAP (Server Side): Removed for QUIC support
+			// QUIC requires ~1350-1500 bytes. Truncating to 1200 breaks it.
+			// if n > 1200 { n = 1200 }
 
 			s.bytesIn += uint64(n)
 			s.lastT = time.Now()
@@ -527,10 +525,8 @@ func (s *Stream) readRelayUDP() {
 		}
 
 		if n > 0 {
-			// SAFETY CAP (Server Side - Relay Mode): Trim large UDP packets (Jumbo/Probe)
-			if n > 1200 {
-				n = 1200
-			}
+			// SAFETY CAP (Server Side - Relay Mode): Removed for QUIC support
+			// if n > 1200 { n = 1200 }
 
 			s.bytesIn += uint64(n)
 			s.lastT = time.Now()
