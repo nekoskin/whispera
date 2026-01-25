@@ -131,7 +131,7 @@ type BandwidthLimiter struct {
 // NewVoIPQoS создает новый VoIP QoS модуль
 func NewVoIPQoS() *VoIPQoS {
 	return &VoIPQoS{
-		enabled:       true,
+		enabled:       false, // DISABLED: QoS causes 5000ms latency on Discord
 		priorityQueue: NewPriorityPacketQueue(1000, 500),
 		rtpDetector:   NewRTPDetector(),
 		jitterBuffer:  NewJitterBuffer(),
