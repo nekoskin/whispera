@@ -408,14 +408,9 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 		return writer.Write(encoded)
 	}
 
-	// READ BUFFER: Fixed size sliding window to prevent "append" allocations (Zero Copy)
-	// 128KB + 64KB headroom for read
-	const bufSize = 192 * 1024
-	packetBuf := make([]byte, bufSize)
-	bufOffset := 0 // Current write position in packetBuf
-
-	// Temp buffer for socket reads (before obfuscation/copy)
-	readBuf := make([]byte, 64*1024)
+	// Read buffer
+	buf := make([]byte, 64*1024)
+	var packetBuf []byte // Accumulator for partial frames
 
 	// Send immediate PONG to break potential deadlock
 	welcomeFrame := NewPongFrame()
@@ -427,7 +422,7 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 
 	for {
 		conn.SetReadDeadline(time.Now().Add(300 * time.Second)) // 5 min idle
-		n, err := conn.Read(readBuf)
+		n, err := conn.Read(buf)
 		if err != nil {
 			if err == io.EOF {
 				exitReason = "client disconnected (EOF)"
@@ -438,15 +433,15 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 			return
 		}
 
-		data := readBuf[:n]
+		data := buf[:n]
 
-		// DEBUG: Log first bytes
+		// DEBUG: Log first bytes of incoming data
 		if n >= 8 && s.config.Debug {
 			s.log.Debug("Tunnel data from %s: first 8 bytes = [%02x %02x %02x %02x %02x %02x %02x %02x]",
 				clientID, data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7])
 		}
 
-		// Check for TLS data (leftover) - on the FRESH read buffer
+		// Check for TLS data (leftover from masquerade handshake)
 		if n >= 5 && data[0] >= 0x14 && data[0] <= 0x17 && data[1] == 0x03 {
 			tlsLen := int(data[3])<<8 | int(data[4])
 			s.log.Warn("Detected TLS data from %s (type=0x%02x, len=%d), skipping...", clientID, data[0], tlsLen)
@@ -463,117 +458,104 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 			data = deobfuscated
 		}
 
-		// Sliding Window: Copy data to packetBuf
-		if bufOffset+len(data) > len(packetBuf) {
-			s.log.Warn("Buffer overflow from %s (offset=%d, len=%d), disconnecting", clientID, bufOffset, len(data))
-			return
-		}
-		copy(packetBuf[bufOffset:], data)
-		bufOffset += len(data)
+		// Append to accumulator
+		packetBuf = append(packetBuf, data...)
 
-		// Process frames from packetBuf
-		processed := 0
-		currentBuf := packetBuf[:bufOffset]
-
-		for len(currentBuf) >= HeaderSize {
+		// Process frames
+		for len(packetBuf) >= HeaderSize {
 			// Check for TLS data in accumulated buffer
-			if currentBuf[0] >= 0x14 && currentBuf[0] <= 0x17 && currentBuf[1] == 0x03 && len(currentBuf) >= 5 {
-				tlsLen := int(currentBuf[3])<<8 | int(currentBuf[4])
+			if packetBuf[0] >= 0x14 && packetBuf[0] <= 0x17 && packetBuf[1] == 0x03 && len(packetBuf) >= 5 {
+				tlsLen := int(packetBuf[3])<<8 | int(packetBuf[4])
 				skipLen := 5 + tlsLen
-				if skipLen <= len(currentBuf) {
+				if skipLen <= len(packetBuf) {
 					s.log.Warn("Skipping TLS record in buffer from %s (len=%d)", clientID, tlsLen)
-					processed += skipLen
-					currentBuf = currentBuf[skipLen:]
+					packetBuf = packetBuf[skipLen:]
 					continue
 				}
 				break // Wait for more data
 			}
 
-			// Check frame length
-			payloadLen := binary.BigEndian.Uint32(currentBuf[4:8])
+			// Check potential frame length
+			payloadLen := binary.BigEndian.Uint32(packetBuf[4:8])
 			frameSize := HeaderSize + int(payloadLen)
 
+			// Sanity check for frame size
 			if frameSize > MaxPayloadLen+HeaderSize {
 				s.log.Error("Frame too large from %s: %d", clientID, frameSize)
 				return
 			}
 
-			if len(currentBuf) < frameSize {
-				break // Wait for more data
+			if len(packetBuf) < frameSize {
+				// Wait for more data
+				break
 			}
 
-			// Extract frame (ZERO COPY: slice of packetBuf)
-			frameData := currentBuf[:frameSize]
+			// Extract frame data
+			frameData := packetBuf[:frameSize]
+			packetBuf = packetBuf[frameSize:] // Shift buffer
 
-			// Decode (ZERO COPY: uses slice)
-			fr, err := Decode(frameData)
+			f, err := Decode(frameData)
 			if err != nil {
 				s.log.Error("Frame decode error from %s: %v", clientID, err)
-				return
+				return // Protocol violation
 			}
 
-			// Handle Frame
-			switch fr.Type {
+			// Handle Frame via StreamManager
+			switch f.Type {
 			case FrameConnect:
-				go func(f *Frame) {
+				go func(fr *Frame) {
 					defer func() {
 						if r := recover(); r != nil {
 							s.log.Error("Panic in Connect handler: %v", r)
-							sendFrame(NewConnectFailFrame(f.StreamID, "Internal Error"))
+							sendFrame(NewConnectFailFrame(fr.StreamID, "Internal Error"))
 						}
 					}()
 
-					// Deep copy payload as the buffer WILL be compacted/overwritten
-					payloadCopy := make([]byte, len(f.Payload))
-					copy(payloadCopy, f.Payload)
-					f.Payload = payloadCopy
+					// Deep copy payload as the buffer is reused
+					payloadCopy := make([]byte, len(fr.Payload))
+					copy(payloadCopy, fr.Payload)
+					fr.Payload = payloadCopy // Swap with copy
 
-					connPayload, err := DecodeConnectPayload(f.Payload)
+					connPayload, err := DecodeConnectPayload(fr.Payload)
 					if err != nil {
-						sendFrame(NewConnectFailFrame(f.StreamID, "InvPayload: "+err.Error()))
+						sendFrame(NewConnectFailFrame(fr.StreamID, "InvPayload: "+err.Error()))
 						return
 					}
 					if connPayload.Protocol == ProtoUDP && !s.config.EnableUDP {
-						sendFrame(NewConnectFailFrame(f.StreamID, "UDP disabled"))
+						sendFrame(NewConnectFailFrame(fr.StreamID, "UDP disabled"))
 						return
 					}
-					if err := sm.HandleConnect(f.StreamID, connPayload, writer); err != nil {
-						s.log.Warn("Stream %d connect failed: %v", f.StreamID, err)
-						sendFrame(NewConnectFailFrame(f.StreamID, err.Error()))
+
+					if err := sm.HandleConnect(fr.StreamID, connPayload, writer); err != nil {
+						s.log.Warn("Stream %d connect failed: %v", fr.StreamID, err)
+						sendFrame(NewConnectFailFrame(fr.StreamID, err.Error()))
 					}
-				}(fr)
+				}(f)
 
 			case FrameData:
-				sm.HandleData(fr.StreamID, fr.Payload)
+				sm.HandleData(f.StreamID, f.Payload)
 
 			case FrameUDPData:
-				sm.HandleUDPData(fr.StreamID, fr.Payload)
+				sm.HandleUDPData(f.StreamID, f.Payload)
 
 			case FrameClose:
-				sm.HandleClose(fr.StreamID)
+				sm.HandleClose(f.StreamID)
 
 			case FramePing:
 				sendFrame(NewPongFrame())
 
 			case FrameWindowUpdate:
-				if len(fr.Payload) >= 4 {
-					increment := binary.BigEndian.Uint32(fr.Payload)
-					sm.HandleWindowUpdate(fr.StreamID, increment)
+				if len(f.Payload) >= 4 {
+					increment := binary.BigEndian.Uint32(f.Payload)
+					sm.HandleWindowUpdate(f.StreamID, increment)
 				}
 			}
-
-			// Advance
-			processed += frameSize
-			currentBuf = currentBuf[frameSize:]
 		}
 
-		// Compact buffer
-		if processed > 0 {
-			remaining := bufOffset - processed
-			if remaining > 0 {
-				copy(packetBuf, packetBuf[processed:bufOffset])
-			}
-			bufOffset = remaining
+		// Protection against buffer bloat attack
+		if len(packetBuf) > 80*1024*1024 {
+			s.log.Warn("Buffer overflow from %s, disconnecting", clientID)
+			return
 		}
 	}
 }

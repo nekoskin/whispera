@@ -171,7 +171,7 @@ func (s *Stream) Connect(ctx context.Context) error {
 		// Check for Relay Mode (0.0.0.0 or ::)
 		if s.TargetAddr == "0.0.0.0" || s.TargetAddr == "::" {
 			// Unconnected UDP socket for Relay
-			conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: 0})
+			conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: 443})
 			if err != nil {
 				s.fsm.Event(EventConnectFail)
 				return err
@@ -436,8 +436,7 @@ func (s *Stream) readUDPFromTarget() {
 		}
 
 		// ALLOC PER PACKET: Safe Zero-Copy for Async Writers
-		// OPTIMIZATION: Use smaller buffer (4KB) instead of 64KB since we cap at 1200 anyway
-		buf := make([]byte, Headroom+4096)
+		buf := make([]byte, Headroom+65535)
 
 		// Optimize: Use longer deadline and check for specific errors
 		s.udpConn.SetReadDeadline(time.Now().Add(5 * time.Minute)) // Keepalive is 30s-60s, so 5m is safe
@@ -515,8 +514,7 @@ func (s *Stream) readRelayUDP() {
 		}
 
 		// ALLOC PER PACKET: Safe Zero-Copy for Async Writers
-		// OPTIMIZATION: Use smaller buffer (4KB) instead of 64KB
-		buf := make([]byte, Headroom+4096)
+		buf := make([]byte, Headroom+65535)
 
 		s.udpConn.SetReadDeadline(time.Now().Add(300 * time.Second))
 		n, addr, err := s.udpConn.ReadFromUDP(buf[Headroom:])
