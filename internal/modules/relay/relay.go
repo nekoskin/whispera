@@ -365,10 +365,10 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 		if err := tcpConn.SetNoDelay(true); err != nil {
 			s.log.Debug("Failed to set NoDelay on tunnel: %v", err)
 		}
-		// Reduce buffers to prevent bufferbloat
-		// 64KB is enough for high throughput but small enough to keep queues short
-		_ = tcpConn.SetReadBuffer(64 * 1024)
-		_ = tcpConn.SetWriteBuffer(64 * 1024)
+		// Increase TCP buffers to 12MB to thoroughly match client capabilities
+		// 12MB allows for full utilization of gigabit links over high latency
+		_ = tcpConn.SetReadBuffer(12 * 1024 * 1024)
+		_ = tcpConn.SetWriteBuffer(12 * 1024 * 1024)
 		_ = tcpConn.SetKeepAlive(true)
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
