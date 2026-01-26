@@ -382,7 +382,7 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 		MaxStreamBuffer:      20 * 1024 * 1024, // 20MB (Ultra Aggressive buffering for 8K)
 		KeepAliveInterval:    4 * time.Second,  // Sync with client
 		KeepAliveTimeout:     60 * time.Second, // Sync with client
-		MaxConcurrentStreams: 8,
+		MaxConcurrentStreams: 256,
 	}
 
 	session, err := mux.Server(conn, muxCfg)

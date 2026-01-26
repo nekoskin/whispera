@@ -238,7 +238,7 @@ func (m *Manager) getMuxConfig() *mux.Config {
 		MaxStreamBuffer:      20 * 1024 * 1024,  // 20MB (Ultra Aggressive buffering for 8K)
 		KeepAliveInterval:    15 * time.Second,  // Relaxed KeepAlive
 		KeepAliveTimeout:     60 * time.Second,  // 60s timeout to survive lag spikes
-		MaxConcurrentStreams: 8,
+		MaxConcurrentStreams: 256,
 	}
 }
 
