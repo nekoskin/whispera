@@ -61,6 +61,7 @@ const (
 	TransportWebSocket TransportType = "websocket"
 	TransportXHTTP     TransportType = "xhttp"
 	TransportQUIC      TransportType = "quic"
+	TransportH2C       TransportType = "h2c"
 )
 
 // Transport defines the interface for network transports

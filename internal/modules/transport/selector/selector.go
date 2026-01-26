@@ -278,15 +278,17 @@ func (s *Selector) calculateScore(t interfaces.TransportType, m *TransportMetric
 		interfaces.TransportWebSocket: 0.8, // Looks like web traffic
 		interfaces.TransportXHTTP:     0.9, // Very stealthy
 		interfaces.TransportQUIC:      0.7, // Good but detectable
+		interfaces.TransportH2C:       0.8, // Mimics HTTP/2
 	}
 
 	// Latency scores (lower is better)
 	latencyScores := map[interfaces.TransportType]float64{
-		interfaces.TransportUDP:       1.0, // Fastest
-		interfaces.TransportQUIC:      0.9, // Very fast
-		interfaces.TransportTCP:       0.7, // Good
-		interfaces.TransportWebSocket: 0.6, // Overhead
-		interfaces.TransportXHTTP:     0.5, // More overhead
+		interfaces.TransportUDP:       1.0,  // Fastest
+		interfaces.TransportQUIC:      0.9,  // Very fast
+		interfaces.TransportTCP:       0.7,  // Good
+		interfaces.TransportWebSocket: 0.6,  // Overhead
+		interfaces.TransportXHTTP:     0.5,  // More overhead
+		interfaces.TransportH2C:       0.75, // Good efficiency
 	}
 
 	// Bandwidth scores
@@ -296,6 +298,7 @@ func (s *Selector) calculateScore(t interfaces.TransportType, m *TransportMetric
 		interfaces.TransportTCP:       0.85,
 		interfaces.TransportWebSocket: 0.75,
 		interfaces.TransportXHTTP:     0.7,
+		interfaces.TransportH2C:       0.8,
 	}
 
 	// Reliability scores
@@ -305,6 +308,7 @@ func (s *Selector) calculateScore(t interfaces.TransportType, m *TransportMetric
 		interfaces.TransportWebSocket: 0.9,
 		interfaces.TransportXHTTP:     0.85,
 		interfaces.TransportUDP:       0.7, // Less reliable
+		interfaces.TransportH2C:       0.95,
 	}
 
 	// Calculate weighted score

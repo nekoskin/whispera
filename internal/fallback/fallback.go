@@ -31,6 +31,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		TransportPriority: []interfaces.TransportType{
+			interfaces.TransportH2C,
 			interfaces.TransportWebSocket,
 			interfaces.TransportXHTTP,
 			interfaces.TransportTCP,

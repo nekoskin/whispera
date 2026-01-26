@@ -83,6 +83,7 @@ type StreamConfig struct {
 	// Deprecated: Kept for backward compatibility
 	Reality PhantomStreamConfig `yaml:"reality,omitempty" json:"reality,omitempty"`
 	WS      WebSocketConfig     `yaml:"ws" json:"ws"`
+	H2C     H2CStreamConfig     `yaml:"h2c" json:"h2c"`
 }
 
 type TLSConfig struct {
@@ -98,6 +99,10 @@ type PhantomStreamConfig struct {
 }
 
 type WebSocketConfig struct {
+	Path string `yaml:"path" json:"path"`
+}
+
+type H2CStreamConfig struct {
 	Path string `yaml:"path" json:"path"`
 }
 

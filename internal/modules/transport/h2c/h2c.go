@@ -18,6 +18,7 @@ import (
 	"golang.org/x/net/http2/h2c"
 
 	"whispera/internal/core/base"
+	"whispera/internal/core/interfaces"
 	"whispera/internal/logger"
 )
 
@@ -95,6 +96,12 @@ type Transport struct {
 	// Active connections
 	streams sync.Map // streamID -> *H2CStream
 
+	// Client for Dial
+	client *H2CClient
+
+	// Server-side connection acceptance
+	acceptChan chan net.Conn
+
 	// Stats
 	totalConns   uint64
 	activeConns  int32
@@ -121,16 +128,29 @@ func New(cfg *Config) (*Transport, error) {
 		return nil, err
 	}
 
+	client, err := NewClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	t := &Transport{
-		Module: base.NewModule(ModuleName, ModuleVersion, nil),
-		config: cfg,
+		Module:     base.NewModule(ModuleName, ModuleVersion, nil),
+		config:     cfg,
+		client:     client,
+		acceptChan: make(chan net.Conn, 100),
 	}
 
 	return t, nil
 }
 
-// Listen starts the h2c server
-func (t *Transport) Listen(ctx context.Context) error {
+// Listen starts the h2c server on the given address
+func (t *Transport) Listen(addr string) error {
+	t.config.ListenAddr = addr
+	return t.listenInternal(context.Background())
+}
+
+// listenInternal starts the listener (internal helper)
+func (t *Transport) listenInternal(ctx context.Context) error {
 	h2s := &http2.Server{
 		MaxConcurrentStreams: t.config.MaxConcurrentStreams,
 		// InitialWindowSize not directly available, handled by transport
@@ -168,6 +188,8 @@ func (t *Transport) Listen(ctx context.Context) error {
 
 // handleRequest handles HTTP/2 requests
 func (t *Transport) handleRequest(w http.ResponseWriter, r *http.Request) {
+	// Simple check to ensure it's H2C if possible, though handler is h2c wrapped.
+
 	// Check path
 	if r.URL.Path != t.config.Path {
 		http.NotFound(w, r)
@@ -195,37 +217,61 @@ func (t *Transport) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	log.Debug("New h2c connection from %s", r.RemoteAddr)
 
-	// Create bidirectional stream
-	ctx := r.Context()
+	// Wrap as net.Conn and send to acceptChan
+	// We need a pipe to write to the response writer from the net.Conn.Write
+	// And we read from r.Body in net.Conn.Read
 
-	// Read from request body, write to response
-	done := make(chan struct{}, 2)
+	// Create a pipe for the writer
+	// The 'remote' side writes to 'pr', we read from 'pr' and write to 'w'
+	pr, pw := io.Pipe()
 
-	// Read from client
-	go func() {
-		defer func() { done <- struct{}{} }()
-		buf := make([]byte, 32*1024)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
+	conn := &h2cConn{
+		reader: r.Body,
+		writer: pw,
+		addr:   r.RemoteAddr,
+	}
 
-			n, err := r.Body.Read(buf)
-			if n > 0 {
-				atomic.AddUint64(&t.bytesIn, uint64(n))
-				// Process incoming data
-				// In a real implementation, this would be relayed
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
+	select {
+	case t.acceptChan <- conn:
+	default:
+		log.Warn("Accept channel full, dropping connection from %s", r.RemoteAddr)
+		return
+	}
 
-	// Wait for completion
-	<-done
+	// Keep handler alive and relay data from pipe to response
+	// Copy from pipe reader 'pr' to 'w'
+	// This blocks until 'conn' is closed or error
+	buf := make([]byte, 32*1024)
+	io.CopyBuffer(w, pr, buf)
+}
+
+// Interface implementation
+
+// Dial connects to a target
+func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
+	if t.client == nil {
+		return nil, fmt.Errorf("client not initialized")
+	}
+	return t.client.Dial(ctx, addr)
+}
+
+// Accept returns the next accepted connection
+func (t *Transport) Accept() (net.Conn, error) {
+	conn, ok := <-t.acceptChan
+	if !ok {
+		return nil, fmt.Errorf("transport closed")
+	}
+	return conn, nil
+}
+
+// Type returns the transport type
+func (t *Transport) Type() interfaces.TransportType {
+	return interfaces.TransportH2C
+}
+
+// Close closes the transport
+func (t *Transport) Close() error {
+	return t.Stop()
 }
 
 // Client-side functionality
@@ -385,27 +431,40 @@ func (u *H2CUpgrader) Upgrade(w http.ResponseWriter, r *http.Request) (net.Conn,
 
 // Transport interface implementation
 
-func (t *Transport) Init(ctx context.Context) error {
-	return nil
-}
-
-func (t *Transport) Start(ctx context.Context) error {
-	if t.config.ListenAddr != "" {
-		return t.Listen(ctx)
+func (t *Transport) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
+	if err := t.Module.Init(ctx, cfg); err != nil {
+		return err
+	}
+	if h2cCfg, ok := cfg.(*Config); ok {
+		t.config = h2cCfg
 	}
 	return nil
 }
 
-func (t *Transport) Stop(ctx context.Context) error {
+func (t *Transport) Start() error {
+	if err := t.Module.Start(); err != nil {
+		return err
+	}
+	if t.config.ListenAddr != "" {
+		return t.listenInternal(context.Background())
+	}
+	return nil
+}
+
+func (t *Transport) Stop() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if t.server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return t.server.Shutdown(ctx)
+		t.server.Shutdown(ctx)
 	}
-	return nil
+	t.server = nil // Clear server so we don't try to shutdown again
+
+	close(t.acceptChan) // Close accept channel
+
+	return t.Module.Stop()
 }
 
 func (t *Transport) Stats() map[string]interface{} {
@@ -416,4 +475,16 @@ func (t *Transport) Stats() map[string]interface{} {
 		"bytes_in":           atomic.LoadUint64(&t.bytesIn),
 		"bytes_out":          atomic.LoadUint64(&t.bytesOut),
 	}
+}
+
+// Factory creates h2c transport modules
+func Factory(cfg interface{}) (interfaces.Module, error) {
+	var config *Config
+	if c, ok := cfg.(*Config); ok {
+		config = c
+	} else {
+		// Try to parse from map if needed, or use default
+		config = DefaultConfig()
+	}
+	return New(config)
 }

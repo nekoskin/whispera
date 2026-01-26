@@ -35,6 +35,7 @@ import (
 	"whispera/internal/modules/relay"
 	"whispera/internal/modules/router"
 	"whispera/internal/modules/session"
+	h2c_transport "whispera/internal/modules/transport/h2c"
 	"whispera/internal/modules/transport/tcp"
 	"whispera/internal/modules/transport/udp"
 	ws "whispera/internal/modules/transport/websocket"
@@ -250,6 +251,60 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		}
 	}
 
+	// H2C Special Handling
+	if network == "h2c" {
+		h2cConfig := &h2c_transport.Config{
+			ListenAddr:           listenAddr,
+			Path:                 "/", // Default path
+			MaxConcurrentStreams: 1000,
+		}
+		// Customize path if provided in headers/args? For now default.
+
+		h2cTrans, err := h2c_transport.New(h2cConfig)
+		if err != nil {
+			listener.Close()
+			return fmt.Errorf("failed to create h2c transport: %w", err)
+		}
+
+		// Close original listener as h2c module creates its own
+		listener.Close()
+
+		if err := h2cTrans.Listen(listenAddr); err != nil {
+			return fmt.Errorf("failed to listen h2c on %s: %w", listenAddr, err)
+		}
+
+		// Store transport? For stopping, we might need a map of transports.
+		// For now, we only support stopping listeners in activeListeners for TCP/Phantom.
+		// TODO: Add support for stopping H2C.
+
+		log.Printf("✅ [Dynamic] Inbound %s listening on %s (H2C)", inbound.Tag, listenAddr)
+
+		go func() {
+			defer func() {
+				// Cleanup
+				h2cTrans.Close()
+				log.Printf("⏹ [Dynamic] Stopped inbound %s (H2C)", inbound.Tag)
+			}()
+
+			for {
+				conn, err := h2cTrans.Accept()
+				if err != nil {
+					log.Printf("⚠ [Dynamic] H2C Accept error on %s: %v", inbound.Tag, err)
+					// If error is permanent, break?
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+				// Route to relay
+				if globalRelay != nil {
+					go globalRelay.ServeTunnel(conn, nil) // H2C is cleartext/inside TLS usually, handled by H2C module decoding
+				} else {
+					conn.Close()
+				}
+			}
+		}()
+		return nil
+	}
+
 	// Store listener
 	activeListeners[inbound.Tag] = listener
 
@@ -421,6 +476,7 @@ func registerFactories() {
 	registry.GlobalFactoryRegistry.RegisterFactory("metrics.collector", metricscollector.Factory)
 	registry.GlobalFactoryRegistry.RegisterFactory("api.server", apiserver.Factory)
 	registry.GlobalFactoryRegistry.RegisterFactory("phantom.handler", phantom.Factory)
+	registry.GlobalFactoryRegistry.RegisterFactory("transport.h2c", h2c_transport.Factory)
 }
 
 func createModules(manager *lifecycle.Manager) error {

@@ -22,6 +22,7 @@ import (
 	"whispera/internal/modules/killswitch"
 	"whispera/internal/modules/phantom"
 	asnbypass "whispera/internal/modules/transport/asn_bypass"
+	h2c_transport "whispera/internal/modules/transport/h2c"
 	quic_transport "whispera/internal/modules/transport/quic"
 	"whispera/internal/mux"
 	"whispera/internal/obfuscation/russian"
@@ -679,6 +680,30 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 		}
 	} else {
 		log.Warn("Failed to resolve UDP4 address: %v", resolveErr)
+	}
+
+	// 1.5 H2C Fallback (Multiplexed TCP)
+	// Try H2C if ServerAddrTCP is set. It uses the same TCP port usually.
+	if m.config.ServerAddrTCP != "" {
+		log.Info("Connecting via H2C to %s", m.config.ServerAddrTCP)
+		h2cConfig := &h2c_transport.Config{
+			ListenAddr: ":0", // Not used for client
+			Path:       "/",
+		}
+		h2cTrans, err := h2c_transport.New(h2cConfig)
+		if err != nil {
+			log.Warn("Failed to init H2C transport: %v", err)
+		} else {
+			// Extract host/port from ServerAddrTCP
+			// H2C Dial expects "host:port"
+			conn, err = h2cTrans.Dial(ctx, m.config.ServerAddrTCP)
+			if err == nil {
+				m.isTransportSecure = false // H2C is cleartext (though often inside VPN/Tunnel)
+				log.Info("H2C connection established to %s", m.config.ServerAddrTCP)
+				return conn, nil
+			}
+			log.Warn("H2C dial failed: %v", err)
+		}
 	}
 
 	// 2. TCP Fallback
