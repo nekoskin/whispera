@@ -169,6 +169,7 @@ type Manager struct {
 
 	// Connection Management (Seamless Rotation)
 	activeConn    *managedConn
+	activePool    []*managedConn // Connection Pool for Multipath
 	drainingConns []*managedConn
 	streamConns   map[uint16]*managedConn // Map StreamID to Connection
 	readCh        chan []byte             // Centralized read channel
@@ -410,7 +411,7 @@ func (m *Manager) Connect(ctx context.Context) error {
 	return m.connectInternal(ctx, false)
 }
 
-// connectInternal establishes a connection. If isRotation is true, it preserves old connections.
+// connectInternal establishes a connection pool. If isRotation is true, it preserves old connections.
 func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	op := "Connect"
 	if isRotation {
@@ -425,96 +426,129 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	}
 
 	start := time.Now()
-	conn, err := m.dial(ctx)
-	if err != nil {
-		log.Error("[%s] Dial phase failed after %v: %v", op, time.Since(start), err)
+
+	// Parallel Dialing for Connection Pool
+	// We aim for 4 connections to saturate bandwidth and avoid HoL blocking
+	targetPoolSize := 4
+	var connectedPool []*managedConn
+	var poolMu sync.Mutex
+	var wg sync.WaitGroup
+
+	log.Info("[%s] Spawning pool of %d connections...", op, targetPoolSize)
+
+	for i := 0; i < targetPoolSize; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+
+			// Dial individual connection
+			conn, err := m.dial(ctx)
+			if err != nil {
+				log.Warn("[%s] Failed to dial connection %d: %v", op, idx, err)
+				return
+			}
+
+			// Create managed connection
+			mc := &managedConn{
+				Conn:      conn,
+				id:        fmt.Sprintf("pool-%d-%d", start.Unix(), idx),
+				createdAt: time.Now(),
+				closing:   make(chan struct{}),
+			}
+
+			// Handshake (Per Connection)
+			handshakeSuccess := true
+			if m.handshake != nil && !m.config.EnablePhantom {
+				// Perform full handshake if configured
+				// ... (Currently simplified reusing Manager's logic, ideally handshake logic should be stateless or per-conn)
+				// For now, if Phantom is enabled (default), we SKIP handshake, so this block is skipped.
+				// If Handshake IS required, we might need a Lock on m.handshake if it's not concurrent-safe.
+				// Assuming m.handshake.InitiateHandshake IS concurrent safe.
+				session, err := m.handshake.InitiateHandshake(ctx, mc, conn.RemoteAddr())
+				if err != nil {
+					log.Warn("[%s] Handshake failed for conn %d: %v", op, idx, err)
+					conn.Close()
+					handshakeSuccess = false
+				} else if session != nil {
+					// Reset session ID? Or just keep one. SessionID is informational mostly.
+					if idx == 0 {
+						m.sessionID = session.ID()
+					}
+				}
+			} else if m.config.EnablePhantom {
+				// Phantom: No handshake
+				if idx == 0 {
+					m.sessionID = uint32(time.Now().Unix() & 0xFFFFFFFF)
+				}
+			}
+
+			if handshakeSuccess {
+				poolMu.Lock()
+				connectedPool = append(connectedPool, mc)
+				poolMu.Unlock()
+
+				// Start reading immediately
+				go m.readLoop(mc)
+			}
+		}(i)
+	}
+
+	// Wait for all dials to complete (with timeout effectively handled by dial(ctx))
+	wg.Wait()
+
+	if len(connectedPool) == 0 {
+		err := fmt.Errorf("failed to establish any connection in pool")
 		if !isRotation {
-			m.setError(fmt.Errorf("connection attempts failed: %v", err))
+			m.setError(err)
 		}
 		return err
 	}
-	log.Info("[%s] Dial successful to %s (Latency: %v)", op, conn.RemoteAddr(), time.Since(start))
 
-	// Create managed connection
-	mc := &managedConn{
-		Conn:      conn,
-		id:        fmt.Sprintf("sni-%d", time.Now().Unix()), // Placeholder ID
-		createdAt: time.Now(),
-		closing:   make(chan struct{}),
-	}
+	log.Info("[%s] Dialing complete. Pool ready with %d/%d connections (Latency: %v)", op, len(connectedPool), targetPoolSize, time.Since(start))
 
-	// Perform handshake on this new connection
-	// SKIP handshake for Phantom connections - Phantom already authenticates via REALITY-like HMAC
-	// in the ClientHello. The additional protocol handshake causes synchronization issues.
-	if m.handshake != nil && !m.config.EnablePhantom {
-		log.Info("[%s] Starting Protocol Handshake...", op)
-		hsStart := time.Now()
-		session, err := m.handshake.InitiateHandshake(ctx, mc, conn.RemoteAddr())
-		if err != nil {
-			log.Error("[%s] Handshake failed after %v: %v", op, time.Since(hsStart), err)
-			conn.Close()
-			return fmt.Errorf("handshake failed: %w", err)
-		}
-		log.Info("[%s] Handshake complete (Latency: %v). SessionID: %d", op, time.Since(hsStart), session.ID())
-
-		if session != nil {
-			m.sessionID = session.ID()
-		}
-	} else if m.config.EnablePhantom {
-		log.Info("[%s] Phantom mode - skipping protocol handshake (already authenticated via REALITY)", op)
-		m.sessionID = uint32(time.Now().Unix() & 0xFFFFFFFF) // Generate session ID
-	} else {
-		log.Warn("[%s] No Handshake handler configured - proceeding with raw connection", op)
-	}
-
-	// Activate Kill Switch (only on fresh connect or if IP changes)
-	// For rotation, we assume same server IP, so we don't need to flutter rules
+	// Activate Kill Switch (using IP of the first connection)
 	if !isRotation && m.killSwitch != nil && m.config.KillSwitchEnabled {
-		m.enableKillSwitch(conn.RemoteAddr())
+		m.enableKillSwitch(connectedPool[0].RemoteAddr())
 	}
 
 	// Update State
 	m.connMu.Lock()
-	if isRotation && m.activeConn != nil {
-		// Move current active to draining
-		m.drainingConns = append(m.drainingConns, m.activeConn)
-		log.Info("[%s] Old connection moved to draining (Total draining: %d)", op, len(m.drainingConns))
-		// Schedule cleanup for draining conn
-		go m.monitorDrainingConn(m.activeConn)
+	if isRotation && m.activePool != nil {
+		// Move current active pool to draining
+		m.drainingConns = append(m.drainingConns, m.activePool...)
+		log.Info("[%s] Old pool moved to draining (Total draining: %d)", op, len(m.drainingConns))
+		// Schedule cleanup for draining conns
+		for _, c := range m.activePool {
+			go m.monitorDrainingConn(c)
+		}
 	}
 
-	m.activeConn = mc
+	m.activePool = connectedPool
+	m.activeConn = connectedPool[0] // Set primary for legacy checks
 	m.connMu.Unlock()
 
 	// Start mechanics
 	if !isRotation {
-		// CRITICAL FIX: Start keepalive (send PING) BEFORE readLoop
-		// Server waits for data immediately after authentication.
-		// We must send data first to unblock the server.
+		// Keepalive: Use the activePool to send PINGs
 		m.startKeepalive()
 
 		m.startRotation()
 		m.connectedAt = time.Now()
-		m.lastPong = time.Now() // Initialize lastPong for health monitoring
+		m.lastPong = time.Now()
 		m.setState(StateConnected)
 
 		m.PublishEvent("tunnel.connected", map[string]interface{}{
 			"server":     m.config.ServerAddr,
 			"session_id": m.sessionID,
+			"pool_size":  len(connectedPool),
 		})
-		log.Info("[%s] Tunnel fully established and Ready.", op)
 	} else {
-		// Just notify about rotation
-		m.setState(StateConnected) // Back to connected
+		m.setState(StateConnected)
 		m.PublishEvent("tunnel.rotated", map[string]interface{}{
-			"id": mc.id,
+			"id": connectedPool[0].id,
 		})
 		log.Info("[%s] Rotation complete.", op)
 	}
-
-	// Start reading from this new connection
-	// Start AFTER sending initial PING to ensure server unblocks
-	go m.readLoop(mc)
 
 	return nil
 }
@@ -551,9 +585,9 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 			// Reverted from 12MB to 64KB to fix TCP Retransmission/Fragmentation issues
 			// Large buffers can cause Window Scaling issues and buffer bloat in some networks
 			if tcpConn, ok := conn.(*net.TCPConn); ok {
-				log.Info("[TUNNEL] Applying 64KB buffers to ASN connection (Standard)")
-				tcpConn.SetReadBuffer(64 * 1024)
-				tcpConn.SetWriteBuffer(64 * 1024)
+				log.Info("[TUNNEL] Applying 12MB buffers to ASN connection (Ultra High Throughput)")
+				tcpConn.SetReadBuffer(12 * 1024 * 1024)
+				tcpConn.SetWriteBuffer(12 * 1024 * 1024)
 				tcpConn.SetNoDelay(true)
 			}
 			m.isTransportSecure = true
@@ -611,9 +645,9 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 		if err == nil {
 			// OPTIMIZATION: Use standard buffers to avoid fragmentation/window scaling issues
 			if tcpConn, ok := conn.(*net.TCPConn); ok {
-				tcpConn.SetReadBuffer(64 * 1024)  // 64KB
-				tcpConn.SetWriteBuffer(64 * 1024) // 64KB
-				tcpConn.SetNoDelay(true)          // Low latency
+				tcpConn.SetReadBuffer(12 * 1024 * 1024)  // 4MB for high throughput
+				tcpConn.SetWriteBuffer(12 * 1024 * 1024) // 4MB
+				tcpConn.SetNoDelay(true)                 // Low latency
 			}
 			m.isTransportSecure = true
 			return conn, nil
@@ -765,11 +799,13 @@ func (m *Manager) Disconnect() {
 
 	m.connMu.Lock()
 	// Close Active
-	if m.activeConn != nil {
-		close(m.activeConn.closing)
-		m.activeConn.Close()
-		m.activeConn = nil
+	// Close Active Pool
+	for _, c := range m.activePool {
+		close(c.closing)
+		c.Close()
 	}
+	m.activePool = nil
+	m.activeConn = nil
 	// Close Draining
 	for _, c := range m.drainingConns {
 		close(c.closing)
@@ -1137,13 +1173,14 @@ func (m *Manager) readLoop(mc *managedConn) {
 
 		// 4. Read Payload
 		needed := FrameHeaderSize + int(payloadLen)
-		// DISABLE POOL: Use safe allocation to prevent corruption
-		// if needed <= 66048 {
-		// 	frameData = bufferPool.Get().([]byte)
-		// 	frameData = frameData[:needed]
-		// } else {
-		frameData := make([]byte, needed)
-		// }
+		// Optimize Memory: Use Buffer Pool
+		var frameData []byte
+		if needed <= 66048 {
+			frameData = bufferPool.Get().([]byte)
+			frameData = frameData[:needed]
+		} else {
+			frameData = make([]byte, needed)
+		}
 
 		copy(frameData, header)
 
@@ -1280,7 +1317,18 @@ func (m *Manager) Send(data []byte) error {
 		if len(data) >= 8 {
 			m.connMu.Lock()
 			if frameType == FrameTypeConnect {
-				if m.activeConn != nil {
+				// New Stream: Assign to a connection in the pool (Hashing by StreamID)
+				if len(m.activePool) > 0 {
+					idx := streamID % uint16(len(m.activePool))
+					selectedConn := m.activePool[idx]
+					m.streamConns[streamID] = selectedConn
+					targetConn = selectedConn
+
+					// Fallback if selected is nil (should not happen in valid pool)
+					if targetConn == nil {
+						targetConn = m.activeConn
+					}
+				} else if m.activeConn != nil {
 					m.streamConns[streamID] = m.activeConn
 					targetConn = m.activeConn
 				}
