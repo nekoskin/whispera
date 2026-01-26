@@ -1,3 +1,8 @@
+## License
+
+This project is licensed under the GNU AGPL v3.0.
+Commercial use without compliance with AGPL is prohibited.
+
 It is important to note that this project is intended for technically advanced users only and is not recommended for general use.
 
 # Whispera
@@ -38,17 +43,3 @@ After installation, you can manage the server using the `whispera-mgmt` command:
 - `whispera-mgmt config`   - Edit configuration
 
 Configuration is stored in `/etc/whispera/config.yaml`.
-
-## Manual Build
-If you prefer to build from source manually:
-```bash
-# Build
-go build -o whispera-server ./cmd/server
-go build -o whispera-client ./cmd/client
-
-# Run Server
-./whispera-server -listen :51820
-
-# Run Client
-./whispera-client -server your-server.com:51820
-```
