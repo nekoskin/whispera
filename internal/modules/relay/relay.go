@@ -380,7 +380,7 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 		MaxFrameSize:         65535,
 		MaxReceiveBuffer:     512 * 1024 * 1024,
 		MaxStreamBuffer:      20 * 1024 * 1024, // 20MB (Ultra Aggressive buffering for 8K)
-		KeepAliveInterval:    4 * time.Second,  // Sync with client
+		KeepAliveInterval:    2 * time.Second,  // Aggressive KeepAlive to prevent CWND collapse
 		KeepAliveTimeout:     60 * time.Second, // Sync with client
 		MaxConcurrentStreams: 256,
 	}

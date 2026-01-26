@@ -236,7 +236,7 @@ func (m *Manager) getMuxConfig() *mux.Config {
 		MaxFrameSize:         65535,             // 64KB - 1 (Max allowed by SMUX uint16)
 		MaxReceiveBuffer:     512 * 1024 * 1024, // 512MB (Prevent session locking with multiple 20MB streams)
 		MaxStreamBuffer:      20 * 1024 * 1024,  // 20MB (Ultra Aggressive buffering for 8K)
-		KeepAliveInterval:    15 * time.Second,  // Relaxed KeepAlive
+		KeepAliveInterval:    2 * time.Second,   // Aggressive KeepAlive to prevent CWND collapse
 		KeepAliveTimeout:     60 * time.Second,  // 60s timeout to survive lag spikes
 		MaxConcurrentStreams: 256,
 	}
