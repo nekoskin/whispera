@@ -628,9 +628,9 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 			// Reverted from 12MB to 64KB to fix TCP Retransmission/Fragmentation issues
 			// Large buffers can cause Window Scaling issues and buffer bloat in some networks
 			if tcpConn, ok := conn.(*net.TCPConn); ok {
-				log.Info("[TUNNEL] Applying 20MB buffers to ASN connection (Ultra High Throughput)")
-				tcpConn.SetReadBuffer(20 * 1024 * 1024)
-				tcpConn.SetWriteBuffer(20 * 1024 * 1024)
+				log.Info("[TUNNEL] Using OS default buffers with NoDelay optimization")
+				// tcpConn.SetReadBuffer(20 * 1024 * 1024) // REMOVED: Let OS handle Window Scaling
+				// tcpConn.SetWriteBuffer(20 * 1024 * 1024) // REMOVED
 				tcpConn.SetNoDelay(true)
 			}
 			m.isTransportSecure = true
@@ -688,9 +688,9 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 		if err == nil {
 			// OPTIMIZATION: Use standard buffers to avoid fragmentation/window scaling issues
 			if tcpConn, ok := conn.(*net.TCPConn); ok {
-				tcpConn.SetReadBuffer(20 * 1024 * 1024)  // 20MB for high throughput
-				tcpConn.SetWriteBuffer(20 * 1024 * 1024) // 20MB
-				tcpConn.SetNoDelay(true)                 // Low latency
+				// tcpConn.SetReadBuffer(20 * 1024 * 1024)  // REMOVED: Let OS handle Window Scaling
+				// tcpConn.SetWriteBuffer(20 * 1024 * 1024) // REMOVED
+				tcpConn.SetNoDelay(true) // Low latency
 			}
 			m.isTransportSecure = true
 			return conn, nil

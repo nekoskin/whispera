@@ -367,8 +367,8 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 		}
 		// Increase TCP buffers to 20MB to thoroughly match client capabilities
 		// 20MB allows for full utilization of gigabit links over high latency
-		_ = tcpConn.SetReadBuffer(20 * 1024 * 1024)
-		_ = tcpConn.SetWriteBuffer(20 * 1024 * 1024)
+		// _ = tcpConn.SetReadBuffer(20 * 1024 * 1024) // REMOVED: Let OS handle Window Scaling
+		// _ = tcpConn.SetWriteBuffer(20 * 1024 * 1024) // REMOVED
 		_ = tcpConn.SetKeepAlive(true)
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
@@ -377,7 +377,7 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 	// The client is now configured to ALWAYS use SMUX. We must accept it.
 	// Note: We use default config for now or a tuned one similar to client.
 	muxCfg := &mux.Config{
-		MaxFrameSize:         65535,
+		MaxFrameSize:         16000, // Aligned with Client (16000 bytes)
 		MaxReceiveBuffer:     512 * 1024 * 1024,
 		MaxStreamBuffer:      20 * 1024 * 1024, // 20MB (Ultra Aggressive buffering for 8K)
 		KeepAliveInterval:    2 * time.Second,  // Aggressive KeepAlive to prevent CWND collapse
