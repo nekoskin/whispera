@@ -438,7 +438,8 @@ func (s *Stream) readUDPFromTarget() {
 		}
 
 		// ALLOC PER PACKET: Safe Zero-Copy for Async Writers
-		buf := make([]byte, Headroom+65535)
+		// Limit to 4096 to prevent local write errors on client
+		buf := make([]byte, Headroom+4096)
 
 		// Optimize: Use longer deadline and check for specific errors
 		s.udpConn.SetReadDeadline(time.Now().Add(5 * time.Minute)) // Keepalive is 30s-60s, so 5m is safe
@@ -514,7 +515,10 @@ func (s *Stream) readRelayUDP() {
 		}
 
 		// ALLOC PER PACKET: Safe Zero-Copy for Async Writers
-		buf := make([]byte, Headroom+65535)
+		// Limit to 4096 bytes to prevent sending Jumbo frames that cause WSAEMSGSIZE on client
+		// Windows loopback often dislikes > 1500-2000 bytes UDP.
+		// Discord SRTP is usually < 1400 bytes.
+		buf := make([]byte, Headroom+4096)
 
 		s.udpConn.SetReadDeadline(time.Now().Add(300 * time.Second))
 		n, addr, err := s.udpConn.ReadFromUDP(buf[Headroom:])

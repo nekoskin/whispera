@@ -655,6 +655,10 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 	}
 	defer udpListener.Close()
 
+	// Optimize UDP buffers for Voice/Video
+	udpListener.SetReadBuffer(4 * 1024 * 1024)
+	udpListener.SetWriteBuffer(4 * 1024 * 1024)
+
 	localAddr := udpListener.LocalAddr().(*net.UDPAddr)
 
 	// Send success reply with relay address
@@ -811,7 +815,7 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 
 				_, err := udpListener.WriteToUDP(pkt, addr)
 				if err != nil {
-					stdlog.Printf("[SOCKS5] UDP Write Error to %v: %v", addr, err)
+					stdlog.Printf("[SOCKS5] UDP Write Error to %v (len=%d): %v", addr, len(pkt), err)
 				}
 				tunnel.Recycle(dp.Raw)
 
