@@ -558,10 +558,11 @@ Loop:
 		// Use pooled buffer to avoid GC on every new connection
 		// Optimize MTU: Limit read size to prevent fragmentation/drops in tunnel
 		// Optimize MTU: Limit read size to prevent fragmentation/drops in tunnel
-		// Optimize MTU: For local TCP connections (Browser <-> Client), use 64KB chunks.
-		// Tiny chunks (1280) kill throughput for video streams. 64KB matches standard TCP window scales.
-		const safeMTU = 64 * 1024
-		const headerSize = 8 // relay.HeaderSize
+		// Optimize MTU: Safer limit for TLS Record (16384 bytes).
+		// We leave ~384 bytes for ANY Headers (SMUX, SOCKS, IPv6 overhead).
+		// Payload: 16000 bytes. Safe & Stable.
+		const safeMTU = 16000
+		const headerSize = 16 // relay.HeaderSize
 
 		for {
 			// ZERO-COPY POOLED BUFFER
