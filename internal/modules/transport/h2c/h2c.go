@@ -153,8 +153,8 @@ func (t *Transport) Listen(addr string) error {
 func (t *Transport) listenInternal(ctx context.Context) error {
 	h2s := &http2.Server{
 		MaxConcurrentStreams:         t.config.MaxConcurrentStreams,
-		MaxReadFrameSize:             t.config.MaxFrameSize, // Match config
-		PermitProhibitedCipherSuites: true,                  // Allow cleartext ciphers if needed
+		MaxReadFrameSize:             1 << 20, // 1MB - Optimized for Windows stack performance
+		PermitProhibitedCipherSuites: true,    // Allow cleartext ciphers if needed
 		IdleTimeout:                  120 * time.Second,
 		MaxUploadBufferPerConnection: 256 * 1024 * 1024, // 256MB - Maximized for 500Mbps+
 		MaxUploadBufferPerStream:     64 * 1024 * 1024,  // 64MB
