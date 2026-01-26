@@ -287,7 +287,7 @@ func (d *Dialer) dialDirect(ctx context.Context, network, addr string) (net.Conn
 
 	// Optimize socket buffers for high throughput and low latency
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		_ = tcpConn.SetNoDelay(true)                // Disable Nagle's algo (Lower Latency for small packets/Voice)
+		_ = tcpConn.SetNoDelay(true)                 // Disable Nagle's algo (Lower Latency for small packets/Voice)
 		_ = tcpConn.SetReadBuffer(12 * 1024 * 1024)  // 4MB Read Buffer (Higher Speed)
 		_ = tcpConn.SetWriteBuffer(12 * 1024 * 1024) // 4MB Write Buffer (Higher Speed)
 	}
@@ -456,7 +456,8 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 	// The server doesn't proxy any real TLS response - it's pure authentication.
 
 	// Small delay to ensure server processes ClientHello before we send VPN frames
-	time.Sleep(50 * time.Millisecond)
+	// OPTIMIZATION: Removed artificial delay for faster connection establishment
+	// time.Sleep(50 * time.Millisecond)
 
 	// Reset deadline
 	tcpConn.SetReadDeadline(time.Time{})

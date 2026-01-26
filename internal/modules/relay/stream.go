@@ -51,10 +51,10 @@ type Stream struct {
 	RetryCount int
 
 	dialer proxy.Dialer
-	
+
 	// ОПТИМИЗАЦИЯ: Адаптивный таймаут на основе RTT истории
 	adaptiveTimeout *AdaptiveTimeout
-	
+
 	// ОПТИМИЗАЦИЯ: 0-RTT поддержка (отправка данных до завершения handshake)
 	earlyDataBuf []byte // Buffer для данных до подключения
 	earlyDataMu  sync.Mutex
@@ -66,19 +66,19 @@ type Stream struct {
 // NewStream creates a new stream
 func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, writer ResponseWriter, dialer proxy.Dialer) *Stream {
 	s := &Stream{
-		ID:         id,
-		Protocol:   proto,
-		Profile:    profile,
-		TargetAddr: addr,
-		TargetPort: port,
-		writer:     writer,
-		sendWindow: 2 * 1024 * 1024, // 2MB initial window
-		incoming:   make(chan []byte, 16384),
-		outgoing:   make(chan []byte, 16384),
-		closeChan:  make(chan struct{}),
-		created:    time.Now(),
-		lastT:      time.Now(),
-		dialer:     dialer,
+		ID:              id,
+		Protocol:        proto,
+		Profile:         profile,
+		TargetAddr:      addr,
+		TargetPort:      port,
+		writer:          writer,
+		sendWindow:      2 * 1024 * 1024, // 2MB initial window
+		incoming:        make(chan []byte, 16384),
+		outgoing:        make(chan []byte, 16384),
+		closeChan:       make(chan struct{}),
+		created:         time.Now(),
+		lastT:           time.Now(),
+		dialer:          dialer,
 		adaptiveTimeout: NewAdaptiveTimeout(100), // Track RTT history with 100-sample buffer
 		earlyDataBuf:    make([]byte, 0, 65536),  // 64KB buffer for early data (0-RTT)
 	}
@@ -115,7 +115,7 @@ func (s *Stream) dialWithHappyEyeballs(ctx context.Context, target string) (net.
 	// На быстрых сетях может быть 100-500ms
 	baseTimeout := 2 * time.Second
 	dialTimeout := s.adaptiveTimeout.GetTimeoutFor(baseTimeout)
-	
+
 	// Убедимся, что таймаут разумный (100ms-2.5s)
 	if dialTimeout < 100*time.Millisecond {
 		dialTimeout = 100 * time.Millisecond
@@ -136,7 +136,7 @@ func (s *Stream) dialWithHappyEyeballs(ctx context.Context, target string) (net.
 	connChan := make(chan net.Conn, 2)
 	errChan := make(chan error, 2)
 	startTime := time.Now()
-	
+
 	// Попытка IPv6 (первая, но с проверкой IPv4 через 250ms)
 	if ipv6 != nil {
 		go func() {
@@ -151,9 +151,9 @@ func (s *Stream) dialWithHappyEyeballs(ctx context.Context, target string) (net.
 		}()
 	}
 
-	// ОПТИМИЗАЦИЯ: YouTube - уменьшенное стагерирование (100ms вместо 250ms)
-	// Быстрая попытка на обоих адресах параллельно
-	time.Sleep(100 * time.Millisecond)
+	// ОПТИМИЗАЦИЯ: YouTube - Start BOTH immediately (Parallel Race)
+	// Удаляем задержку (stagger), чтобы IPv4 стартовал мгновенно, если IPv6 тормозит.
+	// time.Sleep(100 * time.Millisecond)
 
 	if ipv4 != nil {
 		go func() {
@@ -182,6 +182,7 @@ func (s *Stream) dialWithHappyEyeballs(ctx context.Context, target string) (net.
 
 	return nil, fmt.Errorf("both IPv4 and IPv6 connection attempts failed")
 }
+
 // SetWriter sets the response writer for the stream
 func (s *Stream) SetWriter(w ResponseWriter) {
 	s.mu.Lock()
@@ -252,8 +253,8 @@ func (s *Stream) Connect(ctx context.Context) error {
 			}
 			tcpConn.SetReadBuffer(bufferSize)
 			tcpConn.SetWriteBuffer(bufferSize)
-			tcpConn.SetNoDelay(true)           // УЛУЧШЕНИЕ: Disable Nagle's для низкой latency
-			tcpConn.SetKeepAlive(true)         // Enable TCP Keep-Alive
+			tcpConn.SetNoDelay(true)                     // УЛУЧШЕНИЕ: Disable Nagle's для низкой latency
+			tcpConn.SetKeepAlive(true)                   // Enable TCP Keep-Alive
 			tcpConn.SetKeepAlivePeriod(15 * time.Second) // УЛУЧШЕНИЕ: Оптимизированный keepalive период
 		}
 
@@ -278,8 +279,8 @@ func (s *Stream) Connect(ctx context.Context) error {
 				s.fsm.Event(EventConnectFail)
 				return err
 			}
-			conn.SetReadBuffer(4 * 1024 * 1024)
-			conn.SetWriteBuffer(4 * 1024 * 1024)
+			conn.SetReadBuffer(32 * 1024 * 1024)
+			conn.SetWriteBuffer(32 * 1024 * 1024)
 			s.udpConn = conn
 
 			if err := s.fsm.Event(EventConnectOK); err != nil {
@@ -302,8 +303,8 @@ func (s *Stream) Connect(ctx context.Context) error {
 				s.fsm.Event(EventConnectFail)
 				return err
 			}
-			conn.SetReadBuffer(4 * 1024 * 1024)
-			conn.SetWriteBuffer(4 * 1024 * 1024)
+			conn.SetReadBuffer(32 * 1024 * 1024)
+			conn.SetWriteBuffer(32 * 1024 * 1024)
 			s.udpConn = conn
 
 			if err := s.fsm.Event(EventConnectOK); err != nil {
@@ -892,13 +893,14 @@ func isClosedConnError(err error) bool {
 	}
 	return strings.Contains(err.Error(), "use of closed network connection")
 }
+
 // ОПТИМИЗАЦИЯ: 0-RTT ранние данные
 // bufferEarlyData буферизует данные, отправленные до подключения
 // Эти данные будут отправлены сразу после завершения handshake (0-RTT)
 func (s *Stream) bufferEarlyData(data []byte) {
 	s.earlyDataMu.Lock()
 	defer s.earlyDataMu.Unlock()
-	
+
 	// Буферизуем данные (максимум 64KB) - избегаем append для预allocated буфера
 	availSpace := cap(s.earlyDataBuf) - len(s.earlyDataBuf)
 	if len(data) <= availSpace {
@@ -933,27 +935,27 @@ func (s *Stream) bufferEarlyData(data []byte) {
 func (s *Stream) flushEarlyData() {
 	s.earlyDataMu.Lock()
 	defer s.earlyDataMu.Unlock()
-	
+
 	if len(s.earlyDataBuf) == 0 {
 		return
 	}
-	
+
 	// Отправляем буферизованные данные напрямую (zero-copy через slice reference)
 	s.mu.RLock()
 	conn := s.conn
 	s.mu.RUnlock()
-	
+
 	if conn == nil {
 		return
 	}
-	
+
 	// Отправляем данные напрямую в соединение (не через Write который может буферизовать)
 	_, err := conn.Write(s.earlyDataBuf)
 	if err != nil {
 		// Log error но не падаем - соединение все равно установлено
 		fmt.Printf("[0-RTT] Early data flush error: %v\n", err)
 	}
-	
+
 	s.bytesOut += uint64(len(s.earlyDataBuf))
 	s.earlyDataBuf = s.earlyDataBuf[:0] // Reset buffer
 }

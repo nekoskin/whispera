@@ -71,22 +71,20 @@ func (c *ObfuscatedConn) Write(b []byte) (n int, err error) {
 	}
 
 	dataToWrite := b
-	var delay time.Duration
-
 	// Obfuscate if obfuscator is set
 	if c.obfuscator != nil {
-		obfuscated, d, err := c.obfuscator.Process(b, interfaces.DirectionOutbound)
+		obfuscated, _, err := c.obfuscator.Process(b, interfaces.DirectionOutbound)
 		if err != nil {
 			return 0, err
 		}
 		dataToWrite = obfuscated
-		delay = d
 	}
 
 	// Apply timing delay for traffic analysis evasion
-	if delay > 0 {
-		time.Sleep(delay)
-	}
+	// OPTIMIZATION: Removed timing delays for maximum throughput
+	// if delay > 0 {
+	// 	time.Sleep(delay)
+	// }
 
 	// Write obfuscated data
 	n, err = c.Conn.Write(dataToWrite)

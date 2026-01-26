@@ -208,7 +208,9 @@ func (m *Module) Stop() error {
 	// Close all streams
 	m.streamsMu.Lock()
 	for _, stream := range m.streams {
-		close(stream.closeChan)
+		stream.closeOnce.Do(func() {
+			close(stream.closeChan)
+		})
 	}
 	m.streams = make(map[uint16]*ClientStream)
 	m.streamsMu.Unlock()
@@ -706,8 +708,8 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 	defer udpListener.Close()
 
 	// Optimize UDP buffers for Voice/Video
-	udpListener.SetReadBuffer(4 * 1024 * 1024)
-	udpListener.SetWriteBuffer(4 * 1024 * 1024)
+	udpListener.SetReadBuffer(32 * 1024 * 1024)
+	udpListener.SetWriteBuffer(32 * 1024 * 1024)
 
 	localAddr := udpListener.LocalAddr().(*net.UDPAddr)
 
@@ -729,7 +731,7 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 		ID:         streamID,
 		TargetAddr: "0.0.0.0",
 		TargetPort: 0,
-		dataChan:   make(chan DataPacket, 10000), // Optimized: 10000 packets for UDP
+		dataChan:   make(chan DataPacket, 20000), // Optimized: 20000 packets for High-Speed UDP
 		closeChan:  make(chan struct{}),
 	}
 
