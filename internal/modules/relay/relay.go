@@ -377,10 +377,10 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 	// The client is now configured to ALWAYS use SMUX. We must accept it.
 	// Note: We use default config for now or a tuned one similar to client.
 	muxCfg := &mux.Config{
-		MaxFrameSize:         131072,
+		MaxFrameSize:         65535,
 		MaxReceiveBuffer:     32 * 1024 * 1024,
-		MaxStreamBuffer:      4 * 1024 * 1024,  // 4MB (Critical for 4K video)
-		KeepAliveInterval:    15 * time.Second, // Sync with client
+		MaxStreamBuffer:      12 * 1024 * 1024, // 12MB (Aggressive buffering for 4K/8K)
+		KeepAliveInterval:    4 * time.Second,  // Sync with client
 		KeepAliveTimeout:     60 * time.Second, // Sync with client
 		MaxConcurrentStreams: 8,
 	}
