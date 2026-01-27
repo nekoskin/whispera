@@ -1446,7 +1446,61 @@ func (m *Manager) Send(data []byte) error {
 		conn := targetConn
 		m.connMu.RUnlock()
 
-		n, err := conn.Write(data)
+		// PACING OPTIMIZATION: Adaptive Write Sizing
+		// Dynamically adjust chunk size based on network pushback (write latency).
+		// Fast network -> Larger chunks (save CPU). Slow network -> Smaller chunks (smoother flow).
+
+		total := len(data)
+		n := 0
+		var writeErr error
+		var err error // Fix: Declare err for scope visibility
+
+		// Initial chunk size strategy
+		currentChunkSize := 16384  // Start with 16KB (Safe default)
+		const minChunkSize = 4096  // 4KB (Low latency floor)
+		const maxChunkSize = 65536 // 64KB (High throughput ceiling)
+
+		if total > currentChunkSize {
+			start := 0
+			for start < total {
+				// Calculate chunk boundary
+				end := start + currentChunkSize
+				if end > total {
+					end = total
+				}
+
+				chunk := data[start:end]
+
+				// Measure Write Latency
+				tStart := time.Now()
+				wn, wErr := conn.Write(chunk)
+				duration := time.Since(tStart)
+
+				n += wn
+				if wErr != nil {
+					writeErr = wErr
+					break
+				}
+
+				// Adaptive Logic:
+				// If write was "instant" (< 200us), network buffer is empty -> Increase chunk size (Boost CPU)
+				// If write blocked (> 1ms), network buffer is full -> Decrease chunk size (Polite pacing)
+				if duration < 200*time.Microsecond {
+					if currentChunkSize < maxChunkSize {
+						currentChunkSize *= 2
+					}
+				} else if duration > 1*time.Millisecond {
+					if currentChunkSize > minChunkSize {
+						currentChunkSize /= 2
+					}
+				}
+
+				start += wn
+			}
+			err = writeErr
+		} else {
+			n, err = conn.Write(data)
+		}
 		if err != nil {
 			lastErr = err
 
