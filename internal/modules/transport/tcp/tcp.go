@@ -37,7 +37,7 @@ func DefaultConfig() *Config {
 		WriteTimeout: 30 * time.Second,
 		KeepAlive:    30 * time.Second,
 		MaxConns:     10000,
-		BufferSize:   32 * 1024, // 32KB
+		BufferSize:   4 * 1024 * 1024, // 4MB to match high-bandwidth links (Raw TCP optimization)
 	}
 }
 
@@ -171,6 +171,17 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 		return nil, err
 	}
 
+	// Optimize Raw TCP Socket
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		// Disable Nagle's algorithm for lower latency
+		tcpConn.SetNoDelay(true)
+		// Maximize OS buffers for throughput
+		if t.config.BufferSize > 0 {
+			tcpConn.SetReadBuffer(t.config.BufferSize)
+			tcpConn.SetWriteBuffer(t.config.BufferSize)
+		}
+	}
+
 	// Track connection
 	atomic.AddInt64(&t.connCount, 1)
 	atomic.AddInt64(&t.activeConns, 1)
@@ -201,6 +212,17 @@ func (t *Transport) Accept() (net.Conn, error) {
 	if err != nil {
 		atomic.AddUint64(&t.acceptErrors, 1)
 		return nil, err
+	}
+
+	// Optimize Raw TCP Socket
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		// Disable Nagle's algorithm
+		tcpConn.SetNoDelay(true)
+		// Maximize OS buffers
+		if t.config.BufferSize > 0 {
+			tcpConn.SetReadBuffer(t.config.BufferSize)
+			tcpConn.SetWriteBuffer(t.config.BufferSize)
+		}
 	}
 
 	// Check max connections

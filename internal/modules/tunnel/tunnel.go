@@ -1374,7 +1374,7 @@ func (m *Manager) Send(data []byte) error {
 	}
 
 	if m.obfuscator != nil && !m.isTransportSecure {
-		obfuscated, delay, err := m.obfuscator.Process(data, interfaces.DirectionOutbound)
+		obfuscated, _, err := m.obfuscator.Process(data, interfaces.DirectionOutbound)
 		if err != nil {
 			return fmt.Errorf("outbound obfuscation failed: %w", err)
 		}
@@ -1383,11 +1383,15 @@ func (m *Manager) Send(data []byte) error {
 		}
 		// OPTIMIZATION: Skip delay for DATA frames to maximize throughput
 		// Jitter is only needed for handshake/control frames to defeat traffic analysis
-		if delay > 0 && delay < 5*time.Second {
-			if frameType != 0x04 && frameType != 0x08 && frameType != 0x09 { // Skip for DATA, UDP_DATA, RAW_PACKET
-				time.Sleep(delay)
+		// OPTIMIZATION: Jitter logic REMOVED to maximize throughput (500Mbps+)
+		// Artificial delays cause packet queues to build up during high load
+		/*
+			if delay > 0 && delay < 5*time.Second {
+				if frameType != 0x04 && frameType != 0x08 && frameType != 0x09 { // Skip for DATA, UDP_DATA, RAW_PACKET
+					time.Sleep(delay)
+				}
 			}
-		}
+		*/
 	}
 
 	// Retry loop for reconnect scenarios
