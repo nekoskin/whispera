@@ -237,6 +237,16 @@ func (wp *WorkerPool) SubmitAsync(work func()) {
 	}
 }
 
+// TrySubmit submits work asynchronously, returning false immediately if queue is full
+func (wp *WorkerPool) TrySubmit(work func()) bool {
+	select {
+	case wp.workChan <- work:
+		return true
+	default:
+		return false
+	}
+}
+
 // Stop stops the worker pool
 func (wp *WorkerPool) Stop() {
 	wp.mu.Lock()

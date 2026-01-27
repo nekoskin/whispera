@@ -315,13 +315,19 @@ func (t *Transport) readLoop() {
 			continue
 		}
 
-		// Submit to worker pool
+		// Submit to worker pool (Non-blocking)
 		// We pass the SLICE (buf[:n]) to the handler
 		// And return the backing array (buf) to the pool after processing
-		t.workerPool.SubmitAsync(func() {
+		submitted := t.workerPool.TrySubmit(func() {
 			t.handlePacket(buf[:n], addr)
 			t.bufferPool.Put(buf)
 		})
+
+		if !submitted {
+			// Queue full - drop packet to maintain high throughput for new data
+			t.metrics.Increment("queue_full_drops")
+			t.bufferPool.Put(buf) // Return buffer immediately since worker won't process it
+		}
 	}
 }
 
