@@ -45,6 +45,7 @@ const (
 	FrameUDPData      uint8 = 0x08 // UDP data (for DNS etc)
 	FrameRawPacket    uint8 = 0x09 // Raw IP packet (TCP/UDP/ICMP/etc from TUN)
 	FrameWindowUpdate uint8 = 0x0A // Flow control window update
+	FramePadding      uint8 = 0x0B // Padding frame (Adaptive Traffic Shaping)
 )
 
 // Frame flags

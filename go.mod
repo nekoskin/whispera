@@ -25,6 +25,8 @@ replace (
 require (
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
+	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/klauspost/reedsolomon v1.13.0 
 	github.com/kr/text v0.1.0 // indirect
 	github.com/pion/dtls/v2 v2.2.7 // indirect
 	github.com/pion/logging v0.2.2 // indirect
