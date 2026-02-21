@@ -1,0 +1,175 @@
+package killswitch
+
+import (
+	"fmt"
+	"net"
+	"os/exec"
+	"strings"
+	"sync"
+)
+
+const (
+	chainName = "WHISPERA_KILLSWITCH"
+)
+
+type LinuxKillSwitch struct {
+	mu          sync.Mutex
+	rulesActive bool
+	savedRules  string
+}
+func NewPlatformImpl() (Platform, error) {
+	return &LinuxKillSwitch{}, nil
+}
+func (l *LinuxKillSwitch) Name() string {
+	return "linux"
+}
+
+func (l *LinuxKillSwitch) IsSupported() bool {
+	cmd := exec.Command("iptables", "-L", "-n")
+	err := cmd.Run()
+	return err == nil
+}
+
+func (l *LinuxKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, allowDNS bool, allowedIPs []net.IP) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := l.saveCurrentRules(); err != nil {
+		log.Warn("Failed to save current iptables rules: %v", err)
+	}
+	if err := l.createChain(); err != nil {
+		return fmt.Errorf("failed to create chain: %w", err)
+	}
+	l.runIPTables("-F", chainName)
+	if err := l.runIPTables("-A", chainName, "-i", "lo", "-j", "ACCEPT"); err != nil {
+		return fmt.Errorf("failed to allow loopback: %w", err)
+	}
+	if err := l.runIPTables("-A", chainName, "-o", "lo", "-j", "ACCEPT"); err != nil {
+		return fmt.Errorf("failed to allow loopback output: %w", err)
+	}
+	if err := l.runIPTables("-A", chainName, "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"); err != nil {
+		return fmt.Errorf("failed to allow established: %w", err)
+	}
+	vpnIP := vpnServerIP.String()
+	if err := l.runIPTables("-A", chainName, "-d", vpnIP, "-j", "ACCEPT"); err != nil {
+		return fmt.Errorf("failed to allow VPN outbound: %w", err)
+	}
+	if err := l.runIPTables("-A", chainName, "-s", vpnIP, "-j", "ACCEPT"); err != nil {
+		return fmt.Errorf("failed to allow VPN inbound: %w", err)
+	}
+	if allowLAN {
+		lanRanges := []string{
+			"10.0.0.0/8",
+			"172.16.0.0/12",
+			"192.168.0.0/16",
+			"169.254.0.0/16",
+		}
+		for _, cidr := range lanRanges {
+			if err := l.runIPTables("-A", chainName, "-d", cidr, "-j", "ACCEPT"); err != nil {
+				log.Warn("Failed to add LAN rule for %s: %v", cidr, err)
+			}
+			if err := l.runIPTables("-A", chainName, "-s", cidr, "-j", "ACCEPT"); err != nil {
+				log.Warn("Failed to add LAN rule for %s: %v", cidr, err)
+			}
+		}
+	}
+	if allowDNS {
+		if err := l.runIPTables("-A", chainName, "-p", "udp", "--dport", "53", "-j", "ACCEPT"); err != nil {
+			log.Warn("Failed to add DNS UDP rule: %v", err)
+		}
+		if err := l.runIPTables("-A", chainName, "-p", "tcp", "--dport", "53", "-j", "ACCEPT"); err != nil {
+			log.Warn("Failed to add DNS TCP rule: %v", err)
+		}
+	}
+	for _, ip := range allowedIPs {
+		ipStr := ip.String()
+		if err := l.runIPTables("-A", chainName, "-d", ipStr, "-j", "ACCEPT"); err != nil {
+			log.Warn("Failed to add custom IP rule %s: %v", ipStr, err)
+		}
+		if err := l.runIPTables("-A", chainName, "-s", ipStr, "-j", "ACCEPT"); err != nil {
+			log.Warn("Failed to add custom IP rule %s: %v", ipStr, err)
+		}
+	}
+	tunInterfaces := []string{"tun0", "tun1", "tap0", "tap1", "wg0", "wg1"}
+	for _, iface := range tunInterfaces {
+		l.runIPTables("-A", chainName, "-i", iface, "-j", "ACCEPT")
+		l.runIPTables("-A", chainName, "-o", iface, "-j", "ACCEPT")
+	}
+	if err := l.runIPTables("-A", chainName, "-j", "DROP"); err != nil {
+		return fmt.Errorf("failed to add drop rule: %w", err)
+	}
+	if err := l.runIPTables("-I", "INPUT", "1", "-j", chainName); err != nil {
+		return fmt.Errorf("failed to insert INPUT rule: %w", err)
+	}
+	if err := l.runIPTables("-I", "OUTPUT", "1", "-j", chainName); err != nil {
+		return fmt.Errorf("failed to insert OUTPUT rule: %w", err)
+	}
+	if err := l.runIPTables("-I", "FORWARD", "1", "-j", chainName); err != nil {
+		log.Warn("Failed to insert FORWARD rule: %v", err)
+	}
+
+	l.rulesActive = true
+	log.Info("Linux iptables kill switch rules activated")
+	return nil
+}
+
+func (l *LinuxKillSwitch) Disable() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.runIPTables("-D", "INPUT", "-j", chainName)
+	l.runIPTables("-D", "OUTPUT", "-j", chainName)
+	l.runIPTables("-D", "FORWARD", "-j", chainName)
+	l.runIPTables("-F", chainName)
+	l.runIPTables("-X", chainName)
+
+	l.rulesActive = false
+	log.Info("Linux iptables kill switch rules removed")
+	if err := l.restoreRules(); err != nil {
+		log.Warn("Failed to restore original iptables rules: %v", err)
+	}
+
+	return nil
+}
+func (l *LinuxKillSwitch) IsActive() (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.rulesActive, nil
+}
+func (l *LinuxKillSwitch) Cleanup() error {
+	return l.Disable()
+}
+func (l *LinuxKillSwitch) runIPTables(args ...string) error {
+	cmd := exec.Command("iptables", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("iptables %s failed: %v, output: %s", strings.Join(args, " "), err, string(output))
+	}
+	return nil
+}
+
+func (l *LinuxKillSwitch) createChain() error {
+	cmd := exec.Command("iptables", "-L", chainName, "-n")
+	if err := cmd.Run(); err != nil {
+		if err := l.runIPTables("-N", chainName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func (l *LinuxKillSwitch) saveCurrentRules() error {
+	cmd := exec.Command("iptables-save")
+	output, err := cmd.Output()
+	if err != nil {
+		return err
+	}
+	l.savedRules = string(output)
+	return nil
+}
+func (l *LinuxKillSwitch) restoreRules() error {
+	if l.savedRules == "" {
+		return nil
+	}
+
+	cmd := exec.Command("iptables-restore")
+	cmd.Stdin = strings.NewReader(l.savedRules)
+	return cmd.Run()
+}

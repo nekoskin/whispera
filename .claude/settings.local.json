@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(7z l:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(\"/c/Program Files/7-Zip/7z.exe\" l /c/Whispera-test/extracted/assets.zip)",
+      "Bash(\"/c/Program Files/7-Zip/7z.exe\" t /c/Whispera-test/extracted/test.gz)",
+      "Bash(cargo --version:*)",
+      "Bash(powershell -ExecutionPolicy Bypass -File:*)",
+      "Bash(winget install Rustlang.Rustup)",
+      "Bash(export PATH=\"/c/Users/Admin/.cargo/bin:/c/Program Files/nodejs:$PATH\")",
+      "Bash(node:*)",
+      "Bash(npm:*)",
+      "Bash(cargo check:*)"
+    ]
+  }
+}

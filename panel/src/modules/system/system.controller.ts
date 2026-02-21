@@ -1,0 +1,51 @@
+import { Controller, Get, Post, Headers, Res, HttpStatus } from '@nestjs/common';
+import type { Response } from 'express';
+import { SystemService } from './system.service';
+
+@Controller()
+export class SystemController {
+    constructor(private readonly systemService: SystemService) { }
+
+    @Get('api/system/info')
+    async getSystemInfo(@Headers('authorization') auth: string, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const info = await this.systemService.getSystemInfo(token);
+            return res.json(info);
+        } catch {
+            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch system info' });
+        }
+    }
+
+    @Get('api/stats')
+    async getStats(@Headers('authorization') auth: string, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const stats = await this.systemService.getStats(token);
+            return res.json(stats);
+        } catch {
+            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch stats' });
+        }
+    }
+
+    @Post('api/system/reload')
+    async reloadConfig(@Headers('authorization') auth: string, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            await this.systemService.reloadConfig(token);
+            return res.json({ success: true, message: 'Config reloaded' });
+        } catch {
+            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to reload config' });
+        }
+    }
+
+    @Get('api/health')
+    async getHealth(@Res() res: Response) {
+        try {
+            const health = await this.systemService.getHealth();
+            return res.json(health);
+        } catch {
+            return res.status(HttpStatus.SERVICE_UNAVAILABLE).json({ status: 'unavailable' });
+        }
+    }
+}

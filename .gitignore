@@ -1,0 +1,89 @@
+# Binaries
+*.exe
+*.msi
+*.deb
+*.dmg
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/server
+/client
+!/internal/server/
+
+
+# Tauri / Frontend
+whisp/
+
+# Build output
+build/
+
+# Logs
+*.log
+# logs/ (Commented out to allow src/modules/logs/)
+/logs/
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+NUL
+
+# Test data
+test_*
+test-*
+test.*
+
+# CSV data files
+*.csv
+!ml_engine/**/*.csv
+!ml_engine/production_data/**/*.csv
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Build artifacts
+bin/
+obj/
+obj/
+*.cache
+coverage.out
+coverage.html
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Go
+vendor/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+
+# Data directories
+data/
+metrics/
+!internal/metrics/
+reports/
+
