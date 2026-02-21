@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whispera Admin</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/css/style.css">
+    <link rel="stylesheet" href="/css/custom-bg.css">
+    <link rel="stylesheet" href="/css/standard-ui.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/postprocessing/Pass.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+    <script>
+        window.addEventListener('load', () => {
+            if (typeof THREE === 'undefined') {
+                alert("CRITICAL: Three.js failed to load. Check your internet connection or CDN permissions.");
+            } else {
+                console.log("Three.js Core Loaded Successfully");
+            }
+        });
+    </script>
+</head>
+
+<body>
+    <div class="bg-effects">
+        <canvas id="city-canvas"></canvas>
+        <div class="bg-mesh">
+            <div class="blob blob-1"></div>
+            <div class="blob blob-2"></div>
+            <div class="blob blob-3"></div>
+        </div>
+
+        <div class="bg-city-lights">
+            <div class="city-glow glow-cyan"></div>
+            <div class="city-glow glow-magenta"></div>
+            <div class="city-glow glow-yellow"></div>
+        </div>
+        <div class="bg-grid-animated"></div>
+        <div class="bg-circuits">
+            <svg id="circuit-svg" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid slice">
+                <path class="circuit-path" d="M0,200 L200,200 L250,250 L400,250 L450,300 L600,300" />
+                <path class="circuit-path" d="M1000,800 L800,800 L750,750 L600,750 L550,700 L400,700" />
+                <path class="circuit-path" d="M100,0 L100,100 L150,150 L150,300" />
+                <path class="circuit-path" d="M900,1000 L900,900 L850,850 L850,700" />
+                <path class="circuit-path" d="M300,1000 L300,900 L350,850 L500,850" />
+                <path class="circuit-path" d="M700,0 L700,100 L650,150 L500,150" />
+                <path class="circuit-path" d="M0,500 L100,500 L150,450 L300,450 L350,400" />
+                <path class="circuit-path" d="M1000,300 L900,300 L850,350 L700,350 L650,400" />
+                <path class="circuit-path" d="M500,0 L500,100 L550,150 L700,150" />
+                <path class="circuit-path" d="M500,1000 L500,900 L450,850 L300,850" />
+            </svg>
+        </div>
+        <div class="bg-rain"></div>
+        <div class="bg-fog"></div>
+        <div class="energy-arc" style="top: 20%; left: 15%; animation: arcSpark 5s infinite 2s;"></div>
+        <div class="energy-arc" style="bottom: 30%; right: 10%; animation: arcSpark 8s infinite 4s;"></div>
+        <div class="bg-scanlines"></div>
+        <div class="bg-noise"></div>
+    </div>
+
+    <div id="login-screen" class="screen active">
+        <div class="cyber-card">
+            <div class="cyber-card-inner"></div>
+            <div class="login-container">
+                <div class="login-header">
+                    <h1 class="cyber-logo-text flicker">Whispera</h1>
+                    <p data-i18n="common.login_desc">Management panel</p>
+                </div>
+                <form id="login-form" class="login-form" onsubmit="event.preventDefault(); app.handleLogin();">
+                    <div class="form-group">
+                        <label for="username" data-i18n="common.login_username">Логин</label>
+                        <input type="text" id="username" name="username" required placeholder="admin">
+                    </div>
+                    <div class="form-group">
+                        <label for="password" data-i18n="common.login_password">Пароль</label>
+                        <input type="password" id="password" name="password" required placeholder="••••••••">
+                    </div>
+                    <button type="submit" class="btn-cyber btn-block">
+                        <i class="fas fa-sign-in-alt"></i> <span data-i18n="common.login_btn">Войти</span>
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div id="main-app" class="screen">
+        <nav class="sidebar">
+            <div class="sidebar-header">
+                <span class="cyber-logo-text">Whispera</span>
+            </div>
+            <ul class="nav-menu">
+                <li class="nav-item active" data-page="dashboard">
+                    <i class="fas fa-chart-line"></i>
+                    <span data-i18n="nav.dashboard">Дашборд</span>
+                </li>
+                <li class="nav-item" data-page="users">
+                    <i class="fas fa-users"></i>
+                    <span data-i18n="nav.users">Пользователи</span>
+                </li>
+                <li class="nav-item" data-page="sessions">
+                    <i class="fas fa-network-wired"></i>
+                    <span data-i18n="nav.sessions">Сессии</span>
+                </li>
+                <li class="nav-item" data-page="inbounds">
+                    <i class="fas fa-door-open"></i>
+                    <span data-i18n="nav.inbounds">Входящие</span>
+                </li>
+                <li class="nav-item" data-page="outbounds">
+                    <i class="fas fa-server"></i>
+                    <span data-i18n="nav.outbounds">Исходящие</span>
+                </li>
+                <li class="nav-item" data-page="routing">
+                    <i class="fas fa-route"></i>
+                    <span data-i18n="nav.routing">Маршрутизация</span>
+                </li>
+                <li class="nav-item" data-page="subscriptions">
+                    <i class="fas fa-rss"></i>
+                    <span data-i18n="nav.subscriptions">Подписки</span>
+                </li>
+                <li class="nav-item" data-page="adblock">
+                    <i class="fas fa-ban"></i>
+                    <span data-i18n="nav.adblock">Блокировщик</span>
+                </li>
+                <li class="nav-item" data-page="settings">
+                    <i class="fas fa-cog"></i>
+                    <span data-i18n="nav.settings">Настройки</span>
+                </li>
+                <li class="nav-item" data-page="logs">
+                    <i class="fas fa-file-alt"></i>
+                    <span data-i18n="nav.logs">Логи</span>
+                </li>
+            </ul>
+            <div class="sidebar-footer">
+                <button id="logout-btn" class="btn btn-ghost">
+                    <i class="fas fa-sign-out-alt"></i> <span data-i18n="nav.logout">Выход</span>
+                </button>
+            </div>
+        </nav>
+
+        <main class="content">
+            <header class="top-bar">
+                <div class="breadcrumbs">
+                    <span class="bg-crumb" data-i18n="common.admin">Admin</span>
+                    <i class="fas fa-chevron-right" style="font-size: 12px;"></i>
+                    <span id="page-title" class="current-page" data-i18n="page.dashboard.title">Дашборд</span>
+                </div>
+                <div class="top-actions">
+                    <button id="btn-notifications" class="btn btn-icon">
+                        <i class="fas fa-bell"></i>
+                    </button>
+                    <div style="position: relative;">
+                        <button id="btn-profile" class="btn btn-icon">
+                            <i class="fas fa-user-circle"></i>
+                        </button>
+                        <div id="profile-dropdown" class="dropdown-menu">
+                            <div class="dropdown-header">
+                                <span class="user-name">Admin User</span>
+                                <span class="user-role" data-i18n="common.role_admin">Administrator</span>
+                            </div>
+                            <div class="dropdown-divider"></div>
+                            <button class="dropdown-item" id="settings-btn-dropdown">
+                                <i class="fas fa-cog"></i> <span data-i18n="nav.settings">Настройки</span>
+                            </button>
+                            <div class="dropdown-divider"></div>
+                            <button class="dropdown-item text-danger" id="logout-btn-dropdown">
+                                <i class="fas fa-sign-out-alt"></i> <span data-i18n="nav.logout">Выход</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </header>
+            <section id="page-dashboard" class="page active">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="fas fa-users"></i></div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-users">0</span>
+                            <span class="stat-label" data-i18n="dashboard.stats.users">Пользователи</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon active"><i class="fas fa-plug"></i></div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-sessions">0</span>
+                            <span class="stat-label" data-i18n="dashboard.stats.sessions">Активные сессии</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon upload"><i class="fas fa-arrow-up"></i></div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-upload">0 B</span>
+                            <span class="stat-label" data-i18n="dashboard.stats.upload">Отправлено</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon download"><i class="fas fa-arrow-down"></i></div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-download">0 B</span>
+                            <span class="stat-label" data-i18n="dashboard.stats.download">Получено</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="cyber-card mb-4">
+                    <div class="cyber-card-inner"></div>
+                    <div class="card-header-cyber">
+                        <h3 data-i18n="dashboard.traffic.title">Трафик (МБ/с)</h3>
+                    </div>
+                    <div class="card-body" style="height: 300px; padding: 0 24px 24px;">
+                        <canvas id="traffic-chart"></canvas>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3 data-i18n="dashboard.server.title">Информация о сервере</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="info-item">
+                            <span class="info-label" data-i18n="dashboard.server.uptime">Uptime</span>
+                            <span class="info-value" id="server-uptime">-</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="page-users" class="page">
+                <div class="page-header">
+                    <h2 data-i18n="page.users.title" class="flicker">Пользователи</h2>
+                    <button id="add-user-btn" class="btn-cyber">
+                        <i class="fas fa-plus"></i> <span data-i18n="common.add">Добавить</span>
+                    </button>
+                </div>
+                <div class="cyber-card">
+                    <div class="cyber-card-inner"></div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th data-i18n="table.header.email">Email / Имя</th>
+                                <th data-i18n="table.header.plan">Тариф</th>
+                                <th data-i18n="table.header.traffic">Трафик</th>
+                                <th data-i18n="table.header.status">Статус</th>
+                                <th data-i18n="table.header.key">Ключ</th>
+                                <th data-i18n="table.header.actions">Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody id="users-table-body">
+                            <tr>
+                                <td colspan="6" class="text-center">
+                                    <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+                                        <i class="fas fa-users" style="font-size: 32px; opacity: 0.3;"></i>
+                                        <span data-i18n="table.empty.users">Нет пользователей</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section id="page-sessions" class="page">
+                <div class="page-header">
+                    <h2 data-i18n="page.sessions.title">Активные сессии</h2>
+                </div>
+                <div class="card">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th data-i18n="table.header.sessions.user">Пользователь</th>
+                                <th data-i18n="table.header.sessions.ip">IP клиента</th>
+                                <th data-i18n="table.header.sessions.connected">Подключен</th>
+                                <th data-i18n="table.header.sessions.traffic">Трафик</th>
+                                <th data-i18n="table.header.actions">Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sessions-table-body">
+                            <tr>
+                                <td colspan="5" class="text-center">
+                                    <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+                                        <i class="fas fa-network-wired" style="font-size: 32px; opacity: 0.3;"></i>
+                                        <span data-i18n="table.empty.sessions">Нет активных сессий</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section id="page-inbounds" class="page">
+                <div class="page-header">
+                    <h2 data-i18n="page.inbounds.title">Входящие подключения</h2>
+                    <button id="add-inbound-btn" class="btn btn-primary">
+                        <i class="fas fa-plus"></i> <span data-i18n="common.add">Добавить</span>
+                    </button>
+                </div>
+                <div class="card">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th data-i18n="table.header.tag">Тег</th>
+                                <th data-i18n="table.header.protocol">Протокол</th>
+                                <th data-i18n="table.header.port">Порт</th>
+                                <th data-i18n="table.header.transport">Транспорт</th>
+                                <th data-i18n="table.header.actions">Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody id="inbounds-table-body">
+                            <tr>
+                                <td colspan="5" class="text-center">
+                                    <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+                                        <i class="fas fa-door-open" style="font-size: 32px; opacity: 0.3;"></i>
+                                        <span data-i18n="table.empty.inbounds">Нет входящих подключений</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section id="page-outbounds" class="page">
+                <div class="page-header">
+                    <h2 data-i18n="page.outbounds.title">Исходящие серверы</h2>
+                    <button id="add-outbound-btn" class="btn btn-primary">
+                        <i class="fas fa-plus"></i> <span data-i18n="common.add">Добавить</span>
+                    </button>
+                </div>
+                <div class="card">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th data-i18n="table.header.tag">Тег</th>
+                                <th data-i18n="table.header.type">Тип</th>
+                                <th data-i18n="table.header.address">Адрес</th>
+                                <th data-i18n="table.header.latency">Латентность</th>
+                                <th data-i18n="table.header.actions">Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody id="outbounds-table-body">
+                            <tr>
+                                <td colspan="5" class="text-center">
+                                    <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+                                        <i class="fas fa-server" style="font-size: 32px; opacity: 0.3;"></i>
+                                        <span data-i18n="table.empty.outbounds">Нет исходящих серверов</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section id="page-routing" class="page">
+                <div class="page-header">
+                    <h2 data-i18n="page.routing.title">Маршрутизация</h2>
+                    <button id="add-routing-btn" class="btn btn-primary">
+                        <i class="fas fa-plus"></i> <span data-i18n="common.add_rule">Добавить правило</span>
+                    </button>
+                </div>
+                <div class="card">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th data-i18n="table.header.type">Тип</th>
+                                <th data-i18n="table.header.condition">Условие</th>
+                                <th data-i18n="table.header.outbound">Исходящий</th>
+                                <th data-i18n="table.header.priority">Приоритет</th>
+                                <th data-i18n="table.header.actions">Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody id="routing-table-body">
+                            <tr>
+                                <td colspan="5" class="text-center">
+                                    <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+                                        <i class="fas fa-route" style="font-size: 32px; opacity: 0.3;"></i>
+                                        <span data-i18n="table.empty.routing">Нет правил маршрутизации</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section id="page-subscriptions" class="page">
+                <div class="page-header">
+                    <h2 data-i18n="page.subscriptions.title">Подписки</h2>
+                    <div class="header-actions">
+                        <button id="update-subscriptions-btn" class="btn btn-secondary">
+                            <i class="fas fa-sync"></i> <span data-i18n="page.subscriptions.update_all">Обновить
+                                все</span>
+                        </button>
+                        <button id="add-subscription-btn" class="btn btn-primary">
+                            <i class="fas fa-plus"></i> <span data-i18n="common.add">Добавить</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="card">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th data-i18n="table.header.name">Название</th>
+                                <th data-i18n="table.header.url">URL</th>
+                                <th data-i18n="table.header.interval">Интервал</th>
+                                <th data-i18n="table.header.count">Серверов</th>
+                                <th data-i18n="table.header.actions">Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody id="subscriptions-table-body">
+                            <tr>
+                                <td colspan="5" class="text-center">
+                                    <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+                                        <i class="fas fa-rss" style="font-size: 32px; opacity: 0.3;"></i>
+                                        <span data-i18n="table.empty.subscriptions">Нет активных подписок</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section id="page-adblock" class="page">
+                <div class="page-header">
+                    <h2 data-i18n="page.adblock.title">Блокировщик рекламы</h2>
+                    <button id="save-adblock-btn" class="btn btn-primary">
+                        <i class="fas fa-save"></i> <span data-i18n="common.save">Сохранить</span>
+                    </button>
+                </div>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="fas fa-ban"></i></div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-adblock-total">0</span>
+                            <span class="stat-label" data-i18n="page.adblock.total">Всего заблокировано</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="fas fa-globe"></i></div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-adblock-dns">0</span>
+                            <span class="stat-label" data-i18n="page.adblock.dns">DNS</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="fas fa-lock"></i></div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-adblock-https">0</span>
+                            <span class="stat-label" data-i18n="page.adblock.https">HTTPS</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <h3 data-i18n="page.adblock.rules">Правила блокировки</h3>
+                        <button id="add-adblock-rule-btn" class="btn btn-sm btn-secondary">
+                            <i class="fas fa-plus"></i> <span data-i18n="common.add_rule">Добавить правило</span>
+                        </button>
+                    </div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th data-i18n="table.header.domain">Домен/URL</th>
+                                <th data-i18n="table.header.type">Тип</th>
+                                <th data-i18n="table.header.enabled">Включено</th>
+                                <th data-i18n="table.header.actions">Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody id="adblock-table-body">
+                            <tr>
+                                <td colspan="4" class="text-center">
+                                    <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+                                        <i class="fas fa-shield-alt" style="font-size: 32px; opacity: 0.3;"></i>
+                                        <span data-i18n="table.empty.adblock">Нет правил блокировки</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section id="page-settings" class="page">
+                <div class="page-header">
+                    <h2 data-i18n="settings.title">Настройки системы</h2>
+                </div>
+
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title"><i class="fas fa-server"></i> <span
+                                    data-i18n="settings.config.title">Основные настройки</span></div>
+                        </div>
+                        <div class="card-body">
+                            <form id="server-settings-form">
+                                <div class="form-group">
+                                    <label for="server-port" data-i18n="settings.config.port">Порт подключения
+                                        пользователей</label>
+                                    <input type="number" id="server-port" value="443" placeholder="443">
+                                </div>
+                                <div class="form-group">
+                                    <label for="server-domain" data-i18n="settings.config.domain">Основной домен
+                                        (Sni)</label>
+                                    <input type="text" id="server-domain" placeholder="vpn.example.com">
+                                </div>
+                                <div class="form-group">
+                                    <label for="admin-contact" data-i18n="settings.config.email">Email
+                                        администратора</label>
+                                    <input type="email" id="admin-contact" placeholder="admin@example.com">
+                                </div>
+                                <div style="display: flex; gap: 12px; margin-top: 16px;">
+                                    <button type="submit" class="btn btn-primary">
+                                        <i class="fas fa-save"></i> <span data-i18n="common.save">Сохранить</span>
+                                    </button>
+                                    <button type="button" id="force-reload-btn" class="btn btn-secondary">
+                                        <i class="fas fa-sync"></i> <span
+                                            data-i18n="settings.config.reload">Перезагрузить ядро</span>
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title"><i class="fas fa-user-shield"></i> <span
+                                    data-i18n="settings.admin.title">Учетная запись администратора</span></div>
+                        </div>
+                        <div class="card-body">
+                            <form id="admin-profile-form">
+                                <div class="form-group">
+                                    <label data-i18n="settings.admin.email">Email (Логин)</label>
+                                    <input type="email" id="admin-profile-email" required>
+                                </div>
+                                <div class="form-group">
+                                    <label data-i18n="settings.admin.password">Новый пароль</label>
+                                    <input type="password" id="admin-profile-password"
+                                        placeholder="Оставьте пустым, чтобы не менять">
+                                </div>
+                                <button type="submit" class="btn btn-primary" style="margin-top: 16px;">
+                                    <i class="fas fa-save"></i> <span data-i18n="common.save">Сохранить</span>
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title"><i class="fas fa-shield-alt"></i> <span
+                                    data-i18n="settings.security.title">Безопасность и SSL</span></div>
+                        </div>
+                        <div class="card-body">
+                            <div class="info-item">
+                                <span class="info-label" data-i18n="settings.security.cert">Сертификат</span>
+                                <span class="status active" id="ssl-status">Active (Let's Encrypt)</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label" data-i18n="settings.security.expiry">Истекает</span>
+                                <span class="info-value" id="ssl-expiry">2026-12-31</span>
+                            </div>
+
+                            <div style="margin-top: 24px;">
+                                <button id="renew-cert-btn" class="btn btn-secondary" style="width: 100%;">
+                                    <i class="fas fa-certificate"></i> <span
+                                        data-i18n="settings.security.renew">Обновить сертификат вручную</span>
+                                </button>
+                                <button id="firewall-manage-btn" class="btn btn-secondary"
+                                    style="width: 100%; margin-top: 12px;">
+                                    <i class="fas fa-fire-alt"></i> <span
+                                        data-i18n="settings.security.firewall">Управление Firewall</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title"><i class="fas fa-paint-brush"></i> <span
+                                    data-i18n="settings.appearance.title">Внешний вид</span></div>
+                        </div>
+                        <div class="card-body">
+                            <div class="form-group">
+                                <label for="panel-language" data-i18n="settings.appearance.language">Язык
+                                    интерфейса</label>
+                                <select id="panel-language">
+                                    <option value="ru">Русский</option>
+                                    <option value="en">English</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="panel-theme" data-i18n="settings.appearance.theme">Тема</label>
+                                <select id="panel-theme">
+                                    <option value="dark">Whispera Dark (Default)</option>
+                                    <option value="midnight">Midnight Blue</option>
+                                    <option value="amoled">AMOLED Black</option>
+                                </select>
+                            </div>
+                            <div class="form-group"
+                                style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
+                                <label style="display: block; margin-bottom: 8px;">Фон панели</label>
+                                <input type="file" id="bg-upload-input" accept="image/*,video/*" style="display: none;">
+                                <div style="display: flex; gap: 10px;">
+                                    <button type="button" id="bg-upload-btn" class="btn btn-secondary"
+                                        onclick="document.getElementById('bg-upload-input').click()">
+                                        <i class="fas fa-image"></i> Загрузить
+                                    </button>
+                                    <button type="button" id="bg-reset-btn" class="btn btn-danger"
+                                        style="display: none;">
+                                        <i class="fas fa-undo"></i> Сброс
+                                    </button>
+                                </div>
+                                <div id="bg-upload-status"
+                                    style="margin-top: 5px; font-size: 0.85em; color: var(--text-secondary);"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title"><i class="fas fa-database"></i> <span
+                                    data-i18n="settings.backup.title">Резервное копирование</span></div>
+                        </div>
+                        <div class="card-body">
+                            <p style="color: var(--text-secondary); font-size: 14px; margin-bottom: 16px;"
+                                data-i18n="settings.backup.desc">
+                                Скачать полный дамп базы данных и конфигурации.
+                            </p>
+                            <button id="backup-download-btn" class="btn btn-secondary" style="width: 100%;">
+                                <i class="fas fa-download"></i> <span data-i18n="settings.backup.download">Скачать
+                                    Backup</span>
+                            </button>
+                            <div style="margin-top: 16px; position: relative;">
+                                <input type="file" id="backup-upload" style="display: none;">
+                                <button onclick="document.getElementById('backup-upload').click()"
+                                    class="btn btn-secondary" style="width: 100%;">
+                                    <i class="fas fa-upload"></i> <span
+                                        data-i18n="settings.backup.restore">Восстановить...</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="page-logs" class="page">
+                <div class="page-header">
+                    <h2 data-i18n="page.logs.title">Системные логи</h2>
+                </div>
+                <div class="card">
+                    <pre id="logs-container" class="logs-output" data-i18n="page.logs.loading">Загрузка логов...</pre>
+                </div>
+            </section>
+        </main>
+    </div>
+    </div>
+
+    <div id="add-user-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 data-i18n="modal.user.title">Добавить пользователя</h3>
+                <button class="modal-close modal-close-icon">&times;</button>
+            </div>
+            <form id="add-user-form" class="modal-form">
+                <div class="form-group">
+                    <label for="new-user-email" data-i18n="modal.user.email">Email</label>
+                    <input type="email" id="new-user-email" required placeholder="user@example.com">
+                </div>
+                <div class="form-group">
+                    <label for="new-user-password" data-i18n="modal.user.password">Пароль</label>
+                    <input type="password" id="new-user-password" required placeholder="Минимум 8 символов"
+                        data-i18n="modal.user.password.placeholder">
+                </div>
+                <div class="form-group">
+                    <label for="new-user-traffic" data-i18n="modal.user.traffic">Лимит трафика (GB)</label>
+                    <input type="number" id="new-user-traffic" placeholder="0 = безлимит" min="0" step="1"
+                        data-i18n="modal.user.traffic.placeholder">
+                </div>
+                <div class="form-group">
+                    <label for="new-user-expiry" data-i18n="modal.user.expiry">Срок действия</label>
+                    <input type="date" id="new-user-expiry">
+                </div>
+                <div class="form-group">
+                    <label for="new-user-obfs" data-i18n="modal.user.obfs">Профиль обфускации</label>
+                    <select id="new-user-obfs" class="form-control">
+                        <option value="http2" data-i18n="option.obfs.http2">HTTP/2 (Default)</option>
+                        <option value="random" data-i18n="option.obfs.random">Random</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="new-user-marionette" data-i18n="modal.user.marionette">Профиль Marionette</label>
+                    <select id="new-user-marionette" class="form-control">
+                        <option value="browser" data-i18n="option.marionette.browser">Browser (Default)</option>
+                        <option value="crawler" data-i18n="option.marionette.crawler">Crawler</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="new-user-russian" data-i18n="modal.user.russian">Российский сервис</label>
+                    <select id="new-user-russian" class="form-control">
+                        <option value="vk" data-i18n="option.russian.vk">VK (Default)</option>
+                        <option value="yandex" data-i18n="option.russian.yandex">Yandex</option>
+                        <option value="mailru" data-i18n="option.russian.mailru">Mail.ru</option>
+                    </select>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary modal-close"
+                        data-i18n="common.cancel">Отмена</button>
+                    <button type="submit" class="btn btn-primary" data-i18n="common.create">Создать</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="add-inbound-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 data-i18n="modal.inbound.title">Добавить входящее подключение</h3>
+                <button class="modal-close modal-close-icon">&times;</button>
+            </div>
+            <form id="add-inbound-form" class="modal-form">
+                <div class="form-group">
+                    <label data-i18n="modal.common.tag">Тег</label>
+                    <input type="text" name="tag" required placeholder="in-whispera-1">
+                </div>
+                <div class="form-group">
+                    <label data-i18n="modal.common.protocol">Протокол</label>
+                    <input type="text" name="protocol" value="Whispera" readonly
+                        style="opacity: 0.7; cursor: not-allowed;">
+                </div>
+                <div class="form-group">
+                    <label data-i18n="modal.common.port">Порт</label>
+                    <input type="number" name="port" required placeholder="443">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary modal-close"
+                        data-i18n="common.cancel">Отмена</button>
+                    <button type="submit" class="btn btn-primary" data-i18n="common.create">Создать</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="add-outbound-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 data-i18n="modal.outbound.title">Добавить сервер</h3>
+                <button class="modal-close modal-close-icon">&times;</button>
+            </div>
+            <form id="add-outbound-form" class="modal-form">
+                <div class="form-group">
+                    <label data-i18n="modal.common.tag">Тег</label>
+                    <input type="text" name="tag" required placeholder="proxy-us">
+                </div>
+                <div class="form-group">
+                    <label data-i18n="modal.common.protocol">Протокол</label>
+                    <select name="protocol">
+                        <option value="whispera">Whispera</option>
+                        <option value="freedom">Direct (Freedom)</option>
+                        <option value="blackhole">Block (Blackhole)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label data-i18n="modal.common.address">Адрес</label>
+                    <input type="text" name="address" placeholder="example.com">
+                </div>
+                <div class="form-group">
+                    <label data-i18n="modal.common.port">Порт</label>
+                    <input type="number" name="port" placeholder="443">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary modal-close"
+                        data-i18n="common.cancel">Отмена</button>
+                    <button type="submit" class="btn btn-primary" data-i18n="common.create">Создать</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="add-routing-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 data-i18n="modal.routing.title">Добавить правило маршрутизации</h3>
+                <button class="modal-close modal-close-icon">&times;</button>
+            </div>
+            <form id="add-routing-form" class="modal-form">
+                <div class="form-group">
+                    <label data-i18n="modal.routing.type">Тип</label>
+                    <select name="type">
+                        <option value="domain" data-i18n="modal.routing.option.domain">Домен</option>
+                        <option value="ip" data-i18n="modal.routing.option.ip">IP</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label data-i18n="modal.routing.value">Значение (домен или IP)</label>
+                    <input type="text" name="value" required placeholder="google.com или geosite:category-ads-all">
+                </div>
+                <div class="form-group">
+                    <label data-i18n="modal.routing.outbound_tag">Исходящий тег</label>
+                    <input type="text" name="outboundTag" required placeholder="direct">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary modal-close"
+                        data-i18n="common.cancel">Отмена</button>
+                    <button type="submit" class="btn btn-primary" data-i18n="common.create">Создать</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="add-subscription-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 data-i18n="modal.subscription.title">Добавить подписку</h3>
+                <button class="modal-close modal-close-icon">&times;</button>
+            </div>
+            <form id="add-subscription-form" class="modal-form">
+                <div class="form-group">
+                    <label data-i18n="modal.common.name">Название</label>
+                    <input type="text" name="name" required placeholder="My Servers">
+                </div>
+                <div class="form-group">
+                    <label data-i18n="modal.common.url">URL</label>
+                    <input type="url" name="url" required placeholder="https://example.com/sub">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary modal-close"
+                        data-i18n="common.cancel">Отмена</button>
+                    <button type="submit" class="btn btn-primary" data-i18n="common.add">Добавить</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="add-adblock-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 data-i18n="modal.adblock.title">Добавить правило блокировки</h3>
+                <button class="modal-close modal-close-icon">&times;</button>
+            </div>
+            <form id="add-adblock-form" class="modal-form">
+                <div class="form-group">
+                    <label data-i18n="modal.adblock.domain">Домен</label>
+                    <input type="text" name="domain" required placeholder="ads.example.com">
+                </div>
+                <div class="form-group">
+                    <label data-i18n="modal.adblock.type">Тип</label>
+                    <select name="type">
+                        <option value="domain" data-i18n="modal.adblock.option.domain">Domain</option>
+                        <option value="keyword" data-i18n="modal.adblock.option.keyword">Keyword</option>
+                    </select>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary modal-close"
+                        data-i18n="common.cancel">Отмена</button>
+                    <button type="submit" class="btn btn-primary" data-i18n="common.add">Добавить</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <script src="/js/api.js"></script>
+    <script src="/js/app.js"></script>
+</body>
+
+</html>

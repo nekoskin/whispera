@@ -1,0 +1,132 @@
+version: 2
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters-settings:
+  staticcheck:
+    checks: ["all"]
+    enable: ["assign", "atomic", "bools", "buildtag", "cgocall", "composites", "copylocks", "deepequalerrors", "errorsas", "fieldalignment", "findcall", "httpresponse", "ifaceassert", "loopclosure", "lostcancel", "nilfunc", "nilness", "printf", "reflectvaluecompare", "shadow", "shift", "sortslice", "stdmethods", "stringintconv", "structtag", "testinggoroutine", "tests", "unmarshal", "unreachable", "unsafeptr", "unusedresult"]
+  unused:
+    check-exported: true
+  gocyclo:
+    min-complexity: 100
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - experimental
+      - opinionated
+      - performance
+      - style
+    disabled-checks:
+      - dupImport
+      - ifElseChain
+      - octalLiteral
+      - whyNoLint
+      - wrapperFunc
+      - exitAfterDefer
+      - singleCaseSwitch
+  misspell:
+    locale: US
+  lll:
+    line-length: 120
+  gosec:
+    severity: medium
+    confidence: medium
+  funlen:
+    lines: 1000
+    statements: 500
+  nestif:
+    min-complexity: 10
+  prealloc:
+    simple: true
+    range-loops: true
+    for-loops: false
+  revive:
+    min-confidence: 0.8
+    rules:
+      - name: blank-imports
+      - name: context-as-argument
+      - name: context-keys-type
+      - name: dot-imports
+      - name: error-return
+      - name: error-strings
+      - name: error-naming
+      - name: if-return
+      - name: increment-decrement
+      - name: var-declaration
+      - name: time-naming
+      - name: unexported-return
+      - name: indent-error-flow
+      - name: errorf
+
+linters:
+  enable:
+    - dogsled
+    - errcheck
+    - exhaustive
+    - gochecknoinits
+    - goprintffuncname
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - noctx
+    - whitespace
+  disable:
+    - funlen
+    - gocyclo
+    - nestif
+    - unconvert
+    - unparam
+    - nolintlint
+    - lll
+    - prealloc
+    - goconst
+    - revive
+    - gocritic
+    - staticcheck
+
+  issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - funlen
+        - gocyclo
+    - path: cmd/
+      linters:
+        - funlen
+        - gocyclo
+        - nestif
+        - gosec
+        - goconst
+        - gocritic
+    - path: cmd/.*
+      linters:
+        - funlen
+        - gocyclo
+        - nestif
+        - gosec
+        - goconst
+        - gocritic
+    - text: "exported.*should have comment"
+      linters:
+        - golint
+  exclude:
+    - "Error return value of .((os\\.)?std(out|err)\\..*|.*Close|.*Flush|os\\.Remove(All)?|.*printf?|os\\.(Un)?Setenv). is not checked"
+    - "exported (.+) should have comment or be unexported"
+    - "package comment should be of the form"
+    - "G115: integer overflow conversion"
+    - "G112: Potential Slowloris Attack"
+    - "G404: Use of weak random number generator"
+    - "Function.*is too long"
+    - "Function.*has too many statements"
+    - "cyclomatic complexity.*of func.*is high"
+  max-issues-per-linter: 100
+  max-same-issues: 20

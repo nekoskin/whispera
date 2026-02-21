@@ -1,0 +1,313 @@
+
+class WhisperaAPI {
+    constructor() {
+        this.baseURL = window.location.origin;
+        this.token = localStorage.getItem('whispera_token');
+    }
+
+    setToken(token) {
+        this.token = token;
+        if (token) {
+            localStorage.setItem('whispera_token', token);
+        } else {
+            localStorage.removeItem('whispera_token');
+        }
+    }
+
+    async request(endpoint, options = {}) {
+        const headers = {
+            'Content-Type': 'application/json',
+            ...options.headers,
+        };
+
+        if (this.token) {
+            headers['Authorization'] = `Bearer ${this.token}`;
+        }
+
+        const response = await fetch(`${this.baseURL}${endpoint}`, {
+            ...options,
+            headers,
+        });
+
+        if (response.status === 401) {
+            this.setToken(null);
+            throw new Error('Unauthorized');
+        }
+
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || data.message || `HTTP ${response.status}`);
+            }
+            return data;
+        }
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        return response.text();
+    }
+
+    async login(username, password) {
+        const data = await this.request('/api/auth/login', {
+            method: 'POST',
+            body: JSON.stringify({ username, password }),
+        });
+        if (data.token) {
+            this.setToken(data.token);
+            if (data.user && data.user.id) localStorage.setItem('whispera_user_id', data.user.id);
+            if (data.user && data.user.username) localStorage.setItem('whispera_email', data.user.username);
+        }
+        return data;
+    }
+
+    logout() {
+        this.setToken(null);
+        localStorage.removeItem('whispera_user_id');
+        localStorage.removeItem('whispera_email');
+    }
+
+    async getUsers() {
+        return this.request('/api/users');
+    }
+
+    async createUser(email, password, trafficLimitGB = 0, expiryDate = null, options = {}) {
+        const trafficLimit = trafficLimitGB * 1024 * 1024 * 1024;
+
+        return this.request('/api/users', {
+            method: 'POST',
+            body: JSON.stringify({
+                email,
+                password,
+                traffic_limit: trafficLimit,
+                valid_until: expiryDate,
+                obfs_profile: options.obfsProfile || 'http2',
+                marionette_profile: options.marionetteProfile || 'browser',
+                russian_service: options.russianService || 'vk'
+            }),
+        });
+    }
+
+    async updateUser(id, data) {
+        return this.request(`/api/v2/users/${id}`, {
+            method: 'PUT',
+            body: JSON.stringify(data)
+        });
+    }
+
+    async deleteUser(id) {
+        return this.request(`/api/users/${id}`, { method: 'DELETE' });
+    }
+
+    async getSessions() {
+        return this.request('/api/sessions');
+    }
+
+    async killSession(id) {
+        return this.request(`/api/sessions/${id}/kill`, { method: 'POST' });
+    }
+
+    async getInbounds() {
+        return this.request('/api/inbounds');
+    }
+
+    async addInbound(inbound) {
+        return this.request('/api/inbounds', {
+            method: 'POST',
+            body: JSON.stringify(inbound)
+        });
+    }
+
+    async deleteInbound(tag) {
+        return this.request(`/api/inbounds/${tag}`, { method: 'DELETE' });
+    }
+
+    async getInboundPublicKey(port) {
+        return this.request(`/api/publickey/${port}`);
+    }
+
+    async getOutbounds() {
+        return this.request('/api/outbounds');
+    }
+
+    async addOutbound(outbound) {
+        return this.request('/api/outbounds', {
+            method: 'POST',
+            body: JSON.stringify(outbound)
+        });
+    }
+
+    async deleteOutbound(tag) {
+        return this.request('/api/outbounds/delete', {
+            method: 'POST',
+            body: JSON.stringify({ tag })
+        });
+    }
+
+    async getRoutingRules() {
+        return this.request('/api/routing/rules');
+    }
+
+    async addRoutingRule(rule) {
+        return this.request('/api/routing/rules', {
+            method: 'POST',
+            body: JSON.stringify(rule)
+        });
+    }
+
+    async updateRoutingRule(id, rule) {
+        return this.request(`/api/routing/rules/${id}`, {
+            method: 'PUT',
+            body: JSON.stringify(rule)
+        });
+    }
+
+    async deleteRoutingRule(id) {
+        return this.request(`/api/routing/rules/${id}`, { method: 'DELETE' });
+    }
+
+    async getSubscriptions() {
+        return this.request('/api/subscriptions');
+    }
+
+    async addSubscription(sub) {
+        return this.request('/api/subscriptions/add', {
+            method: 'POST',
+            body: JSON.stringify(sub)
+        });
+    }
+
+    async updateSubscription(id, sub) {
+        return this.request('/api/subscriptions/update', {
+            method: 'POST',
+            body: JSON.stringify({ id, ...sub })
+        });
+    }
+
+    async deleteSubscription(id) {
+        return this.request('/api/subscriptions/delete', {
+            method: 'POST',
+            body: JSON.stringify({ id })
+        });
+    }
+
+    async updateAllSubscriptions() {
+        return this.request('/api/subscriptions/update-all', { method: 'POST' });
+    }
+
+    async getAdblockStats() {
+        return this.request('/api/adblock/stats');
+    }
+
+    async getAdblockRules() {
+        return this.request('/api/adblock/rules');
+    }
+
+    async addAdblockRule(rule) {
+        return this.request('/api/adblock/rules/add', {
+            method: 'POST',
+            body: JSON.stringify(rule)
+        });
+    }
+
+    async deleteAdblockRule(id) {
+        return this.request('/api/adblock/rules/delete', {
+            method: 'POST',
+            body: JSON.stringify({ id })
+        });
+    }
+
+    async updateAdblockSettings(settings) {
+        return this.request('/api/adblock/settings', {
+            method: 'POST',
+            body: JSON.stringify(settings)
+        });
+    }
+
+    async getBridges() {
+        return this.request('/api/bridges');
+    }
+
+    async addBridge(bridge) {
+        return this.request('/api/bridges', {
+            method: 'POST',
+            body: JSON.stringify(bridge)
+        });
+    }
+
+    async deleteBridge(id) {
+        return this.request('/api/bridges/delete', {
+            method: 'POST',
+            body: JSON.stringify({ id })
+        });
+    }
+
+    async getBridgeCloudInit() {
+        return this.request('/api/bridges/cloudinit', {
+            headers: { 'Accept': 'text/plain' }
+        });
+    }
+
+    async getStats() {
+        return this.request('/api/stats');
+    }
+
+    async getTrafficStats(period = '24h') {
+        return this.request(`/api/stats/traffic?period=${period}`);
+    }
+
+    async getUserTraffic() {
+        return this.request('/api/stats/users');
+    }
+
+    async getChartData(period = '24h') {
+        return this.request(`/api/stats/chart?period=${period}`);
+    }
+
+    async getSystemInfo() {
+        return this.request('/api/system/info');
+    }
+
+    async reloadConfig() {
+        return this.request('/api/v1/config/reload', { method: 'POST' });
+    }
+
+    async getHealth() {
+        return this.request('/api/health');
+    }
+
+    async getDashboard() {
+        return this.request('/api/dashboard');
+    }
+
+    async updateServerSettings(settings) {
+        const config = {
+            server: {
+                port: parseInt(settings.port) || 0
+            },
+        };
+        return this.request('/api/v1/config/update', {
+            method: 'POST',
+            body: JSON.stringify(config)
+        });
+    }
+
+    async renewCertificate() {
+        return this.request('/api/v1/config/renew-cert', { method: 'POST' });
+    }
+
+    async getBackup() {
+        return this.request('/api/v1/config', { method: 'GET' });
+    }
+
+    async restoreBackup(file) {
+        const text = await file.text();
+        const config = JSON.parse(text);
+        return this.request('/api/v1/config/update', {
+            method: 'POST',
+            body: JSON.stringify(config),
+        });
+    }
+}
+
+window.api = new WhisperaAPI();

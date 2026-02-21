@@ -1,0 +1,76 @@
+import { Controller, Get, Post, Body, Headers, Res, HttpStatus } from '@nestjs/common';
+import type { Response } from 'express';
+import { SubscriptionsService, Subscription } from './subscriptions.service';
+
+@Controller()
+export class SubscriptionsController {
+    constructor(private readonly subscriptionsService: SubscriptionsService) { }
+
+    @Get('api/subscriptions')
+    async getSubscriptions(@Headers('authorization') auth: string, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const subscriptions = await this.subscriptionsService.getSubscriptions(token);
+            return res.json({ success: true, subscriptions });
+        } catch {
+            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch subscriptions' });
+        }
+    }
+
+    @Post('api/subscriptions/add')
+    async addSubscription(
+        @Headers('authorization') auth: string,
+        @Body() subscription: Partial<Subscription>,
+        @Res() res: Response,
+    ) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const result = await this.subscriptionsService.addSubscription(token, subscription);
+            return res.json({ success: true, subscription: result });
+        } catch {
+            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to add subscription' });
+        }
+    }
+
+    @Post('api/subscriptions/update')
+    async updateSubscription(
+        @Headers('authorization') auth: string,
+        @Body() body: { id: string } & Partial<Subscription>,
+        @Res() res: Response,
+    ) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const { id, ...subscription } = body;
+            const result = await this.subscriptionsService.updateSubscription(token, id, subscription);
+            return res.json({ success: true, subscription: result });
+        } catch {
+            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to update subscription' });
+        }
+    }
+
+    @Post('api/subscriptions/delete')
+    async deleteSubscription(
+        @Headers('authorization') auth: string,
+        @Body('id') id: string,
+        @Res() res: Response,
+    ) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            await this.subscriptionsService.deleteSubscription(token, id);
+            return res.json({ success: true });
+        } catch {
+            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to delete subscription' });
+        }
+    }
+
+    @Post('api/subscriptions/update-all')
+    async updateAll(@Headers('authorization') auth: string, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            await this.subscriptionsService.updateAll(token);
+            return res.json({ success: true });
+        } catch {
+            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to update all subscriptions' });
+        }
+    }
+}

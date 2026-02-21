@@ -1,0 +1,201 @@
+name: Release Server
+
+on:
+  push:
+    branches:
+      - "test"
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-server:
+    name: Build Server (${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            asset_name: whispera-server-linux-amd64
+          - goos: linux
+            goarch: arm64
+            asset_name: whispera-server-linux-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - uses: actions/setup-go@v4
+        with:
+          go-version: '1.25'
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags "-s -w -X main.Version=${{ github.ref_name }}" -o whispera-server ./cmd/server
+
+      - name: Archive Server
+        run: tar -czvf ${{ matrix.asset_name }}.tar.gz whispera-server
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}.tar.gz
+          retention-days: 5
+
+  build-panel:
+    name: Build Panel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20
+
+      - name: Install & Build Panel
+        working-directory: ./panel
+        run: |
+          npm ci
+          npm run build
+          npm prune --omit=dev
+          echo "node_modules size: $(du -sh node_modules | cut -f1)"
+          tar -czvf ../whispera-panel.tar.gz dist public node_modules package.json .env.example
+          echo "whispera-panel.tar.gz: $(du -sh ../whispera-panel.tar.gz | cut -f1)"
+
+      - name: Upload Panel Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: whispera-panel
+          path: whispera-panel.tar.gz
+          retention-days: 5
+
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-server, build-panel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect Release Files
+        run: |
+          mkdir -p release-files
+          find artifacts -type f -name '*.tar.gz' -exec cp {} release-files/ \;
+          echo "Release files:"
+          ls -la release-files/
+
+      - name: Upload Tag Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-files/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Changelog
+        id: build_changelog
+        if: github.ref == 'refs/heads/test'
+        uses: mikepenz/release-changelog-builder-action@v3
+        with:
+          configurationJson: |
+            {
+              "categories": [
+                {
+                  "title": "## 🚀 Features",
+                  "labels": ["feature", "feat"]
+                },
+                {
+                  "title": "## 🐛 Bug Fixes",
+                  "labels": ["fix", "bug"]
+                },
+                {
+                  "title": "## 🧰 Maintenance",
+                  "labels": ["chore", "refactor", "docs"]
+                }
+              ],
+              "template": "#{{CHANGELOG}}\n\n<details>\n<summary>Uncategorized</summary>\n\n#{{UNCATEGORIZED}}\n</details>",
+              "pr_template": "- #{{TITLE}} by @#{{AUTHOR}}",
+              "label_extractor": [
+                {
+                  "pattern": "^(feat|fix|chore|docs|refactor): (.+)",
+                  "target": "$1"
+                }
+              ]
+            }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Calculate Next Version
+        id: next_ver
+        if: github.ref == 'refs/heads/test'
+        run: |
+          git fetch --tags
+          BASE="v2.1"
+          LAST_TAG=$(git tag -l "${BASE}.*" | sort -V | tail -n1)
+          
+          if [ -z "$LAST_TAG" ]; then
+             NEW_TAG="${BASE}.1"
+          else
+             LAST_PATCH=$(echo "$LAST_TAG" | awk -F. '{print $3}')
+             NEW_PATCH=$((LAST_PATCH + 1))
+             NEW_TAG="${BASE}.${NEW_PATCH}"
+          fi
+          
+          echo "Calculated new version: $NEW_TAG"
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+
+      - name: Generate Fallback Body
+        id: fallback_body
+        if: github.ref == 'refs/heads/test'
+        run: |
+          CHANGELOG="${{ steps.build_changelog.outputs.changelog }}"
+          if [ -z "$CHANGELOG" ] || echo "$CHANGELOG" | grep -qi "no changes"; then
+            LAST_TAG=$(git tag -l "v2.1.*" | sort -V | tail -n1)
+            if [ -n "$LAST_TAG" ]; then
+              BODY=$(git log "${LAST_TAG}..HEAD" --pretty=format:"- %s (%h)" --no-merges | head -50)
+            else
+              BODY=$(git log --pretty=format:"- %s (%h)" --no-merges -20)
+            fi
+            if [ -z "$BODY" ]; then
+              BODY="Release ${{ steps.next_ver.outputs.new_tag }}"
+            fi
+            echo "body<<EOF" >> $GITHUB_OUTPUT
+            echo "$BODY" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "body<<EOF" >> $GITHUB_OUTPUT
+            echo "$CHANGELOG" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Test Branch Release
+        if: github.ref == 'refs/heads/test'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.next_ver.outputs.new_tag }}
+          target_commitish: ${{ github.sha }}
+          name: Whispera-Core ${{ steps.next_ver.outputs.new_tag }}
+          body: ${{ steps.fallback_body.outputs.body }}
+          prerelease: false
+          files: release-files/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
