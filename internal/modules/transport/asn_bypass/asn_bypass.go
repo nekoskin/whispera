@@ -283,8 +283,10 @@ func (d *Dialer) dialDirect(ctx context.Context, network, addr string) (net.Conn
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		_ = tcpConn.SetNoDelay(true)
-		_ = tcpConn.SetReadBuffer(12 * 1024 * 1024)
-		_ = tcpConn.SetWriteBuffer(12 * 1024 * 1024)
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(15 * time.Second)
+		_ = tcpConn.SetReadBuffer(16 * 1024 * 1024)
+		_ = tcpConn.SetWriteBuffer(16 * 1024 * 1024)
 	}
 
 	return conn, nil
