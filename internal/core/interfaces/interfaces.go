@@ -59,7 +59,7 @@ const (
 	TransportUDP           TransportType = "udp"
 	TransportTCP           TransportType = "tcp"
 	TransportWebSocket     TransportType = "websocket"
-	TransportXHTTP         TransportType = "xhttp"
+	TransportPhantomHTTP   TransportType = "phantom-http"
 	TransportQUIC          TransportType = "quic"
 	TransportH2C           TransportType = "h2c"
 	TransportObfs4         TransportType = "obfs4"
@@ -91,6 +91,20 @@ const (
 	TransportSSWebSocket     TransportType = "shadowsocks+websocket"
 	TransportVKWebRTCPhantom TransportType = "vkwebrtc+phantom"
 )
+
+// NormalizeTransport maps legacy/aliased wire-format transport strings to their
+// canonical TransportType. Unknown strings pass through unchanged so callers
+// can still treat them as TransportType for matching/logging.
+func NormalizeTransport(s string) TransportType {
+	switch s {
+	case "xhttp":
+		return TransportPhantomHTTP
+	case "reality":
+		return TransportPhantomHTTP
+	default:
+		return TransportType(s)
+	}
+}
 
 
 type Transport interface {
@@ -308,7 +322,7 @@ type Obfuscator interface {
 	SetThreatLevel(level int)
 
 	
-	SetRealityKey(key string)
+	SetPhantomKey(key string)
 }
 type ObfuscationStats struct {
 	PacketsProcessed uint64

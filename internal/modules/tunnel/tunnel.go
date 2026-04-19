@@ -895,11 +895,11 @@ func (m *Manager) preparePhantomASN() {
 			m.asnBypassDialer.SetPhantomConfig(targetSNI, m.phantomAuth)
 		}
 		if m.obfuscator != nil {
-			m.obfuscator.SetRealityKey(m.config.PhantomServerPubKey)
+			m.obfuscator.SetPhantomKey(m.config.PhantomServerPubKey)
 		}
 	} else {
 		if m.obfuscator != nil {
-			m.obfuscator.SetRealityKey("")
+			m.obfuscator.SetPhantomKey("")
 		}
 	}
 }

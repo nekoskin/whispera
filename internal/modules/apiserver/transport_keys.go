@@ -25,7 +25,7 @@ func generateTransportCredentials(transport string) (*TransportCredentials, erro
 	}
 
 	switch transport {
-	case "udp", "tcp", "websocket", "h2c", "xhttp", "httpupgrade", "splithttp", "grpc", "quic":
+	case "udp", "tcp", "websocket", "h2c", "phantom-http", "xhttp", "httpupgrade", "splithttp", "grpc", "quic":
 		kp, err := generateX25519Keys()
 		if err != nil {
 			return nil, err

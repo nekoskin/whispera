@@ -631,7 +631,7 @@ func main() {
 	for _, tr := range transports {
 		knownTransports[tr] = true
 	}
-	for _, extra := range []string{"tcp", "udp", "websocket", "xhttp", "quic"} {
+	for _, extra := range []string{"tcp", "udp", "websocket", "phantom-http", "quic"} {
 		if !knownTransports[extra] {
 			agentCfg.Candidates = append(agentCfg.Candidates, proxyagent.TransportCandidate{
 				Name:     extra,

@@ -29,7 +29,7 @@ func DefaultConfig() *Config {
 		TransportPriority: []interfaces.TransportType{
 			interfaces.TransportH2C,
 			interfaces.TransportWebSocket,
-			interfaces.TransportXHTTP,
+			interfaces.TransportPhantomHTTP,
 			interfaces.TransportTCP,
 			interfaces.TransportQUIC,
 			interfaces.TransportUDP,

@@ -2,6 +2,7 @@ package marionette
 
 import (
 	"context"
+	"encoding/json"
 	"math/rand"
 	"sync"
 	"time"
@@ -41,7 +42,7 @@ type Marionette struct {
 	UTLSFingerprint string
 	UTLSConn        *utls.UConn
 
-	RealityKey string
+	PhantomKey string
 
 	BehaviorEngine          *behavioral.BehaviorEngine
 	ActiveBehavioralProfile *behavioral.MessengerProfile
@@ -90,7 +91,22 @@ type TrafficObfuscationProfile struct {
 	SizeRandomization   bool   `json:"size_randomization"`
 	TargetService       string `json:"target_service"`
 	SNI                 string `json:"sni"`
-	RealityPublicKey    string `json:"reality_public_key"`
+	PhantomPublicKey    string `json:"phantom_public_key"`
+}
+
+func (p *TrafficObfuscationProfile) UnmarshalJSON(data []byte) error {
+	type alias TrafficObfuscationProfile
+	tmp := struct {
+		*alias
+		LegacyRealityPublicKey string `json:"reality_public_key,omitempty"`
+	}{alias: (*alias)(p)}
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+	if p.PhantomPublicKey == "" && tmp.LegacyRealityPublicKey != "" {
+		p.PhantomPublicKey = tmp.LegacyRealityPublicKey
+	}
+	return nil
 }
 
 type SystemMetrics = types.SystemMetrics

@@ -88,7 +88,7 @@ func TestTransportFallbackAfterFailures(t *testing.T) {
 
 func TestTransportAllCombinations(t *testing.T) {
 	allTransports := []string{
-		"tcp", "udp", "websocket", "xhttp", "quic",
+		"tcp", "udp", "websocket", "phantom-http", "quic",
 		"h2c", "shadowsocks", "domainfront", "vkvideo",
 	}
 

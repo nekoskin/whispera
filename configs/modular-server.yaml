@@ -22,7 +22,7 @@ transport:
     enabled: false
     listen_addr: ":443"
     path: "/ws"
-  xhttp:
+  phantom-http:
     enabled: false
     listen_addr: ":443"
     mode: "stream-one"

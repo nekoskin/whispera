@@ -982,7 +982,7 @@ func (e *NativeMLEngine) DetectAnomaly(data []byte, protocol, direction string) 
 
 func (e *NativeMLEngine) RecommendTransport(rttData []float64, successRates map[string]float64, latencies map[string]float64) string {
 	transportNames := []string{
-		"tcp", "websocket", "xhttp", "quic", "h2c",
+		"tcp", "websocket", "phantom-http", "quic", "h2c",
 		"obfs4", "meek", "snowflake", "shadowtls", "tuic",
 		"httpupgrade", "splithttp", "shadowsocks", "torsocks", "domainfront",
 		"vkvideo", "yatelemost", "okwebrtc", "yacloud", "yadisk",

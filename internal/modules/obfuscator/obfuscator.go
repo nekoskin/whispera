@@ -241,10 +241,10 @@ func (e *Engine) SetThreatLevel(level int) {
 	})
 }
 
-func (e *Engine) SetRealityKey(key string) {
+func (e *Engine) SetPhantomKey(key string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.manager.SetRealityKey(key)
+	e.manager.SetPhantomKey(key)
 }
 
 func (e *Engine) GetStats() interfaces.ObfuscationStats {

@@ -1191,7 +1191,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			cfg.Transport.WebSocket.ListenAddr = fmt.Sprintf(":%d", req.Server.WSPort)
 		}
 		if req.Server.WS2Port > 0 {
-			cfg.Transport.XHTTP.ListenAddr = fmt.Sprintf(":%d", req.Server.WS2Port)
+			cfg.Transport.PhantomHTTP.ListenAddr = fmt.Sprintf(":%d", req.Server.WS2Port)
 		}
 
 		if req.Obfuscation.DefaultProfile != "" {

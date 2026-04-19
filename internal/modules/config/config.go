@@ -414,12 +414,37 @@ type TransportConfig struct {
 		Path       string `yaml:"path"`
 	} `yaml:"websocket"`
 
-	XHTTP struct {
+	PhantomHTTP struct {
 		Enabled        bool   `yaml:"enabled"`
 		ListenAddr     string `yaml:"listen_addr"`
 		Mode           string `yaml:"mode"`
 		MaxConcurrency int    `yaml:"max_concurrency"`
-	} `yaml:"xhttp"`
+	} `yaml:"phantom-http"`
+}
+
+// UnmarshalYAML accepts the legacy `xhttp:` key as an alias for `phantom-http:`
+// so existing user configs keep parsing after the rename.
+func (t *TransportConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type alias TransportConfig
+	tmp := struct {
+		*alias  `yaml:",inline"`
+		LegacyXHTTP *struct {
+			Enabled        bool   `yaml:"enabled"`
+			ListenAddr     string `yaml:"listen_addr"`
+			Mode           string `yaml:"mode"`
+			MaxConcurrency int    `yaml:"max_concurrency"`
+		} `yaml:"xhttp,omitempty"`
+	}{alias: (*alias)(t)}
+	if err := unmarshal(&tmp); err != nil {
+		return err
+	}
+	if tmp.LegacyXHTTP != nil && !t.PhantomHTTP.Enabled && t.PhantomHTTP.ListenAddr == "" {
+		t.PhantomHTTP.Enabled = tmp.LegacyXHTTP.Enabled
+		t.PhantomHTTP.ListenAddr = tmp.LegacyXHTTP.ListenAddr
+		t.PhantomHTTP.Mode = tmp.LegacyXHTTP.Mode
+		t.PhantomHTTP.MaxConcurrency = tmp.LegacyXHTTP.MaxConcurrency
+	}
+	return nil
 }
 
 type SessionConfig struct {
@@ -527,7 +552,7 @@ func DefaultServerConfig() *ServerConfig {
 				Port:     8443,
 				StreamSettings: StreamConfig{
 					Network:  "tcp",
-					Security: "reality",
+					Security: "phantom",
 				},
 			},
 		},

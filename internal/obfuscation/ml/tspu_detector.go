@@ -321,8 +321,8 @@ func TSPUCountermeasure(dpiType int) string {
 		// Throttling: switch to a protocol that TSPU doesn't throttle (e.g. vkvideo, reality).
 		return "vkvideo"
 	case DPITypeTSPUReplay:
-		// Active probing: use protocols resistant to replay (reality, shadowtls).
-		return "reality"
+		// Active probing: use protocols resistant to replay (phantom-tls, shadowtls).
+		return "phantom-tls"
 	default:
 		return ""
 	}

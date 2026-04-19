@@ -275,8 +275,8 @@ func (im *IntegrationManager) SetStrict(strict bool) {
 	im.adapter.SetStrict(strict)
 }
 
-func (im *IntegrationManager) SetRealityKey(key string) {
-	im.adapter.SetRealityKey(key)
+func (im *IntegrationManager) SetPhantomKey(key string) {
+	im.adapter.SetPhantomKey(key)
 }
 
 func (im *IntegrationManager) EnableGrammarRotation(interval time.Duration, bytes uint64, profiles []string) {

@@ -428,8 +428,8 @@ func (ma *MarionetteAdapter) SetThreatLevel(level int) {
 	ma.m.SetThreatLevel(level)
 }
 
-func (ma *MarionetteAdapter) SetRealityKey(key string) {
-	ma.m.SetRealityKey(key)
+func (ma *MarionetteAdapter) SetPhantomKey(key string) {
+	ma.m.SetPhantomKey(key)
 }
 
 func (ma *MarionetteAdapter) GetCore() *Marionette {

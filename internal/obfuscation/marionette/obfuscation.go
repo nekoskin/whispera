@@ -24,12 +24,12 @@ func (m *Marionette) ApplyTrafficObfuscation(data []byte, profile *TrafficObfusc
 		return data
 	}
 
-	if profile.RealityPublicKey != "" {
+	if profile.PhantomPublicKey != "" {
 		return data
 	}
 
 	m.Mutex.RLock()
-	if m.RealityKey != "" {
+	if m.PhantomKey != "" {
 		m.Mutex.RUnlock()
 		return data
 	}
@@ -68,7 +68,7 @@ func (m *Marionette) applyProtocolObfuscation(data []byte, profile *TrafficObfus
 	if profile.ObfuscationLevel > 7 {
 		data = m.addProtocolTimingPatterns(data, profile)
 	}
-	if profile.ObfuscationLevel > 3 && profile.RealityPublicKey == "" {
+	if profile.ObfuscationLevel > 3 && profile.PhantomPublicKey == "" {
 		data = m.addProtocolHeaders(data, profile)
 	}
 
@@ -517,12 +517,12 @@ func (m *Marionette) applyAction(action types.Action, data []byte, params map[st
 			prof.SNI = sni
 		}
 		if pubKey, ok := params["reality_public_key"].(string); ok {
-			prof.RealityPublicKey = pubKey
+			prof.PhantomPublicKey = pubKey
 		}
 
 		m.Mutex.RLock()
-		if m.RealityKey != "" {
-			prof.RealityPublicKey = m.RealityKey
+		if m.PhantomKey != "" {
+			prof.PhantomPublicKey = m.PhantomKey
 		}
 		m.Mutex.RUnlock()
 
