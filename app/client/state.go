@@ -99,8 +99,6 @@ var reconnectEntry func(e *TransportEntry)
 
 var controlAddr = "127.0.0.1:10801"
 
-var adminToken string
-
 var globalDNS *dns.Resolver
 var globalMultiRouter *socks5.MultiRouter
 var globalSubscriptionMgr *config.SubscriptionManager
