@@ -8,6 +8,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const KeepAliveProtoBit byte = 0x20
@@ -22,13 +23,76 @@ const (
 	shapePadRecords = 3
 
 	framedSwitchMarker = 0xFFFF
+	framedFillerMarker = 0xFFFE
 )
+
+type ShapeKnobs struct {
+	records atomic.Int32
+	min     atomic.Int32
+	max     atomic.Int32
+
+	fillIdle     atomic.Int32
+	fillInterval atomic.Int32
+	fillMin      atomic.Int32
+	fillMax      atomic.Int32
+}
+
+var Shape = newShapeKnobs()
+
+func newShapeKnobs() *ShapeKnobs {
+	k := &ShapeKnobs{}
+	k.records.Store(shapePadRecords)
+	k.min.Store(shapePadMin)
+	k.max.Store(shapePadMax)
+	return k
+}
+
+func (k *ShapeKnobs) Get() (records, min, max int) {
+	return int(k.records.Load()), int(k.min.Load()), int(k.max.Load())
+}
+
+func (k *ShapeKnobs) Filler() (idleMs, intervalMs, min, max int) {
+	return int(k.fillIdle.Load()), int(k.fillInterval.Load()), int(k.fillMin.Load()), int(k.fillMax.Load())
+}
+
+func (k *ShapeKnobs) SetFiller(idleMs, intervalMs, min, max int) error {
+	if idleMs < 0 || intervalMs < 0 || intervalMs > 60000 {
+		return errShapeRange
+	}
+	if min < 0 || max > framedMaxData || min > max {
+		return errShapeRange
+	}
+	k.fillIdle.Store(int32(idleMs))
+	k.fillInterval.Store(int32(intervalMs))
+	k.fillMin.Store(int32(min))
+	k.fillMax.Store(int32(max))
+	return nil
+}
+
+func (k *ShapeKnobs) Set(records, min, max int) error {
+	if records < 0 || records > 64 {
+		return errShapeRange
+	}
+	if min < 0 || max > framedMaxData || min > max {
+		return errShapeRange
+	}
+	k.records.Store(int32(records))
+	k.min.Store(int32(min))
+	k.max.Store(int32(max))
+	return nil
+}
+
+var errShapeRange = errors.New("whispera: shape value out of range")
 
 func ShapePadLen(room int) int {
 	if room <= 0 {
 		return 0
 	}
-	pad := shapePadMin + mrand.Intn(shapePadMax-shapePadMin+1)
+	min, max := int(Shape.min.Load()), int(Shape.max.Load())
+	if max <= min {
+		return 0
+	}
+	pad := min + mrand.Intn(max-min+1)
 	if pad > room {
 		pad = room
 	}
@@ -57,7 +121,7 @@ type ShapeBudget struct{ left atomic.Int32 }
 
 func NewShapeBudget() *ShapeBudget {
 	b := &ShapeBudget{}
-	b.left.Store(shapePadRecords)
+	b.left.Store(Shape.records.Load())
 	return b
 }
 
@@ -93,13 +157,96 @@ type FramedConn struct {
 	ended    bool
 	switched bool
 	pad      *ShapeBudget
+
+	lastWrite atomic.Int64
+	stop      chan struct{}
+	stopOnce  sync.Once
 }
 
 func NewFramedConn(c net.Conn, pad *ShapeBudget) *FramedConn {
 	// The batch buffer is grown on the first write: half of these connections
 	// only ever read — the upstream half of a spliced stream, for one — and a
 	// 16K buffer each adds up once streams come in thousands.
-	return &FramedConn{Conn: c, pad: pad}
+	fc := &FramedConn{Conn: c, pad: pad}
+	fc.lastWrite.Store(time.Now().UnixNano())
+	fc.stop = make(chan struct{})
+	go fc.fillLoop()
+	return fc
+}
+
+func (c *FramedConn) fillLoop() {
+	for {
+		idleMs, intervalMs, min, max := Shape.Filler()
+		wait := time.Second
+		if intervalMs > 0 {
+			wait = time.Duration(intervalMs) * time.Millisecond
+		}
+		select {
+		case <-c.stop:
+			return
+		case <-time.After(wait):
+		}
+		if intervalMs <= 0 {
+			continue
+		}
+		if time.Since(time.Unix(0, c.lastWrite.Load())) < time.Duration(idleMs)*time.Millisecond {
+			continue
+		}
+		pad := min
+		if max > min {
+			pad += mrand.Intn(max - min + 1)
+		}
+		if err := c.writeFiller(pad); err != nil {
+			return
+		}
+	}
+}
+
+func (c *FramedConn) writeFiller(pad int) error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	if c.ended {
+		return io.ErrClosedPipe
+	}
+	return WriteFillerRecord(c.Conn, pad)
+}
+
+func WriteFillerRecord(w io.Writer, pad int) error {
+	out := make([]byte, 0, 5+2+pad)
+	out = append(out, 0x17, 0x03, 0x03)
+	out = binary.BigEndian.AppendUint16(out, uint16(2+pad))
+	out = binary.BigEndian.AppendUint16(out, framedFillerMarker)
+	out = AppendShapePad(out, pad)
+	_, err := w.Write(out)
+	return err
+}
+
+func FillerPad() (int, bool) {
+	_, intervalMs, min, max := Shape.Filler()
+	if intervalMs <= 0 {
+		return 0, false
+	}
+	pad := min
+	if max > min {
+		pad += mrand.Intn(max - min + 1)
+	}
+	return pad, true
+}
+
+func SkipFillerRecord(r io.Reader) bool {
+	var size [2]byte
+	if _, err := io.ReadFull(r, size[:]); err != nil {
+		return false
+	}
+	body := int(binary.BigEndian.Uint16(size[:]))
+	if body < 2 || body > framedWireTarget {
+		return false
+	}
+	rec := make([]byte, body)
+	if _, err := io.ReadFull(r, rec); err != nil {
+		return false
+	}
+	return binary.BigEndian.Uint16(rec[0:2]) == framedFillerMarker
 }
 
 func (c *FramedConn) Write(b []byte) (int, error) {
@@ -111,6 +258,7 @@ func (c *FramedConn) Write(b []byte) (int, error) {
 	if c.batch == nil {
 		c.batch = make([]byte, 0, framedPlainTarget)
 	}
+	c.lastWrite.Store(time.Now().UnixNano())
 	sent := 0
 	for len(b) > 0 {
 		n := len(b)
@@ -187,6 +335,9 @@ func (c *FramedConn) readRecord() ([]byte, error) {
 	if dataLen == framedSwitchMarker {
 		return nil, ErrSwitchRaw
 	}
+	if dataLen == framedFillerMarker {
+		return c.readRecord()
+	}
 	if 2+dataLen > body {
 		return nil, errFramedBadRecord
 	}
@@ -249,9 +400,21 @@ func (c *FramedConn) Reusable() bool {
 	return done && ended && !switched
 }
 
-func (c *FramedConn) Close() error { return c.EndStream() }
+func (c *FramedConn) Close() error {
+	c.stopFiller()
+	return c.EndStream()
+}
 
-func (c *FramedConn) CloseUnderlying() error { return c.Conn.Close() }
+func (c *FramedConn) CloseUnderlying() error {
+	c.stopFiller()
+	return c.Conn.Close()
+}
+
+func (c *FramedConn) stopFiller() {
+	if c.stop != nil {
+		c.stopOnce.Do(func() { close(c.stop) })
+	}
+}
 
 func (c *FramedConn) Reset() {
 	c.rmu.Lock()
