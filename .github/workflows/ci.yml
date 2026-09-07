@@ -18,8 +18,6 @@ on:
       - '**.py'
       - 'whisp/**'
       - 'panel/**'
-      - 'install.sh'
-      - 'update.sh'
       - 'scripts/**'
       - 'monitoring/**'
       - 'deploy/**'
@@ -44,8 +42,6 @@ on:
       - '**.py'
       - 'whisp/**'
       - 'panel/**'
-      - 'install.sh'
-      - 'update.sh'
       - 'scripts/**'
       - 'monitoring/**'
       - 'deploy/**'
@@ -85,7 +81,56 @@ jobs:
     - name: Run go vet
       run: go vet ./...
 
+    - name: Check formatting
+      run: |
+        unformatted=$(gofmt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "$unformatted"
+          exit 1
+        fi
+
   test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.26.x'
+        cache: true
+
+    - name: Install system dependencies
+      if: runner.os == 'Linux'
+      run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Run tests with race detector
+      run: go test -race -count=1 -coverprofile=coverage.out -covermode=atomic ./...
+
+    - name: Check coverage threshold
+      if: runner.os == 'Linux'
+      run: |
+        COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+        echo "Total coverage: ${COVERAGE}%"
+        if (( $(echo "$COVERAGE < 5" | bc -l) )); then
+          echo "::warning::Coverage is below 5%: ${COVERAGE}%"
+        fi
+
+    - name: Upload coverage
+      if: runner.os == 'Linux'
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.out
+        fail_ci_if_error: false
+
+  vuln:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -99,29 +144,46 @@ jobs:
     - name: Install system dependencies
       run: sudo apt-get update && sudo apt-get install -y libpcap-dev
 
-    - name: Download dependencies
-      run: go mod download
-
-    - name: Run tests with race detector
-      run: go test -race -count=1 -coverprofile=coverage.out -covermode=atomic ./...
-
-    - name: Check coverage threshold
+    - name: Run govulncheck
       run: |
-        COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
-        echo "Total coverage: ${COVERAGE}%"
-        if (( $(echo "$COVERAGE < 5" | bc -l) )); then
-          echo "::warning::Coverage is below 5%: ${COVERAGE}%"
-        fi
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        govulncheck ./...
 
-    - name: Upload coverage
-      uses: codecov/codecov-action@v4
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
       with:
-        file: ./coverage.out
-        fail_ci_if_error: false
+        go-version: '1.26.x'
+        cache: true
+
+    - name: Install system dependencies
+      run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+    - name: Fuzz protocol parsers
+      run: |
+        go test ./core/protocol/ -run '^$' -fuzz FuzzFramedRead -fuzztime 60s
+        go test ./core/relay/ -run '^$' -fuzz FuzzReadProxyStreamHeader -fuzztime 60s
+        go test ./core/socks5/ -run '^$' -fuzz FuzzParseUDPHeader -fuzztime 60s
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Check shell scripts
+      run: |
+        sudo apt-get update && sudo apt-get install -y shellcheck
+        bash -n install.sh
+        bash -n update.sh
+        shellcheck -S error install.sh update.sh
 
   build:
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [lint, test, vuln, fuzz, scripts]
     steps:
     - uses: actions/checkout@v4
 
@@ -133,6 +195,14 @@ jobs:
 
     - name: Download dependencies
       run: go mod download
+
+    - name: Cross-compile release targets
+      run: |
+        for target in "windows amd64" "darwin arm64" "linux arm64"; do
+          set -- $target
+          echo "building $1/$2"
+          CGO_ENABLED=0 GOOS=$1 GOARCH=$2 go build ./...
+        done
 
     - name: Build
       run: |
