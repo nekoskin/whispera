@@ -11,7 +11,9 @@ import (
 	mrand "math/rand"
 	"net"
 	"os"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	quicgo "github.com/quic-go/quic-go"
@@ -73,7 +75,25 @@ const SpliceProtoBit byte = 0x80
 
 func FullFrameEnabled() bool { return os.Getenv("WHISPERA_FULL_FRAME") == "1" }
 
-func SpliceEnabled() bool { return perflowEnabled() && os.Getenv("WHISPERA_SPLICE") != "0" }
+var (
+	spliceBroken atomic.Bool
+	spliceFails  atomic.Int32
+)
+
+func SpliceEnabled() bool {
+	return runtime.GOOS == "linux" && perflowEnabled() && os.Getenv("WHISPERA_SPLICE") == "1" && !spliceBroken.Load()
+}
+
+func MessageSpliceResult(received bool) {
+	if received {
+		spliceFails.Store(0)
+		return
+	}
+
+	if spliceFails.Add(1) >= 2 {
+		spliceBroken.Store(true)
+	}
+}
 
 func StreamMuxEnabled() bool { return os.Getenv("WHISPERA_STREAM_MUX") == "1" }
 
