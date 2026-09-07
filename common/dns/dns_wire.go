@@ -36,7 +36,7 @@ func buildDNSMsg(domain string, qtype uint16) ([]byte, [2]byte) {
 		0x00, 0x00,
 		0x00, 0x00,
 	}
-	for _, label := range strings.Split(strings.TrimSuffix(domain, "."), ".") {
+	for label := range strings.SplitSeq(strings.TrimSuffix(domain, "."), ".") {
 		buf = append(buf, byte(len(label)))
 		buf = append(buf, label...)
 	}

@@ -16,9 +16,9 @@ const (
 )
 
 func ServerKeyFromSeed(seed []byte) (*ecdh.PrivateKey, error) {
-	r := hkdf.New(sha256.New, seed, nil, []byte("whispera-selector-x25519-v1"))
+	h := hkdf.New(sha256.New, seed, nil, []byte("whispera-selector-x25519-v1"))
 	raw := make([]byte, 32)
-	if _, err := io.ReadFull(r, raw); err != nil {
+	if _, err := io.ReadFull(h, raw); err != nil {
 		return nil, err
 	}
 	return ecdh.X25519().NewPrivateKey(raw)

@@ -209,8 +209,6 @@ func toView(e *TransportEntry) entryView {
 		qualityRTT = rtt.Milliseconds()
 		missedKAs = missed
 
-		// Нижележащий туннель может отвалиться сам, без нашего участия, и тогда
-		// поле Status так и осталось бы "connected". Спрашиваем менеджер.
 		if status == connStatusConnected && !e.mgr.IsConnected() {
 			status = connStatusDisconnected
 		}

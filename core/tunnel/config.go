@@ -84,7 +84,7 @@ type Config struct {
 
 	BehavioralProfile string
 
-	TransportConfig map[string]interface{}
+	TransportConfig map[string]any
 
 	ForceObfuscation bool
 

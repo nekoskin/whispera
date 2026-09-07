@@ -64,9 +64,9 @@ func loadOrCreateDeviceID() ([16]byte, error) {
 	data, err := os.ReadFile(path)
 	if err == nil {
 		s := strings.TrimSpace(string(data))
-		b, decErr := hex.DecodeString(s)
-		if decErr == nil && len(b) == 16 {
-			copy(id[:], b)
+		l, decErr := hex.DecodeString(s)
+		if decErr == nil && len(l) == 16 {
+			copy(id[:], l)
 			return id, nil
 		}
 	}

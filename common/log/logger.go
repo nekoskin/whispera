@@ -11,19 +11,19 @@ type Logger struct {
 	s *zap.SugaredLogger
 }
 
-func (l *Logger) WithField(key string, value interface{}) *Logger {
+func (l *Logger) WithField(key string, value any) *Logger {
 	return &Logger{s: l.s.With(key, value)}
 }
 
-func (l *Logger) WithFields(fields map[string]interface{}) *Logger {
-	kv := make([]interface{}, 0, len(fields)*2)
+func (l *Logger) WithFields(fields map[string]any) *Logger {
+	kv := make([]any, 0, len(fields)*2)
 	for k, v := range fields {
 		kv = append(kv, k, v)
 	}
 	return &Logger{s: l.s.With(kv...)}
 }
 
-func (l *Logger) Debug(msg string, args ...interface{}) {
+func (l *Logger) Debug(msg string, args ...any) {
 	if len(args) > 0 {
 		l.s.Debugf(msg, args...)
 	} else {
@@ -31,7 +31,7 @@ func (l *Logger) Debug(msg string, args ...interface{}) {
 	}
 }
 
-func (l *Logger) Info(msg string, args ...interface{}) {
+func (l *Logger) Info(msg string, args ...any) {
 	if len(args) > 0 {
 		l.s.Infof(msg, args...)
 	} else {
@@ -39,7 +39,7 @@ func (l *Logger) Info(msg string, args ...interface{}) {
 	}
 }
 
-func (l *Logger) Warn(msg string, args ...interface{}) {
+func (l *Logger) Warn(msg string, args ...any) {
 	if len(args) > 0 {
 		l.s.Warnf(msg, args...)
 	} else {
@@ -47,7 +47,7 @@ func (l *Logger) Warn(msg string, args ...interface{}) {
 	}
 }
 
-func (l *Logger) Error(msg string, args ...interface{}) {
+func (l *Logger) Error(msg string, args ...any) {
 	if len(args) > 0 {
 		l.s.Errorf(msg, args...)
 	} else {
@@ -55,7 +55,7 @@ func (l *Logger) Error(msg string, args ...interface{}) {
 	}
 }
 
-func (l *Logger) Fatal(msg string, args ...interface{}) {
+func (l *Logger) Fatal(msg string, args ...any) {
 	if len(args) > 0 {
 		l.s.Fatalf(msg, args...)
 	} else {
@@ -63,15 +63,15 @@ func (l *Logger) Fatal(msg string, args ...interface{}) {
 	}
 }
 
-func (l *Logger) Fatalf(format string, args ...interface{}) {
+func (l *Logger) Fatalf(format string, args ...any) {
 	l.s.Fatalf(format, args...)
 }
 
-func (l *Logger) Printf(format string, args ...interface{}) {
+func (l *Logger) Printf(format string, args ...any) {
 	l.Info(format, args...)
 }
 
-func (l *Logger) Println(args ...interface{}) {
+func (l *Logger) Println(args ...any) {
 	l.s.Info(args...)
 }
 

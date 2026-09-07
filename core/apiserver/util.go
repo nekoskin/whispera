@@ -6,9 +6,9 @@ import (
 )
 
 func randomBase64(n int) (string, error) {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
+	randomBase64 := make([]byte, n)
+	if _, err := rand.Read(randomBase64); err != nil {
 		return "", err
 	}
-	return base64.StdEncoding.EncodeToString(b), nil
+	return base64.StdEncoding.EncodeToString(randomBase64), nil
 }
