@@ -1,0 +1,63 @@
+transport:
+  udp:
+    enabled: true
+    listen_addr: ":8443"
+    max_packet_size: 65535
+    buffer_size: 4194304
+    workers: 16
+
+obfuscation:
+  profile: "default"
+
+network:
+  tun_name: "Whispera"
+  tun_ip: "198.18.0.1"
+  tun_mtu: 1500
+  dns: "1.1.1.1"
+
+session:
+  max_sessions: 10000
+  idle_timeout: 300
+  cleanup_interval: 60
+
+rate_limit:
+  handshake: 100
+  packets: 10000000
+
+logging:
+  level: "info"
+  format: "json"
+
+api:
+  enabled: true
+  listen_addr: ":8080"
+  web_root: ""
+  enable_cors: true
+  auth_token: "whispera_admin_token"
+  admin_username: "admin"
+  admin_password: "admin"
+
+whispera:
+  enabled: true
+  listen_addr: ":443"
+  domain: ""
+  acme_dir: "/var/lib/whispera/acme"
+  tls_cert: ""
+  tls_key: ""
+  decoy_origin: ""
+  quic_listen_addr: ""
+  extra_ports: []
+  quic_extra_ports: []
+
+grpc:
+  enabled: false
+  listen_addr: ":50051"
+  server_name: ""
+  tls_cert: ""
+  tls_key: ""
+  extra_ports: []
+
+yadisk:
+  enabled: false
+  oauth_token: ""
+  session_id: ""

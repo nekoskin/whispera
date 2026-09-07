@@ -1,0 +1,61 @@
+name: whisp-e2e
+
+services:
+  origin:
+    image: nginx:alpine
+    volumes:
+      - ./out/origin:/usr/share/nginx/html:ro
+    networks: [whisptest]
+
+  server:
+    build:
+      context: ../..
+      dockerfile: scripts/e2e/Dockerfile
+    command: ["/app/whispera", "-config", "/cfg/config.yaml"]
+    volumes:
+      - ./cfg:/cfg
+      - ./out:/out
+    networks: [whisptest]
+
+  censor:
+    build:
+      context: ../..
+      dockerfile: scripts/e2e/Dockerfile
+    cap_add: [NET_ADMIN, NET_RAW]
+    environment:
+      RUN_ID: "${RUN_ID:-run}"
+      CENSOR_LISTEN: ":8443"
+      CENSOR_UPSTREAM: "server:443"
+      CENSOR_ROTATE: "${CENSOR_ROTATE:-20s}"
+    command:
+      - /bin/sh
+      - -c
+      - "tcpdump -i eth0 -s 0 -w /out/dump-${RUN_ID}.pcap tcp and not port 22 & exec /app/censor 2>&1 | tee /out/censor.log"
+    volumes:
+      - ./out:/out
+    depends_on: [server]
+    networks: [whisptest]
+
+  client:
+    build:
+      context: ../..
+      dockerfile: scripts/e2e/Dockerfile
+    command: ["/app/client-run.sh"]
+    environment:
+      WHISP_KEY_FILE: /cfg/key.txt
+      WHISP_SERVER: "censor:8443"
+      ORIGIN_URL: "http://origin/payload.bin"
+      PROBE_EVERY: "${PROBE_EVERY:-2}"
+      RUN_SECONDS: "${RUN_SECONDS:-120}"
+      FILLER_IDLE_MS: "${FILLER_IDLE_MS:-400}"
+      FILLER_INTERVAL_MS: "${FILLER_INTERVAL_MS:-}"
+      FILLER_MIN: "${FILLER_MIN:-64}"
+      FILLER_MAX: "${FILLER_MAX:-1200}"
+    volumes:
+      - ./cfg:/cfg
+      - ./out:/out
+    depends_on: [censor, origin]
+    networks: [whisptest]
+
+networks:
+  whisptest:

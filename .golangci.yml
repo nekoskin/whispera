@@ -92,6 +92,8 @@ linters:
         text: "field .* is unused"
       - path: _test\.go
         linters: [funlen, gocyclo]
+      - path: scripts/e2e/
+        linters: [errcheck, noctx]
       - path: cmd/
         linters: [funlen, gocyclo, nestif, goconst, gocritic]
 

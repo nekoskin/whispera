@@ -121,3 +121,8 @@ core/protocol/fingerprint/corpus_gen_test.go
 
 # Runtime-generated GAN model state
 /ml_models/
+
+# e2e stand artifacts
+scripts/e2e/out/
+scripts/e2e/cfg/key.txt
+scripts/e2e/cfg/.config.checksum
