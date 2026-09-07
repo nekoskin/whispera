@@ -187,6 +187,8 @@ type HandshakeStrategy struct {
 	surv     map[string]float64
 	seen     map[string]int64
 	current  map[string]int
+	rev      uint64
+	saved    uint64
 }
 
 func NewHandshakeStrategy() *HandshakeStrategy {
@@ -238,6 +240,7 @@ func (h *HandshakeStrategy) Select(ctx string, arms int) int {
 			traceLog.Infow("arm_switch", "ctx", ctx, "from", cur, "to", next, "survival", h.surv[ctx])
 			h.current[ctx] = next
 			h.surv[ctx] = survSwitchThreshold
+			h.rev++
 			cur = next
 		}
 	}
@@ -290,6 +293,7 @@ func (h *HandshakeStrategy) Record(ctx string, r HandshakeResult) {
 	h.surv[ctx] += 0.05 * (surv - h.surv[ctx])
 	h.seen[ctx]++
 	h.survEWMA += 0.05 * (surv - h.survEWMA)
+	h.rev++
 	traceLog.Infow("handshake_signal",
 		"ctx", ctx, "result", int(r), "survival", h.surv[ctx], "seen", h.seen[ctx])
 }
@@ -302,6 +306,11 @@ type signalSnapshot struct {
 
 func (h *HandshakeStrategy) Save(path string) error {
 	h.mu.Lock()
+	if h.rev == h.saved {
+		h.mu.Unlock()
+		return nil
+	}
+	rev := h.rev
 	data, err := json.Marshal(signalSnapshot{Surv: h.surv, Seen: h.seen, SurvEWMA: h.survEWMA})
 	h.mu.Unlock()
 	if err != nil {
@@ -311,7 +320,13 @@ func (h *HandshakeStrategy) Save(path string) error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	h.mu.Lock()
+	h.saved = rev
+	h.mu.Unlock()
+	return nil
 }
 
 func (h *HandshakeStrategy) Load(path string) error {
@@ -331,6 +346,7 @@ func (h *HandshakeStrategy) Load(path string) error {
 		h.seen = snap.Seen
 	}
 	h.survEWMA = snap.SurvEWMA
+	h.saved = h.rev
 	h.mu.Unlock()
 	return nil
 }
@@ -394,6 +410,7 @@ func (h *HandshakeStrategy) Observe(ctx string, arm int, r HandshakeResult) {
 		surv = 1.0
 	}
 	h.survEWMA += 0.05 * (surv - h.survEWMA)
+	h.rev++
 	traceLog.Infow("handshake_control_observe",
 		"ctx", ctx, "arm", arm,
 		"result", int(r), "reward", reward, "survival_ewma", h.survEWMA)
