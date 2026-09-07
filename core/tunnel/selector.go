@@ -99,6 +99,7 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 		ServerCertPin: m.config.WhisperaCertPin,
 		ServerIDPub:   m.config.WhisperaIDPub,
 		ServerSelPub:  m.config.WhisperaSelPub,
+		DropECH:       m.config.DropECH,
 		SessionCache:  s.sessionCache,
 		TCPDialer:     tcpDialer,
 	}

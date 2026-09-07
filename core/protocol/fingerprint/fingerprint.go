@@ -49,6 +49,22 @@ func isPQCurve(g utls.CurveID) bool {
 
 func DropPQEnabled() bool { return os.Getenv("WHISPERA_DROP_PQ") != "0" }
 
+func DropECH(spec *utls.ClientHelloSpec) {
+	kept := spec.Extensions[:0]
+	for _, ext := range spec.Extensions {
+		switch e := ext.(type) {
+		case *utls.GREASEEncryptedClientHelloExtension:
+			continue
+		case *utls.GenericExtension:
+			if e.Id == 0xfe0d {
+				continue
+			}
+		}
+		kept = append(kept, ext)
+	}
+	spec.Extensions = kept
+}
+
 func DropPQKeyShares(spec *utls.ClientHelloSpec) {
 	for _, ext := range spec.Extensions {
 		switch e := ext.(type) {

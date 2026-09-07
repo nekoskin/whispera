@@ -98,6 +98,7 @@ type WhisperaKeyOptions struct {
 	SelPub      string
 	Fingerprint string
 	FPRaw       string
+	DropECH     bool
 }
 
 type AltTransportKeyOptions struct {
@@ -139,8 +140,8 @@ func CLIBuildConnectionKey(username, serverAddr, serverPubKeyB64, transport stri
 		ServerPub:        serverPubKeyB64,
 		Transport:        transport,
 		ObfsPreset:       "default",
-		ObfsProfile:      "vk",
 		EnableASNBypass:  true,
+		DropECH:          whispera.DropECH,
 		TLSFingerprint:   fingerprintOrDefault(whispera.Fingerprint),
 		WhisperaFPRaw:    whispera.FPRaw,
 		WhisperaAddr:     whispera.Addr,

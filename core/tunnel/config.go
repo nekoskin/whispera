@@ -43,6 +43,7 @@ type WhisperaOptions struct {
 	EnableWhispera   bool
 	WhisperaAddr     string
 	WhisperaSNI      string
+	DropECH          bool
 	WhisperaSecret   []byte
 	WhisperaCertPin  string
 	WhisperaIDPub    string

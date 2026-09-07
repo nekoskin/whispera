@@ -551,6 +551,9 @@ func (d *clientDialer) tlsHandshake(ctx context.Context, rawConn net.Conn, useSp
 	if fingerprint.DropPQEnabled() {
 		fingerprint.DropPQKeyShares(spec)
 	}
+	if d.cfg != nil && d.cfg.DropECH {
+		fingerprint.DropECH(spec)
+	}
 	uConn := utls.UClient(rawConn, uCfg, utls.HelloCustom)
 	if err := uConn.ApplyPreset(spec); err != nil {
 		return nil, fmt.Errorf("whispera: apply fingerprint: %w", err)
