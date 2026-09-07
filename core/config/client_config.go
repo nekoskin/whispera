@@ -81,8 +81,7 @@ type ClientRoutingRule struct {
 }
 
 type ClientDNSConfig struct {
-	Upstream    string `yaml:"upstream" json:"upstream"`
-	FakeIPRange string `yaml:"fake_ip_range" json:"fake_ip_range"`
+	Upstream string `yaml:"upstream" json:"upstream"`
 }
 
 type ClientAdBlockConfig struct {
