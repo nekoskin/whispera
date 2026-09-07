@@ -117,9 +117,13 @@ func (m *Manager) connectPerFlow(ctx context.Context) error {
 		m.setError(err)
 		return err
 	}
-	probe.Close()
-
 	m.idle.reopen()
+	if protocol.KeepAliveEnabled() {
+		m.idle.put(probe)
+	} else {
+		probe.Close()
+	}
+
 	m.setState(StateConnected)
 	m.connMu.Lock()
 	m.connectedAt = time.Now()
@@ -142,7 +146,6 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	var conn net.Conn
 	reused := false
 	if keepAlive {
-		m.idle.acquire()
 		if c := m.idle.take(); c != nil {
 			conn, reused = c, true
 		}
@@ -150,9 +153,6 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	if conn == nil {
 		c, err := dial(ctx)
 		if err != nil {
-			if keepAlive {
-				m.idle.release()
-			}
 			if ctx.Err() == nil {
 				m.setError(err)
 			}
@@ -185,16 +185,10 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 		// where we find out. Losing the request over that is needless: dial once
 		// and send it again.
 		if !reused {
-			if keepAlive {
-				m.idle.release()
-			}
 			return nil, fmt.Errorf("direct connect header: %w", err)
 		}
 		fresh, derr := dial(ctx)
 		if derr != nil {
-			if keepAlive {
-				m.idle.release()
-			}
 			if ctx.Err() == nil {
 				m.setError(derr)
 			}
@@ -204,9 +198,6 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 		raw = protocol.NetConnOf(conn)
 		splice = wantSplice && protocol.SpliceEnabled() && raw != nil && !protocol.FullFrameEnabled()
 		if _, err := conn.Write(header); err != nil {
-			if keepAlive {
-				m.idle.release()
-			}
 			conn.Close()
 			return nil, fmt.Errorf("direct connect header: %w", err)
 		}

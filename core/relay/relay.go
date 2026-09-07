@@ -686,8 +686,19 @@ func readProxyStreamHeader(stream net.Conn, wait time.Duration) (proxyStreamHead
 	}
 
 	hdr := make([]byte, 3)
-	if _, err := io.ReadFull(stream, hdr); err != nil {
-		return proxyStreamHeader{}, false
+	for {
+		if _, err := io.ReadFull(stream, hdr); err != nil {
+			return proxyStreamHeader{}, false
+		}
+		if hdr[0] != 0x17 || hdr[1] != 0x03 || hdr[2] != 0x03 {
+			break
+		}
+		if !protocol.SkipFillerRecord(stream) {
+			return proxyStreamHeader{}, false
+		}
+		if wait > 0 {
+			stream.SetReadDeadline(time.Now().Add(wait))
+		}
 	}
 	addrLen := binary.BigEndian.Uint16(hdr[1:3])
 	if addrLen == 0 || addrLen > 255 {

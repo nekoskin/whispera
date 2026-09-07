@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nekoskin/whispera/common/buf"
@@ -14,35 +15,43 @@ import (
 
 const (
 	drainWait  = 250 * time.Millisecond
+	idleMax    = 8
 	drainLimit = 64 << 10
 )
 
 type idleSet struct {
-	mu     sync.Mutex
-	conns  []net.Conn
-	inUse  int
-	peak   int
-	closed bool
+	mu      sync.Mutex
+	conns   []net.Conn
+	closed  bool
+	filling atomic.Bool
 }
 
-func (s *idleSet) acquire() {
-	s.mu.Lock()
-	if s.inUse == 0 {
-		s.peak = 0
-	}
-	s.inUse++
-	if s.inUse > s.peak {
-		s.peak = s.inUse
-	}
-	s.mu.Unlock()
-}
+func (s *idleSet) fillLoop() {
+	defer s.filling.Store(false)
+	for {
+		_, intervalMs, _, _ := protocol.Shape.Filler()
+		wait := time.Second
+		if intervalMs > 0 {
+			wait = time.Duration(intervalMs) * time.Millisecond
+		}
+		time.Sleep(wait)
 
-func (s *idleSet) release() {
-	s.mu.Lock()
-	if s.inUse > 0 {
-		s.inUse--
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return
+		}
+		for _, c := range s.conns {
+			pad, ok := protocol.FillerPad()
+			if !ok {
+				break
+			}
+			if err := protocol.WriteFillerRecord(c, pad); err != nil {
+				continue
+			}
+		}
+		s.mu.Unlock()
 	}
-	s.mu.Unlock()
 }
 
 func idleAlive(c net.Conn) bool {
@@ -77,22 +86,25 @@ func (s *idleSet) take() net.Conn {
 }
 
 func (s *idleSet) put(c net.Conn) {
+	if s.filling.CompareAndSwap(false, true) {
+		go s.fillLoop()
+	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		c.Close()
 		return
 	}
-	if s.peak > 0 && len(s.conns) >= s.peak {
-		spare := s.conns[0]
-		s.conns = s.conns[1:]
-		s.mu.Unlock()
-		c.Close()
-		spare.Close()
-		return
-	}
 	s.conns = append(s.conns, c)
+	var evict []net.Conn
+	if over := len(s.conns) - idleMax; over > 0 {
+		evict = append(evict, s.conns[:over]...)
+		s.conns = s.conns[over:]
+	}
 	s.mu.Unlock()
+	for _, e := range evict {
+		e.Close()
+	}
 }
 
 func (s *idleSet) reopen() {
@@ -166,7 +178,6 @@ func drainToEnd(base net.Conn, down *protocol.FramedConn) bool {
 func (c *keepAliveStream) Close() error {
 	var err error
 	c.once.Do(func() {
-		c.m.idle.release()
 		err = c.up.EndStream()
 		if err != nil || c.down.SwitchedRaw() {
 			c.base.Close()
