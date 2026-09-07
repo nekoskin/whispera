@@ -2,11 +2,11 @@ module github.com/nekoskin/whispera
 
 go 1.26
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7
-	github.com/quic-go/quic-go v0.59.0
+	github.com/quic-go/quic-go v0.59.1
 	github.com/refraction-networking/utls v1.8.3-0.20260301010127-aa6edf4b11af
 	github.com/sagernet/sing v0.8.11
 	github.com/sagernet/sing-mux v0.3.5
@@ -14,7 +14,7 @@ require (
 	go.uber.org/zap v1.27.1
 	golang.org/x/crypto v0.53.0
 	golang.org/x/net v0.56.0
-	google.golang.org/grpc v1.81.1
+	google.golang.org/grpc v1.82.1
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -30,7 +30,7 @@ replace (
 	golang.org/x/crypto => golang.org/x/crypto v0.53.0
 	golang.org/x/net => golang.org/x/net v0.56.0
 	golang.org/x/sys => golang.org/x/sys v0.35.0
-	golang.org/x/text => golang.org/x/text v0.28.0
+	golang.org/x/text => golang.org/x/text v0.39.0
 // gvisor.dev/gvisor => ./internal/gvisor/gvisor@v0.0.0-20251115042331-9fc4303aefe1
 )
 
