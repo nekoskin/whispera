@@ -91,13 +91,13 @@ type RoutingRule struct {
 	Priority    int
 	Conditions  []RuleCondition
 	Destination Destination
-	Metadata    map[string]interface{}
+	Metadata    map[string]any
 }
 
 type RuleCondition struct {
 	Field    string
 	Operator string
-	Value    interface{}
+	Value    any
 }
 
 type ObfuscationProcessor interface {

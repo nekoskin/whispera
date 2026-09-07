@@ -15,8 +15,8 @@ const authWindowTolerance = 1
 const clockDriftProbeWindows = 10
 
 func AuthToken(authKey []byte, window int64, sessionID []byte) string {
-	mac := hmac.New(sha256.New, authKey)
 	var wb [8]byte
+	mac := hmac.New(sha256.New, authKey)
 	binary.BigEndian.PutUint64(wb[:], uint64(window))
 	mac.Write(wb[:])
 	mac.Write(sessionID)
@@ -42,8 +42,8 @@ func VerifyAuthToken(authKey []byte, token string, sessionID []byte) bool {
 }
 
 func macMatches(authKey []byte, window int64, sessionID, want []byte) bool {
-	mac := hmac.New(sha256.New, authKey)
 	var wb [8]byte
+	mac := hmac.New(sha256.New, authKey)
 	binary.BigEndian.PutUint64(wb[:], uint64(window))
 	mac.Write(wb[:])
 	mac.Write(sessionID)

@@ -13,8 +13,8 @@ type Keys struct {
 }
 
 var deriveKeysCache = func() *lru.Cache[[32]byte, *Keys] {
-	c, _ := lru.New[[32]byte, *Keys](1024)
-	return c
+	l, _ := lru.New[[32]byte, *Keys](1024)
+	return l
 }()
 
 func DeriveKeys(sharedSecret []byte) *Keys {
@@ -24,12 +24,12 @@ func DeriveKeys(sharedSecret []byte) *Keys {
 	}
 
 	derive := func(info string) []byte {
-		r := hkdf.New(sha256.New, sharedSecret, nil, []byte(info))
-		k := make([]byte, 32)
-		if _, err := io.ReadFull(r, k); err != nil {
+		h := hkdf.New(sha256.New, sharedSecret, nil, []byte(info))
+		d := make([]byte, 32)
+		if _, err := io.ReadFull(h, d); err != nil {
 			panic("whispera hkdf: " + err.Error())
 		}
-		return k
+		return d
 	}
 
 	keys := &Keys{Auth: derive("whispera-auth-v1")}

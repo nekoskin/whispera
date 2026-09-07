@@ -26,9 +26,9 @@ func DeriveKey(psk []byte) []byte {
 }
 
 func ExtractX25519KeyShare(shares []utls.KeyShare) []byte {
-	for _, ks := range shares {
-		if ks.Group == utls.X25519 {
-			return ks.Data
+	for _, sh := range shares {
+		if sh.Group == utls.X25519 {
+			return sh.Data
 		}
 	}
 	return nil

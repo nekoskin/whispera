@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 
@@ -15,10 +14,9 @@ var resetTraceLog = logger.Trace()
 
 type TrafficConn struct {
 	net.Conn
-	UserID    string
-	closeOnce sync.Once
-	rxBytes   atomic.Int64
-	txBytes   atomic.Int64
+	UserID  string
+	rxBytes atomic.Int64
+	txBytes atomic.Int64
 }
 
 func isConnReset(err error) bool {

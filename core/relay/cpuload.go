@@ -10,7 +10,7 @@ const cpuBusyShare = 0.5
 
 var cpuLoad struct {
 	mu    sync.Mutex
-	at    time.Time
+	time  time.Time
 	spent time.Duration
 	busy  bool
 }
@@ -21,7 +21,7 @@ func cpuBusy() bool {
 	cpuLoad.mu.Lock()
 	defer cpuLoad.mu.Unlock()
 
-	if !cpuLoad.at.IsZero() && now.Sub(cpuLoad.at) < time.Second {
+	if !cpuLoad.time.IsZero() && now.Sub(cpuLoad.time) < time.Second {
 		return cpuLoad.busy
 	}
 
@@ -29,11 +29,11 @@ func cpuBusy() bool {
 	if spent == 0 {
 		return false
 	}
-	if !cpuLoad.at.IsZero() {
-		wall := now.Sub(cpuLoad.at)
+	if !cpuLoad.time.IsZero() {
+		wall := now.Sub(cpuLoad.time)
 		cores := float64(runtime.GOMAXPROCS(0))
 		cpuLoad.busy = float64(spent-cpuLoad.spent)/float64(wall)/cores >= cpuBusyShare
 	}
-	cpuLoad.at, cpuLoad.spent = now, spent
+	cpuLoad.time, cpuLoad.spent = now, spent
 	return cpuLoad.busy
 }

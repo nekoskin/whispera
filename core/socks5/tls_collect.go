@@ -16,12 +16,12 @@ type collectPeekReader struct {
 }
 
 func (h *collectPeekReader) Read(p []byte) (int, error) {
-	n, err := h.Reader.Read(p)
-	if !h.done && n > 0 {
+	r, err := h.Reader.Read(p)
+	if !h.done && r > 0 {
 		h.done = true
-		maybeCollect(p[:n])
+		maybeCollect(p[:r])
 	}
-	return n, err
+	return r, err
 }
 
 func maybeCollect(b []byte) {

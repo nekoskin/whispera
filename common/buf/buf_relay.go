@@ -35,6 +35,7 @@ func Relay(a, b net.Conn, aReader, bReader io.Reader) {
 	if bReader == nil {
 		bReader = b
 	}
+
 	done := make(chan struct{}, 2)
 
 	pump := func(dst net.Conn, src io.Reader) {
