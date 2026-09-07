@@ -2,7 +2,6 @@ package tunnel
 
 import (
 	"fmt"
-	"sync"
 	"sync/atomic"
 )
 
@@ -12,10 +11,6 @@ func (m *Manager) GetTransport() string {
 
 func (m *Manager) SetTransport(transport string) {
 	m.config.Transport = transport
-}
-
-func (m *Manager) SetSpoofIPs(ips []string) {
-	m.connCfg.SetSpoofIPs(ips)
 }
 
 func (m *Manager) SetRateLimit(kbps int) {
@@ -63,9 +58,6 @@ type connConfig struct {
 	tlsFragmentSize         atomic.Int32
 	transportSecureOverride atomic.Int32
 	forceObfuscation        atomic.Int32
-
-	spoofMu  sync.RWMutex
-	spoofIPs []string
 }
 
 func (c *connConfig) RateLimitKB() int { return int(c.rateLimitKB.Load()) }
@@ -96,15 +88,3 @@ func (c *connConfig) SetForceObfuscation(enabled bool) {
 }
 
 func (c *connConfig) IsForceObfuscation() bool { return c.transportSecureOverride.Load() == 0 }
-
-func (c *connConfig) SpoofIPs() []string {
-	c.spoofMu.RLock()
-	defer c.spoofMu.RUnlock()
-	return c.spoofIPs
-}
-
-func (c *connConfig) SetSpoofIPs(ips []string) {
-	c.spoofMu.Lock()
-	c.spoofIPs = ips
-	c.spoofMu.Unlock()
-}

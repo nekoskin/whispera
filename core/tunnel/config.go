@@ -93,9 +93,6 @@ type Config struct {
 	NoSNI       bool
 	RateLimitKB int
 
-	EnableIPSpoof  bool
-	SpoofSourceIPs []string
-
 	TLSFragmentSize int
 
 	ForceSNI string
