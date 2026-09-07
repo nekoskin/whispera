@@ -25,6 +25,7 @@ type ConnectionKey struct {
 	ObfsProfile string `json:"obfs_profile,omitempty"`
 
 	EnableASNBypass bool   `json:"asn_bypass"`
+	DropECH         bool   `json:"drop_ech,omitempty"`
 	TLSFingerprint  string `json:"tls_fingerprint,omitempty"`
 	DomainFrontHost string `json:"front_host,omitempty"`
 
@@ -264,6 +265,7 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 		Transport:        ck.Transport,
 		WhisperaAddr:     whisperaAddr,
 		WhisperaSNI:      ck.WhisperaSNI,
+		DropECH:          ck.DropECH,
 		WhisperaQUICAddr: ck.WhisperaQUICAddr,
 		WhisperaCertPin:  ck.WhisperaCertPin,
 		WhisperaIDPub:    ck.WhisperaIDPub,

@@ -24,6 +24,7 @@ type ClientConfig struct {
 	QUICAddr   string
 	OnQUICConn func(*quicgo.Conn)
 
+	DropECH          bool
 	HelloSplitOffset int
 	HelloID          utls.ClientHelloID
 	HelloRaw         []byte

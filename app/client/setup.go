@@ -235,6 +235,7 @@ func whisperaOptions(cfg *config.ClientConfig, whisperaSecret []byte) tunnel.Whi
 		WhisperaSecret:   whisperaSecret,
 		WhisperaAddr:     cfg.WhisperaAddr,
 		WhisperaSNI:      cfg.WhisperaSNI,
+		DropECH:          cfg.DropECH,
 		WhisperaQUICAddr: cfg.WhisperaQUICAddr,
 		WhisperaCertPin:  cfg.WhisperaCertPin,
 		WhisperaIDPub:    cfg.WhisperaIDPub,

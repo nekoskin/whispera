@@ -15,6 +15,7 @@ type ClientConfig struct {
 	ServerWS         string `yaml:"server_ws" json:"server_ws"`
 	WhisperaAddr     string `yaml:"whispera_addr" json:"whispera_addr"`
 	WhisperaSNI      string `yaml:"whispera_sni" json:"whispera_sni"`
+	DropECH          bool   `yaml:"drop_ech" json:"drop_ech"`
 	WhisperaCertPin  string `yaml:"whispera_cert_pin" json:"whispera_cert_pin"`
 	WhisperaIDPub    string `yaml:"whispera_idpub" json:"whispera_idpub"`
 	WhisperaSelPub   string `yaml:"whispera_selpub" json:"whispera_selpub"`

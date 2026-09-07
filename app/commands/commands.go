@@ -339,6 +339,7 @@ type createKeyFlags struct {
 	selfCert      string
 	ownDomain     string
 	domain        string
+	dropECH       bool
 }
 
 func parseCreateKeyFlags(args []string) *createKeyFlags {
@@ -357,13 +358,14 @@ func parseCreateKeyFlags(args []string) *createKeyFlags {
 	fs.StringVar(&f.selfCert, "self-cert", "", "Clone a self-signed cert for the SNI and pin it in the key (enable/disable; default: auto from server config)")
 	fs.StringVar(&f.ownDomain, "own-domain", "", "Key targets a Caddy + real-domain front: SNI/addr = the domain, no cert pin (enable/disable; default: auto from server config)")
 	fs.StringVar(&f.domain, "domain", "", "Real domain for -own-domain mode (Caddy front); addr and SNI of the key are set to this. Empty = whispera.domain from config")
+	fs.BoolVar(&f.dropECH, "dropech", false, "Strip the ECH extension from this key's ClientHello. Off by default: real Chrome sends ECH GREASE, so removing it makes the hello less ordinary. Turn on only where hellos carrying ECH are blocked")
 	fs.Parse(args)
 	return f
 }
 
 func (f *createKeyFlags) validate() error {
 	if f.user == "" || f.port == 0 {
-		return fmt.Errorf("whispera create-key -user <name> -port <port> [-config <path>] [-quic enable|disable] [-quic-port <port>] [-transport whispera|grpc|yadisk] [-yadisk-token <token>] [-yadisk-session <id>] [-sni <real-domain>] [-fingerprint <name>] [-self-cert enable|disable] [-own-domain enable|disable]")
+		return fmt.Errorf("whispera create-key -user <name> -port <port> [-config <path>] [-quic enable|disable] [-quic-port <port>] [-transport whispera|grpc|yadisk] [-yadisk-token <token>] [-yadisk-session <id>] [-sni <real-domain>] [-fingerprint <name>] [-dropech] [-self-cert enable|disable] [-own-domain enable|disable]")
 	}
 	if f.fingerprint != "auto" && !fingerprint.IsKnown(f.fingerprint) {
 		return fmt.Errorf("unknown -fingerprint %q (auto, chrome, chrome_120, chrome_115, firefox, firefox_120, safari, ios, android, edge, random)", f.fingerprint)
@@ -543,6 +545,7 @@ func RunCreateKeyCmd() {
 			SelPub:      plan.selPub,
 			Fingerprint: plan.fpName,
 			FPRaw:       plan.fpRaw,
+			DropECH:     f.dropECH,
 		}
 	}
 
