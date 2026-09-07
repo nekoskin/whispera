@@ -13,9 +13,9 @@ type Event struct {
 
 	Timestamp time.Time
 
-	Data interface{}
+	Data any
 
-	Metadata map[string]interface{}
+	Metadata map[string]any
 }
 
 type subscription struct {
@@ -31,7 +31,7 @@ type eventBus struct {
 	bufferSize  int
 	closed      bool
 	wg          sync.WaitGroup
-	subIDSeq    int64
+	subIDSeq    atomic.Int64
 }
 
 type EventBusError struct {
@@ -102,11 +102,11 @@ func (eb *eventBus) Publish(event Event) error {
 		for _, sub := range subs {
 			if sub.handler != nil {
 				sub.handler(event)
-			} else {
-				select {
-				case sub.ch <- event:
-				default:
-				}
+				continue
+			}
+			select {
+			case sub.ch <- event:
+			default:
 			}
 		}
 	}
@@ -114,11 +114,11 @@ func (eb *eventBus) Publish(event Event) error {
 	for _, sub := range eb.allSubs {
 		if sub.handler != nil {
 			sub.handler(event)
-		} else {
-			select {
-			case sub.ch <- event:
-			default:
-			}
+			continue
+		}
+		select {
+		case sub.ch <- event:
+		default:
 		}
 	}
 
@@ -147,7 +147,7 @@ func (eb *eventBus) SubscribeFunc(eventType string, handler EventHandler) func()
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 
-	id := atomic.AddInt64(&eb.subIDSeq, 1)
+	id := eb.subIDSeq.Add(1)
 	sub := subscription{id: id, handler: handler}
 	eb.subscribers[eventType] = append(eb.subscribers[eventType], sub)
 
@@ -182,16 +182,16 @@ func (eb *eventBus) Unsubscribe(eventType string, ch <-chan Event) {
 	subs := eb.subscribers[eventType]
 	for i, sub := range subs {
 		if sub.ch == ch {
-			close(sub.ch)
 			eb.subscribers[eventType] = append(subs[:i], subs[i+1:]...)
+			close(sub.ch)
 			return
 		}
 	}
 
 	for i, sub := range eb.allSubs {
 		if sub.ch == ch {
-			close(sub.ch)
 			eb.allSubs = append(eb.allSubs[:i], eb.allSubs[i+1:]...)
+			close(sub.ch)
 			return
 		}
 	}
@@ -199,14 +199,17 @@ func (eb *eventBus) Unsubscribe(eventType string, ch <-chan Event) {
 
 func (eb *eventBus) Close() {
 	eb.mu.Lock()
-	defer eb.mu.Unlock()
-
 	if eb.closed {
+		eb.mu.Unlock()
 		return
 	}
 	eb.closed = true
+	eb.mu.Unlock()
 
 	eb.wg.Wait()
+
+	eb.mu.Lock()
+	defer eb.mu.Unlock()
 
 	for _, subs := range eb.subscribers {
 		for _, sub := range subs {
@@ -226,19 +229,19 @@ func (e *EventBusError) Error() string {
 	return e.Message
 }
 
-func NewEvent(eventType, source string, data interface{}) Event {
+func NewEvent(eventType, source string, data any) Event {
 	return Event{
 		Type:      eventType,
 		Source:    source,
 		Timestamp: time.Now(),
 		Data:      data,
-		Metadata:  make(map[string]interface{}),
+		Metadata:  make(map[string]any),
 	}
 }
 
-func (e Event) WithMetadata(key string, value interface{}) Event {
+func (e Event) WithMetadata(key string, value any) Event {
 	if e.Metadata == nil {
-		e.Metadata = make(map[string]interface{})
+		e.Metadata = make(map[string]any)
 	}
 	e.Metadata[key] = value
 	return e
