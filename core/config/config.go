@@ -165,9 +165,8 @@ type RoutingConfig struct {
 	} `yaml:"geo"`
 
 	DNS struct {
-		Enabled     bool   `yaml:"enabled"`
-		Upstream    string `yaml:"upstream"`
-		FakeIPRange string `yaml:"fakeip_range"`
+		Enabled  bool   `yaml:"enabled"`
+		Upstream string `yaml:"upstream"`
 	} `yaml:"dns"`
 }
 

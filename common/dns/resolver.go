@@ -22,8 +22,6 @@ const (
 
 type Config struct {
 	Upstream        string
-	FakeIPEnabled   bool
-	FakeIPRange     string
 	CacheEnabled    bool
 	CacheSize       int
 	CacheTTL        time.Duration
@@ -53,12 +51,6 @@ type Resolver struct {
 	inflightMu sync.Mutex
 	inflight   map[string]*pending
 
-	fakeIPNet     *net.IPNet
-	fakeIPNext    uint32
-	fakeIPMu      sync.Mutex
-	fakeIPMap     map[string]net.IP
-	fakeIPReverse map[string]string
-
 	blockList   map[string]bool
 	blockListMu sync.RWMutex
 
@@ -72,8 +64,6 @@ type Resolver struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Upstream:        "8.8.8.8:53",
-		FakeIPEnabled:   false,
-		FakeIPRange:     "198.18.0.0/15",
 		CacheEnabled:    true,
 		CacheSize:       DefaultCacheSize,
 		CacheTTL:        DefaultCacheTTL,
@@ -100,19 +90,10 @@ func New(cfg *Config) (*Resolver, error) {
 	}
 
 	r := &Resolver{
-		Module:        base.NewModule(ModuleName, ModuleVersion, nil),
-		config:        cfg,
-		cache:         cache.NewLRUCache[[]net.IP](cfg.CacheSize),
-		fakeIPMap:     make(map[string]net.IP),
-		fakeIPReverse: make(map[string]string),
-		blockList:     make(map[string]bool),
-	}
-
-	if cfg.FakeIPEnabled {
-		_, ipnet, err := net.ParseCIDR(cfg.FakeIPRange)
-		if err == nil {
-			r.fakeIPNet = ipnet
-		}
+		Module:    base.NewModule(ModuleName, ModuleVersion, nil),
+		config:    cfg,
+		cache:     cache.NewLRUCache[[]net.IP](cfg.CacheSize),
+		blockList: make(map[string]bool),
 	}
 
 	return r, nil
@@ -156,11 +137,6 @@ func (r *Resolver) Resolve(ctx context.Context, domain string) ([]net.IP, error)
 			return ips, nil
 		}
 		atomic.AddUint64(&r.cacheMisses, 1)
-	}
-
-	if r.config.FakeIPEnabled {
-		ip := r.getFakeIP(domain)
-		return []net.IP{ip}, nil
 	}
 
 	ips, err := r.resolveShared(ctx, domain)
@@ -270,28 +246,4 @@ func (r *Resolver) isBlocked(domain string) bool {
 		}
 	}
 	return false
-}
-
-func (r *Resolver) getFakeIP(domain string) net.IP {
-	r.fakeIPMu.Lock()
-	defer r.fakeIPMu.Unlock()
-	if ip, ok := r.fakeIPMap[domain]; ok {
-		return ip
-	}
-	if r.fakeIPNet == nil {
-		return net.ParseIP("198.18.0.1")
-	}
-	baseIP := r.fakeIPNet.IP.To4()
-	if baseIP == nil {
-		return net.ParseIP("198.18.0.1")
-	}
-	r.fakeIPNext++
-	ip := make(net.IP, 4)
-	copy(ip, baseIP)
-	offset := r.fakeIPNext
-	ip[3] = byte(offset)
-	ip[2] = byte(offset >> 8)
-	r.fakeIPMap[domain] = ip
-	r.fakeIPReverse[ip.String()] = domain
-	return ip
 }
