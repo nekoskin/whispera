@@ -57,9 +57,20 @@ func mlDefaultDataDir() string {
 }
 
 const (
-	logKeepBytes  = 256 << 10
+	logKeepBytes  = 20 << 20
 	logCheckEvery = 64 << 10
+
+	logLinesDesktop = 5000
+	logLinesMobile  = 2000
 )
+
+// A phone has less to spare, so it keeps a shorter tail.
+func logMaxLines() int {
+	if mobileMode {
+		return logLinesMobile
+	}
+	return logLinesDesktop
+}
 
 type trimmingLog struct {
 	mu      sync.Mutex
@@ -112,7 +123,9 @@ func newTrimmingLog(path string) (*trimmingLog, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &trimmingLog{f: f, path: path}, nil
+	t := &trimmingLog{f: f, path: path}
+	t.trimLocked()
+	return t, nil
 }
 
 func (t *trimmingLog) Write(p []byte) (int, error) {
@@ -131,33 +144,61 @@ func (t *trimmingLog) Write(p []byte) (int, error) {
 	return n, err
 }
 
+func countLines(b []byte) int {
+	n := 0
+	for _, c := range b {
+		if c == 0x0a {
+			n++
+		}
+	}
+	return n
+}
+
 func (t *trimmingLog) trimLocked() {
 	fi, err := t.f.Stat()
-	if err != nil || fi.Size() <= logKeepBytes {
+	if err != nil || fi.Size() == 0 {
 		return
+	}
+
+	from := int64(0)
+	if fi.Size() > logKeepBytes {
+		from = fi.Size() - logKeepBytes
 	}
 
 	src, err := os.Open(t.path)
 	if err != nil {
 		return
 	}
-	tail := make([]byte, logKeepBytes)
-	n, _ := src.ReadAt(tail, fi.Size()-logKeepBytes)
+	buf := make([]byte, fi.Size()-from)
+	n, _ := src.ReadAt(buf, from)
 	src.Close()
 	if n == 0 {
 		return
 	}
-	tail = tail[:n]
-	if i := bytes.IndexByte(tail, '\n'); i >= 0 {
-		tail = tail[i+1:]
+	buf = buf[:n]
+	if from > 0 {
+		if i := bytes.IndexByte(buf, '\n'); i >= 0 {
+			buf = buf[i+1:]
+		}
 	}
-	if err := t.f.Truncate(0); err != nil {
+
+	var kept []byte
+	if countLines(buf) <= logMaxLines() {
+		kept = buf
+	}
+	if from == 0 && len(kept) == len(buf) {
 		return
 	}
-	if _, err := t.f.Seek(0, io.SeekStart); err != nil {
+
+	w, err := os.OpenFile(t.path, os.O_WRONLY, 0600)
+	if err != nil {
 		return
 	}
-	t.f.Write(tail)
+	defer w.Close()
+	if err := w.Truncate(0); err != nil {
+		return
+	}
+	w.Write(kept)
 }
 
 func setupLogging() {
