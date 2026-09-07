@@ -9,12 +9,14 @@ type tunnelStateMachine struct {
 	state     TunnelState
 	lastError error
 	onChange  func(old, new TunnelState)
+	ready     chan struct{}
 }
 
 func newTunnelStateMachine(onChange func(old, new TunnelState)) *tunnelStateMachine {
 	return &tunnelStateMachine{
 		state:    StateDisconnected,
 		onChange: onChange,
+		ready:    make(chan struct{}),
 	}
 }
 
@@ -31,6 +33,7 @@ func (sm *tunnelStateMachine) Set(state TunnelState) {
 	if state != StateError {
 		sm.lastError = nil
 	}
+	sm.syncReady()
 	sm.mu.Unlock()
 	if old != state && sm.onChange != nil {
 		sm.onChange(old, state)
@@ -51,6 +54,7 @@ func (sm *tunnelStateMachine) CompareAndSet(newState TunnelState, blockedStates 
 	if newState != StateError {
 		sm.lastError = nil
 	}
+	sm.syncReady()
 	sm.mu.Unlock()
 	if old != newState && sm.onChange != nil {
 		sm.onChange(old, newState)
@@ -62,6 +66,7 @@ func (sm *tunnelStateMachine) SetError(err error) {
 	sm.mu.Lock()
 	sm.state = StateError
 	sm.lastError = err
+	sm.syncReady()
 	sm.mu.Unlock()
 }
 
@@ -74,4 +79,24 @@ func (sm *tunnelStateMachine) LastError() error {
 func (sm *tunnelStateMachine) IsConnected() bool {
 	s := sm.Get()
 	return s == StateConnected || s == StateRotating
+}
+
+func (sm *tunnelStateMachine) syncReady() {
+	connected := sm.state == StateConnected || sm.state == StateRotating
+	select {
+	case <-sm.ready:
+		if !connected {
+			sm.ready = make(chan struct{})
+		}
+	default:
+		if connected {
+			close(sm.ready)
+		}
+	}
+}
+
+func (sm *tunnelStateMachine) Ready() <-chan struct{} {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.ready
 }

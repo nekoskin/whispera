@@ -376,6 +376,8 @@ func (m *Manager) LastError() error { return m.sm.LastError() }
 
 func (m *Manager) IsConnected() bool { return m.sm.IsConnected() }
 
+func (m *Manager) Ready() <-chan struct{} { return m.sm.Ready() }
+
 func (m *Manager) GetSessionID() uint32 { return m.sessionID }
 
 func (m *Manager) OnStateChange(callback func(TunnelState)) { m.onStateChange = callback }

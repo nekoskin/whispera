@@ -93,6 +93,16 @@ func (r *MultiRouter) IsConnected() bool {
 	return p != nil && p.IsConnected()
 }
 
+func (r *MultiRouter) Ready() <-chan struct{} {
+	r.mu.RLock()
+	p := r.primary
+	r.mu.RUnlock()
+	if p == nil {
+		return nil
+	}
+	return p.Ready()
+}
+
 func (r *MultiRouter) OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {
 	t := r.resolve(addr)
 	return t.OpenStream(ctx, proto, addr, port)

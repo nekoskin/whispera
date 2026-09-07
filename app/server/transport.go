@@ -172,7 +172,6 @@ func acceptLoop(ctx context.Context, name string, accept func() (net.Conn, error
 		}
 	}()
 
-	time.Sleep(1 * time.Second)
 	backoff := 1 * time.Millisecond
 	for {
 		select {

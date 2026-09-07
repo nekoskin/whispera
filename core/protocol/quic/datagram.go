@@ -133,6 +133,7 @@ type fecReceiver struct {
 	dec      *FECDecoder
 	received map[uint32][]byte
 	firstAt  map[uint32]time.Time
+	pending  chan struct{}
 }
 
 func newRTFECReceiver() *fecReceiver {
@@ -140,6 +141,7 @@ func newRTFECReceiver() *fecReceiver {
 		dec:      NewFECDecoder(fecK, fecM),
 		received: make(map[uint32][]byte),
 		firstAt:  make(map[uint32]time.Time),
+		pending:  make(chan struct{}, 1),
 	}
 }
 
@@ -153,8 +155,10 @@ func (r *fecReceiver) ingest(packet []byte) {
 	posInBlock := seq - blockStart
 
 	r.mu.Lock()
+	fresh := false
 	if _, ok := r.firstAt[blockStart]; !ok {
 		r.firstAt[blockStart] = time.Now()
+		fresh = true
 	}
 	if posInBlock < uint32(fecK) {
 		dataLen := binary.BigEndian.Uint16(packet[7:9])
@@ -164,10 +168,17 @@ func (r *fecReceiver) ingest(packet []byte) {
 	}
 	r.mu.Unlock()
 
+	if fresh {
+		select {
+		case r.pending <- struct{}{}:
+		default:
+		}
+	}
+
 	r.dec.DecodeFEC(packet, seq)
 }
 
-func (r *fecReceiver) sweep(deliver func([]byte)) {
+func (r *fecReceiver) sweep(deliver func([]byte)) bool {
 	var due []uint32
 
 	r.mu.Lock()
@@ -186,11 +197,13 @@ func (r *fecReceiver) sweep(deliver func([]byte)) {
 	for _, bs := range due {
 		delete(r.firstAt, bs)
 	}
+	left := len(r.firstAt) > 0
 	r.mu.Unlock()
 
 	for _, bs := range due {
 		r.deliverBlock(bs, deliver)
 	}
+	return left
 }
 
 func (r *fecReceiver) deliverBlock(blockStart uint32, deliver func([]byte)) {
@@ -301,14 +314,27 @@ func (c *DatagramClient) receiveLoop(ctx context.Context) {
 }
 
 func (c *DatagramClient) sweepLoop(ctx context.Context) {
-	t := time.NewTicker(fecSweepEvery)
+	t := time.NewTimer(fecSweepEvery)
 	defer t.Stop()
+	if !t.Stop() {
+		<-t.C
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
-			c.receiver.sweep(c.deliver)
+		case <-c.receiver.pending:
+		}
+		for {
+			t.Reset(fecSweepEvery)
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			if !c.receiver.sweep(c.deliver) {
+				break
+			}
 		}
 	}
 }
@@ -382,14 +408,27 @@ func (s *serverSession) receiveLoop(ctx context.Context) {
 }
 
 func (s *serverSession) sweepLoop(ctx context.Context) {
-	t := time.NewTicker(fecSweepEvery)
+	t := time.NewTimer(fecSweepEvery)
 	defer t.Stop()
+	if !t.Stop() {
+		<-t.C
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
-			s.receiver.sweep(s.handlePayload)
+		case <-s.receiver.pending:
+		}
+		for {
+			t.Reset(fecSweepEvery)
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			if !s.receiver.sweep(s.handlePayload) {
+				break
+			}
 		}
 	}
 }
@@ -487,12 +526,13 @@ func RegisterDatagramConn(sessionID []byte, conn *quicgo.Conn) {
 	}
 	key := string(sessionID)
 	sessionsMu.Lock()
-	if old, ok := sessions[key]; ok {
-		old.Close()
-	}
+	old := sessions[key]
 	sess := newServerSession(conn)
 	sessions[key] = sess
 	sessionsMu.Unlock()
+	if old != nil {
+		old.Close()
+	}
 	traceLog.Infow("rt_datagram_session_registered", "remote", conn.RemoteAddr().String())
 
 	go func() {

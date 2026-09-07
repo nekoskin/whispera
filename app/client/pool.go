@@ -140,6 +140,18 @@ func (p *tunnelPool) revive(ctx context.Context) *tunnel.Manager {
 	return revived
 }
 
+func (p *tunnelPool) Ready() <-chan struct{} {
+	for _, e := range pool.List() {
+		e.mu.Lock()
+		enabled, mgr := e.Enabled, e.mgr
+		e.mu.Unlock()
+		if enabled && mgr != nil {
+			return mgr.Ready()
+		}
+	}
+	return nil
+}
+
 func (p *tunnelPool) IsConnected() bool {
 	if p.live() != nil {
 		return true

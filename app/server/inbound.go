@@ -218,7 +218,6 @@ func acceptTCPLoop(t *tcp.Transport) {
 			log.Error("PANIC in tcp accept loop: %v\n%s", r, rtdebug.Stack())
 		}
 	}()
-	time.Sleep(1 * time.Second)
 	backoff := 1 * time.Millisecond
 	for {
 		conn, err := t.Accept()
