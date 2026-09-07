@@ -365,10 +365,10 @@ setup_sysctl() {
     log_info "Optimizing system..."
 
     cat > /etc/sysctl.d/99-whispera.conf <<'EOF'
-net.core.rmem_max = 134217728
-net.core.wmem_max = 134217728
-net.ipv4.tcp_rmem = 4096 87380 134217728
-net.ipv4.tcp_wmem = 4096 65536 134217728
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
 net.ipv4.tcp_fastopen = 3
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
@@ -1163,6 +1163,8 @@ do_update() {
             fi
         fi
     fi
+
+    apply_initcwnd
 
     PUBLIC_KEY=$(cat "$CONF_PATH/server.pub" 2>/dev/null)
     SERVER_IP=$(get_public_ip)
