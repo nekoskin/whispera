@@ -67,16 +67,13 @@ func buildCommit() string {
 var (
 	configFile     = flag.String("config", "", "Path to configuration file")
 	listenAddr     = flag.String("listen", "", "UDP/TCP listen address (default from config)")
-	apiAddr        = flag.String("api", ":8080", "API server listen address")
+	apiAddr        = flag.String("api", "", "API server listen address (default from config)")
 	debug          = flag.Bool("debug", false, "Enable debug logging")
 	printVersion   = flag.Bool("version", false, "Print version and exit")
 	validateConfig = flag.Bool("validate-config", false, "Validate configuration and exit")
 	pprofAddr      = flag.String("pprof", "localhost:6060", "Pprof server listen address")
 )
 
-// В per-flow датапати каждый поток — отдельное соединение со своим session id,
-// поэтому MaxActiveSessions ограничивает одновременные потоки, а не устройства:
-// одна загрузка страницы легко открывает их десятки. Лимит устройств — SoftIPCap.
 var globalKeyLimits = keylimits.New(keylimits.Limits{
 	MaxActiveSessions: 512,
 	GlobalCap:         10000,
