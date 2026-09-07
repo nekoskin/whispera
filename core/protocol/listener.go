@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	stdlog "log"
+	"math"
 	mrand "math/rand"
 	"net"
 	"net/http"
@@ -24,6 +25,24 @@ import (
 	"golang.org/x/net/http2"
 )
 
+func h2Buffers() (perConn, perStream int32) {
+	lim := debug.SetMemoryLimit(-1)
+	if lim <= 0 || lim >= math.MaxInt64/2 {
+		lim = 256 << 20
+	}
+	if lim > 1<<31 {
+		lim = 1 << 31
+	}
+	perConn = int32(lim / 2)
+	perStream = int32(lim / 4)
+	if perStream < 64<<10 {
+		perStream = 64 << 10
+	}
+	if perConn < perStream {
+		perConn = perStream
+	}
+	return perConn, perStream
+}
 func quicConnContext(ctx context.Context, c *quicgo.Conn) context.Context {
 	return context.WithValue(ctx, quicpkg.ConnContextKey, c)
 }
@@ -205,9 +224,10 @@ func serveBackendH2C(ctx context.Context, cfg *ServerConfig, mux *http.ServeMux)
 		backendLn.Close()
 	}()
 
+	perConn, perStream := h2Buffers()
 	h2s := &http2.Server{
-		MaxUploadBufferPerConnection: 1 << 28,
-		MaxUploadBufferPerStream:     1 << 26,
+		MaxUploadBufferPerConnection: perConn,
+		MaxUploadBufferPerStream:     perStream,
 	}
 	opts := &http2.ServeConnOpts{
 		Handler:    mux,
@@ -254,9 +274,10 @@ func newWhisperaHTTPServer(listenAddr string, mux http.Handler, tlsCfg *tls.Conf
 			traceLog.Infow("whispera_conn_state", "remote", c.RemoteAddr().String(), "state", state.String())
 		},
 	}
+	perConn, perStream := h2Buffers()
 	if err := http2.ConfigureServer(srv, &http2.Server{
-		MaxUploadBufferPerConnection: 1 << 28,
-		MaxUploadBufferPerStream:     1 << 26,
+		MaxUploadBufferPerConnection: perConn,
+		MaxUploadBufferPerStream:     perStream,
 	}); err != nil {
 		return nil, fmt.Errorf("whispera: h2 server config: %w", err)
 	}
