@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/url"
 	"strings"
 	"time"
@@ -62,18 +61,29 @@ func (ck *ConnectionKey) IsExpired() bool {
 	return ck.ExpiresAt > 0 && time.Now().Unix() > ck.ExpiresAt
 }
 
+var foreignSchemes = []string{"vless://", "vmess://", "trojan://", "ss://", "ssr://", "hysteria2://", "tuic://"}
+
+func isForeignScheme(key string) bool {
+	for _, p := range foreignSchemes {
+		if strings.HasPrefix(key, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func schemeOf(key string) string {
+	if i := strings.Index(key, "://"); i > 0 {
+		return key[:i]
+	}
+	return "unknown"
+}
+
 func ParseConnectionKey(key string) (*ConnectionKey, error) {
 	key = strings.TrimSpace(key)
 
-	switch {
-	case strings.HasPrefix(key, "vless://"):
-		return parseVLESSKey(key)
-	case strings.HasPrefix(key, "vmess://"):
-		return parseVMessKey(key)
-	case strings.HasPrefix(key, "trojan://"):
-		return parseTrojanKey(key)
-	case strings.HasPrefix(key, "ss://"):
-		return parseSSKey(key)
+	if isForeignScheme(key) {
+		return nil, fmt.Errorf("key: %s is another proxy's format, not a whispera key", schemeOf(key))
 	}
 
 	if strings.HasPrefix(key, "whispera://") && strings.Contains(key, "?") {
@@ -359,200 +369,4 @@ func parseKeyList(lines []string) ([]*ConnectionKey, error) {
 		return nil, fmt.Errorf("subscription: no valid keys found")
 	}
 	return out, nil
-}
-
-func parseVLESSKey(raw string) (*ConnectionKey, error) {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return nil, fmt.Errorf("vless: parse url: %w", err)
-	}
-	uuid := u.User.Username()
-	host := u.Hostname()
-	port := u.Port()
-	if port == "" {
-		port = "443"
-	}
-	q := u.Query()
-
-	ck := &ConnectionKey{
-		Version:    1,
-		Name:       u.Fragment,
-		Server:     net.JoinHostPort(host, port),
-		PSK:        uuid,
-		Transport:  mapXRayTransport(q.Get("type")),
-		ObfsPreset: "default",
-	}
-
-	sec := strings.ToLower(q.Get("security"))
-	if sec == "reality" || sec == "tls" {
-		ck.ServerPub = q.Get("pbk")
-	}
-
-	tc := make(map[string]interface{})
-	if path := q.Get("path"); path != "" {
-		tc["ws_path"] = path
-	}
-	if host := q.Get("host"); host != "" {
-		tc["ws_sni"] = host
-	}
-	if svc := q.Get("serviceName"); svc != "" {
-		tc["grpc_service"] = svc
-	}
-	if len(tc) > 0 {
-		ck.TransportConfig = tc
-	}
-
-	return ck, nil
-}
-
-func parseVMessKey(raw string) (*ConnectionKey, error) {
-	b64 := strings.TrimPrefix(raw, "vmess://")
-	b64 = strings.TrimRight(b64, "#")
-	if idx := strings.Index(b64, "#"); idx >= 0 {
-		b64 = b64[:idx]
-	}
-	data, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		data, err = base64.RawStdEncoding.DecodeString(b64)
-		if err != nil {
-			return nil, fmt.Errorf("vmess: decode base64: %w", err)
-		}
-	}
-
-	var v struct {
-		Name    string      `json:"ps"`
-		Add     string      `json:"add"`
-		Port    interface{} `json:"port"`
-		ID      string      `json:"id"`
-		Net     string      `json:"net"`
-		Type    string      `json:"type"`
-		Host    string      `json:"host"`
-		Path    string      `json:"path"`
-		TLS     string      `json:"tls"`
-		SNI     string      `json:"sni"`
-		SvcName string      `json:"serviceName"`
-	}
-	if err := json.Unmarshal(data, &v); err != nil {
-		return nil, fmt.Errorf("vmess: parse json: %w", err)
-	}
-
-	port := "443"
-	switch p := v.Port.(type) {
-	case float64:
-		port = fmt.Sprintf("%d", int(p))
-	case string:
-		if p != "" {
-			port = p
-		}
-	}
-
-	ck := &ConnectionKey{
-		Version:    1,
-		Name:       v.Name,
-		Server:     net.JoinHostPort(v.Add, port),
-		PSK:        v.ID,
-		Transport:  mapXRayTransport(v.Net),
-		ObfsPreset: "default",
-	}
-	tc := make(map[string]interface{})
-	if v.Path != "" {
-		tc["ws_path"] = v.Path
-	}
-	if v.Host != "" {
-		tc["ws_sni"] = v.Host
-	}
-	if v.SvcName != "" {
-		tc["grpc_service"] = v.SvcName
-	}
-	if len(tc) > 0 {
-		ck.TransportConfig = tc
-	}
-	return ck, nil
-}
-
-func parseTrojanKey(raw string) (*ConnectionKey, error) {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return nil, fmt.Errorf("trojan: parse url: %w", err)
-	}
-	password := u.User.Username()
-	host := u.Hostname()
-	port := u.Port()
-	if port == "" {
-		port = "443"
-	}
-	q := u.Query()
-	ck := &ConnectionKey{
-		Version:    1,
-		Name:       u.Fragment,
-		Server:     net.JoinHostPort(host, port),
-		PSK:        password,
-		Transport:  mapXRayTransport(q.Get("type")),
-		ObfsPreset: "default",
-	}
-	tc := make(map[string]interface{})
-	if path := q.Get("path"); path != "" {
-		tc["ws_path"] = path
-	}
-	if h := q.Get("host"); h != "" {
-		tc["ws_sni"] = h
-	}
-	if svc := q.Get("serviceName"); svc != "" {
-		tc["grpc_service"] = svc
-	}
-	if len(tc) > 0 {
-		ck.TransportConfig = tc
-	}
-	return ck, nil
-}
-
-func parseSSKey(raw string) (*ConnectionKey, error) {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return nil, fmt.Errorf("ss: parse url: %w", err)
-	}
-	name := u.Fragment
-	host := u.Hostname()
-	port := u.Port()
-	if port == "" {
-		port = "443"
-	}
-
-	var method, password string
-	if u.User != nil {
-		userinfo := u.User.Username()
-		if decoded, err := base64.StdEncoding.DecodeString(userinfo); err == nil {
-			parts := strings.SplitN(string(decoded), ":", 2)
-			if len(parts) == 2 {
-				method, password = parts[0], parts[1]
-			}
-		} else {
-			method = userinfo
-			password, _ = u.User.Password()
-		}
-	}
-
-	_ = method
-	return &ConnectionKey{
-		Version:    1,
-		Name:       name,
-		Server:     net.JoinHostPort(host, port),
-		PSK:        password,
-		Transport:  "tcp",
-		ObfsPreset: "default",
-	}, nil
-}
-
-var xrayTransportAliases = map[string]string{
-	"grpc": "grpc",
-	"quic": "quic",
-	"tcp":  "tcp",
-	"":     "tcp",
-}
-
-func mapXRayTransport(t string) string {
-	if v, ok := xrayTransportAliases[strings.ToLower(t)]; ok {
-		return v
-	}
-	return "tcp"
 }

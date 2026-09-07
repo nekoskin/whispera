@@ -59,18 +59,17 @@ func TestToClientConfigUDPOnly(t *testing.T) {
 	}
 }
 
-func TestMapXRayTransport(t *testing.T) {
-	cases := map[string]string{
-		"grpc": "grpc",
-		"GRPC": "grpc",
-		"quic": "quic",
-		"tcp":  "tcp",
-		"":     "tcp",
-		"ws":   "tcp",
-	}
-	for in, want := range cases {
-		if got := mapXRayTransport(in); got != want {
-			t.Errorf("mapXRayTransport(%q) = %q, want %q", in, got, want)
+func TestForeignKeysAreRejected(t *testing.T) {
+	for _, key := range []string{
+		"vless://uuid@example.com:443?security=reality",
+		"vmess://eyJhZGQiOiJleGFtcGxlLmNvbSJ9",
+		"trojan://pass@example.com:443",
+		"ss://YWVzOnBhc3M=@example.com:8388",
+		"hysteria2://pass@example.com:443",
+	} {
+		ck, err := ParseConnectionKey(key)
+		if err == nil {
+			t.Fatalf("%s was accepted as a whispera key: %+v", key, ck)
 		}
 	}
 }
