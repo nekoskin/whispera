@@ -16,7 +16,6 @@ import (
 
 	"github.com/nekoskin/whispera/app/commands"
 	logger "github.com/nekoskin/whispera/common/log"
-	"github.com/nekoskin/whispera/common/runtime/base"
 	"github.com/nekoskin/whispera/common/runtime/lifecycle"
 	"github.com/nekoskin/whispera/common/update"
 	"github.com/nekoskin/whispera/core/config"
@@ -158,14 +157,11 @@ func main() {
 		os.Exit(0)
 	}
 	startProfiling()
+	rtdebug.SetMemoryLimit(64 << 20)
 
 	manager := lifecycle.NewManager(lifecycle.Config{
 		ShutdownTimeout: 30 * time.Second,
 	})
-
-	memWatchdog := base.NewMemoryWatchdog(512, 1024, 30*time.Second)
-	memWatchdog.Start()
-	manager.OnShutdown(func() { memWatchdog.Stop() })
 
 	moduleCtx, moduleCancel := context.WithCancel(context.Background())
 	manager.OnShutdown(moduleCancel)
