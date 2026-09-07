@@ -164,6 +164,43 @@ func buildServerTLSConfig(cfg *ServerConfig) (*tls.Config, error) {
 	return acmeTLSConfig(cfg), nil
 }
 
+const (
+	quicListenLoudAttempts = 5
+	quicListenRetryWait    = 500 * time.Millisecond
+	quicListenRetryMax     = 30 * time.Second
+)
+
+func listenUDPRetry(ctx context.Context, addr string) (net.PacketConn, error) {
+	var lc net.ListenConfig
+	wait := quicListenRetryWait
+	for attempt := 0; ; attempt++ {
+		pconn, err := lc.ListenPacket(ctx, "udp", addr)
+		if err == nil {
+			return pconn, nil
+		}
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		switch {
+		case attempt < quicListenLoudAttempts:
+			traceLog.Warnw("quic_listen_retry", "addr", addr, "attempt", attempt+1, "in", wait.String(), "err", err.Error())
+		case attempt == quicListenLoudAttempts:
+			traceLog.Errorw("quic_listen_down", "addr", addr, "attempts", attempt, "err", err.Error(), "impact", "datagram lane is down, clients fall back to TCP")
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+		if wait < quicListenRetryMax {
+			wait *= 2
+			if wait > quicListenRetryMax {
+				wait = quicListenRetryMax
+			}
+		}
+	}
+}
+
 func startQUICServers(ctx context.Context, cfg *ServerConfig, mux *http.ServeMux, tlsCfg *tls.Config, camoKeys func() [][]byte, camoAddr func(sni string) string) (*http3.Server, []*http3.Server) {
 	if cfg.QUICListenAddr == "" || cfg.TLSCert == "" {
 		return nil, nil
@@ -187,14 +224,13 @@ func startQUICServers(ctx context.Context, cfg *ServerConfig, mux *http.ServeMux
 		}
 	}
 	serve := func(srv *http3.Server, addr string) {
-		pconn, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp", addr)
-		if err != nil {
-			traceLog.Errorw("quic_listen_failed", "addr", addr, "err", err.Error(),
-				"hint", "the datagram lane is down; clients fall back to TCP only")
-			return
-		}
-		camoConn := quicpkg.NewCamoConn(pconn, camoKeys, quicSelector(cfg), camoAddr, decoyIPRateAllow)
 		go func() {
+			pconn, err := listenUDPRetry(ctx, addr)
+			if err != nil {
+				return
+			}
+			traceLog.Infow("quic_listening", "addr", addr)
+			camoConn := quicpkg.NewCamoConn(pconn, camoKeys, quicSelector(cfg), camoAddr, decoyIPRateAllow)
 			if err := srv.Serve(camoConn); err != nil && ctx.Err() == nil {
 				traceLog.Errorw("quic_serve_stopped", "addr", addr, "err", err.Error())
 			}
