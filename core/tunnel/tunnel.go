@@ -160,9 +160,6 @@ func New(cfg *Config) (*Manager, error) {
 	if cfg.RateLimitKB > 0 {
 		m.connCfg.SetRateLimitKB(cfg.RateLimitKB)
 	}
-	if cfg.EnableIPSpoof && len(cfg.SpoofSourceIPs) > 0 {
-		m.connCfg.SetSpoofIPs(cfg.SpoofSourceIPs)
-	}
 	return m, nil
 }
 func (m *Manager) Start() error {

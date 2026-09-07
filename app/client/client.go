@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -54,8 +53,7 @@ var (
 	controlPort      = flag.String("control-port", "10801", "Control server port (default 10801)")
 	splitRulesJSON   = flag.String("split-rules", "", "Split tunnel rules as JSON, same format the host app uses")
 	dnsUpstream      = flag.String("dns", "", "DNS upstream: host:port for UDP (8.8.8.8:53), https://... for DoH (https://1.1.1.1/dns-query). Empty = 1.1.1.1:53. 'system' = ISP resolver")
-	spoofIPs         = flag.String("spoof-ips", "", "Comma-separated source IPs for IP spoofing (requires multiple local IPs)")
-	adminTokenFlag   = flag.String("admin-token", "", "Admin token required for privileged control endpoints (e.g. /spoof). Empty = no auth")
+	adminTokenFlag   = flag.String("admin-token", "", "Admin token required for privileged control endpoints. Empty = no auth")
 	tlsFragSize      = flag.Int("tls-fragment", 0, "TLS ClientHello fragment size in bytes (0=default 40, range 16-200). Smaller = harder for DPI but more RTT")
 	logFilePath      = flag.String("log-file", "", "Write logs to file (default: in-memory only, no disk storage)")
 	forceSNIFlag     = flag.String("sni", "", "Force custom SNI in TLS ClientHello for all connections (e.g. www.google.com). Overrides asn-bypass SNI")
@@ -105,7 +103,6 @@ type clientRuntime struct {
 	ctx       context.Context
 	handshake *protocol.HandshakeStrategy
 	params    *clientRuntimeParams
-	spoofList []string
 }
 
 func (r *clientRuntime) tunnelCfg(transport, addr string, tc map[string]interface{}) *tunnel.Config {
@@ -159,8 +156,6 @@ func (r *clientRuntime) entryCfg(e *TransportEntry) *tunnel.Config {
 	c.CustomSNI = customSNI
 	c.NoSNI = noSNI
 	c.RateLimitKB = rateLimitKB
-	c.EnableIPSpoof = len(r.spoofList) > 0
-	c.SpoofSourceIPs = r.spoofList
 	c.TLSFragmentSize = *tlsFragSize
 	return c
 }
@@ -184,22 +179,6 @@ func (r *clientRuntime) addStandbyTransports() {
 		e := newPoolEntry(pool.NextID(), transport, r.params.serverAddress, connStatusStandby, m)
 		pool.Add(e)
 	}
-}
-
-func (r *clientRuntime) applySpoofIPs(primary *tunnel.Manager) {
-	if *spoofIPs == "" {
-		return
-	}
-	for _, ip := range strings.Split(*spoofIPs, ",") {
-		if ip = strings.TrimSpace(ip); ip != "" {
-			r.spoofList = append(r.spoofList, ip)
-		}
-	}
-	if len(r.spoofList) == 0 {
-		return
-	}
-	primary.SetSpoofIPs(r.spoofList)
-	stdlog.Printf("IP spoofing enabled: %v", r.spoofList)
 }
 
 func (r *clientRuntime) connectBridge(bridgeCtx context.Context, router *socks5.MultiRouter, bridgeID, bridgeAddr string, rules []string) {
@@ -382,9 +361,9 @@ func waitForShutdown(ctx context.Context) {
 }
 
 func RunMain() {
+	debug.SetGCPercent(100)
+	debug.SetMemoryLimit(96 << 20)
 	if !mobileMode {
-		debug.SetGCPercent(100)
-		debug.SetMemoryLimit(200 << 20)
 		flag.Parse()
 	}
 	if *forceFingerprint != "" {
@@ -398,8 +377,8 @@ func RunMain() {
 	ctx := lc.Context()
 
 	logDeviceID()
-	handshakeSignal, stopHandshakeSignal := loadHandshakeSignal(ctx)
-	defer stopHandshakeSignal()
+	handshakeSignal, flushHandshakeSignal := loadHandshakeSignal(ctx)
+	defer flushHandshakeSignal()
 
 	socksMod, dnsMod, stm := setupNetworking(cfg)
 	defer stopPool(socksMod)
@@ -435,7 +414,6 @@ func RunMain() {
 	controlAddr = "127.0.0.1:" + *controlPort
 	adminToken = *adminTokenFlag
 	globalDNS = dnsMod
-	r.applySpoofIPs(primary.mgr)
 
 	reconnectEntry = func(e *TransportEntry) {
 		restartTransportEntry(ctx, e, r.entryCfg(e))
