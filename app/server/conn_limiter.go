@@ -16,7 +16,8 @@ const (
 )
 
 var (
-	connLimiterMu    sync.Mutex
+	connLimiterMu sync.Mutex
+
 	connLimiterPerIP = make(map[string]int)
 
 	lastRefusalLog atomic.Int64
@@ -38,8 +39,10 @@ func acquireConnSlot(addr net.Addr) (release func(), ok bool) {
 	if connLimiterPerIP[ip] >= maxTCPConnsPerIP {
 		connLimiterMu.Unlock()
 		logRefusal(ip)
+
 		return nil, false
 	}
+
 	connLimiterPerIP[ip]++
 	connLimiterMu.Unlock()
 
