@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"golang.org/x/net/proxy"
+
+	"github.com/nekoskin/whispera/core/protocol"
 )
 
 func startControlServer(ctx context.Context) {
@@ -21,13 +23,13 @@ func startControlServer(ctx context.Context) {
 	mux.HandleFunc("/connections", handleConnections)
 	mux.HandleFunc("/connections/", handleConnectionAction)
 	mux.HandleFunc("/connections/split", handleConnectionsSplit)
-	mux.HandleFunc("/spoof", handleSpoof)
 	mux.HandleFunc("/subscription", handleSubscription)
 	mux.HandleFunc("/dns", handleDNS)
 	mux.HandleFunc("/multi-bridges", handleMultiBridges(ctx))
 	mux.HandleFunc("/multi-bridges/", handleMultiBridgeByID)
 	mux.HandleFunc("/speedtest", handleSpeedtest)
 	mux.HandleFunc("/global-sni", handleGlobalSNI)
+	mux.HandleFunc("/camo", handleCamo)
 	mux.HandleFunc("/logs", handleLogs)
 	mux.HandleFunc("/wake", handleWake)
 
@@ -370,31 +372,6 @@ func handleConnectionsSplit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func handleSpoof(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	if adminToken != "" && r.Header.Get("X-Admin-Token") != adminToken {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if r.Method != http.MethodPost {
-		json.NewEncoder(w).Encode(map[string]bool{"ok": false})
-		return
-	}
-	var body struct {
-		IPs []string `json:"ips"`
-	}
-	json.NewDecoder(r.Body).Decode(&body)
-	for _, e := range pool.List() {
-		e.mu.Lock()
-		m := e.mgr
-		e.mu.Unlock()
-		if m != nil {
-			m.SetSpoofIPs(body.IPs)
-		}
-	}
-	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
-}
-
 func handleSubscription(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if globalSubscriptionMgr == nil {
@@ -515,6 +492,76 @@ func handleSpeedtest(w http.ResponseWriter, r *http.Request) {
 
 	result := runSpeedTest(r.Context(), *socksAddr, req.Target, req.Token, req.DownloadMB, req.UploadMB)
 	json.NewEncoder(w).Encode(result)
+}
+
+func camoState() map[string]int {
+	records, min, max := protocol.Shape.Get()
+	fillIdle, fillInterval, fillMin, fillMax := protocol.Shape.Filler()
+	return map[string]int{
+		"pad_records":        records,
+		"pad_min":            min,
+		"pad_max":            max,
+		"filler_idle_ms":     fillIdle,
+		"filler_interval_ms": fillInterval,
+		"filler_min":         fillMin,
+		"filler_max":         fillMax,
+	}
+}
+
+func handleCamo(w http.ResponseWriter, r *http.Request) {
+	records, min, max := protocol.Shape.Get()
+	fillIdle, fillInterval, fillMin, fillMax := protocol.Shape.Filler()
+	if r.Method == http.MethodGet {
+		json.NewEncoder(w).Encode(camoState())
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "GET or POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	body := struct {
+		PadRecords       *int `json:"pad_records"`
+		PadMin           *int `json:"pad_min"`
+		PadMax           *int `json:"pad_max"`
+		FillerIdleMs     *int `json:"filler_idle_ms"`
+		FillerIntervalMs *int `json:"filler_interval_ms"`
+		FillerMin        *int `json:"filler_min"`
+		FillerMax        *int `json:"filler_max"`
+	}{}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if body.PadRecords != nil {
+		records = *body.PadRecords
+	}
+	if body.PadMin != nil {
+		min = *body.PadMin
+	}
+	if body.PadMax != nil {
+		max = *body.PadMax
+	}
+	if body.FillerIdleMs != nil {
+		fillIdle = *body.FillerIdleMs
+	}
+	if body.FillerIntervalMs != nil {
+		fillInterval = *body.FillerIntervalMs
+	}
+	if body.FillerMin != nil {
+		fillMin = *body.FillerMin
+	}
+	if body.FillerMax != nil {
+		fillMax = *body.FillerMax
+	}
+	if err := protocol.Shape.Set(records, min, max); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := protocol.Shape.SetFiller(fillIdle, fillInterval, fillMin, fillMax); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	json.NewEncoder(w).Encode(camoState())
 }
 
 func handleGlobalSNI(w http.ResponseWriter, r *http.Request) {
