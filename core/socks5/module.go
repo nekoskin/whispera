@@ -31,6 +31,11 @@ type Config struct {
 
 	BypassFunc func(addr string, port uint16) bool
 
+	// Resolver for the bypass path. Without it a "direct" dial hands the name
+	// to the system resolver, which on a machine with our TUN up goes back
+	// through the tunnel -- so the bypass is not a bypass at all.
+	BypassResolver *net.Resolver
+
 	BlockFunc func(addr string, port uint16) bool
 
 	BlockTorrents bool
@@ -45,10 +50,12 @@ type Module struct {
 	running  int32
 	authUser string
 	authPass string
+	tunnelCh chan struct{}
 }
 
 type TunnelManager interface {
 	IsConnected() bool
+	Ready() <-chan struct{}
 	OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error)
 	DialStream(ctx context.Context, network, addr string) (net.Conn, error)
 	// DatagramClient returns the optional FEC-protected QUIC datagram channel
@@ -137,10 +144,29 @@ func (m *Module) SetAuthHandler(username, password string) {
 	m.authPass = password
 }
 
-func (m *Module) SetTunnel(tunnel TunnelManager) {
+const tunnelWait = 5 * time.Second
+const tunnelRetryWait = 50 * time.Millisecond
+
+func (m *Module) tunnelSignal() <-chan struct{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.tunnelCh == nil {
+		m.tunnelCh = make(chan struct{})
+	}
+	return m.tunnelCh
+}
+
+func (m *Module) SetTunnel(tunnel TunnelManager) {
+	m.mu.Lock()
 	m.tunnel = tunnel
+	if m.tunnelCh != nil {
+		select {
+		case <-m.tunnelCh:
+		default:
+			close(m.tunnelCh)
+		}
+	}
+	m.mu.Unlock()
 	stdlog.Printf("[SOCKS5] Tunnel set")
 }
 
@@ -166,7 +192,35 @@ func sniffTLSHello(c net.Conn) (prefix []byte, isTLS, ok bool) {
 	return prefix, hdr[0] == 0x16 && hdr[1] == 0x03, true
 }
 
+// logDial reports how long it took to get the connection up. The time the
+// connection then lives is not interesting here and would drown the useful
+// number: a keep-alive stream sits open for minutes by design.
+func logDial(route, host string, port uint16, since time.Time, err error) {
+	took := time.Since(since).Round(time.Millisecond)
+	if err != nil {
+		stdlog.Printf("[SOCKS5] %s → %s:%d failed in %s: %v", route, host, port, took, err)
+		return
+	}
+	stdlog.Printf("[SOCKS5] %s → %s:%d up in %s", route, host, port, took)
+}
+
 func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, targetPort uint16) error {
+	_, err := m.route(clientConn, targetAddr, targetPort)
+	return err
+}
+
+type countReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+func (m *Module) route(clientConn net.Conn, targetAddr string, targetPort uint16) (string, error) {
 	defer func() {
 		if r := recover(); r != nil {
 			stdlog.Printf("[SOCKS5] PANIC in handleConnection: %v", r)
@@ -174,17 +228,16 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 	}()
 
 	if m.config.BlockTorrents && isTorrentPort(targetPort) {
-		stdlog.Printf("[SOCKS5] blocked torrent port %d → %s", targetPort, targetAddr)
-		return nil
+		stdlog.Printf("[SOCKS5] blocked (torrent port) → %s:%d", targetAddr, targetPort)
+		return "", nil
 	}
 	if m.config.BlockFunc != nil && m.config.BlockFunc(targetAddr, targetPort) {
-		stdlog.Printf("[SOCKS5] blocked by rule: %s:%d", targetAddr, targetPort)
-		return nil
+		stdlog.Printf("[SOCKS5] blocked (rule) → %s:%d", targetAddr, targetPort)
+		return "", nil
 	}
 
 	if m.config.BypassFunc != nil && m.config.BypassFunc(targetAddr, targetPort) {
-		stdlog.Printf("[SOCKS5] direct (bypass) → %s:%d", targetAddr, targetPort)
-		return m.directDial(clientConn, targetAddr, targetPort)
+		return "", m.directDial(clientConn, targetAddr, targetPort)
 	}
 
 	m.mu.RLock()
@@ -192,14 +245,23 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 	m.mu.RUnlock()
 
 	if tunnel == nil || !tunnel.IsConnected() {
-		ticker := time.NewTicker(10 * time.Millisecond)
-		defer ticker.Stop()
-		deadline := time.After(5 * time.Second)
+		deadline := time.NewTimer(tunnelWait)
+		defer deadline.Stop()
 		for tunnel == nil || !tunnel.IsConnected() {
+			wait := m.tunnelSignal()
+			if tunnel != nil {
+				wait = tunnel.Ready()
+			}
+			if wait == nil {
+				c := make(chan struct{})
+				time.AfterFunc(tunnelRetryWait, func() { close(c) })
+				wait = c
+			}
 			select {
-			case <-deadline:
-				return fmt.Errorf("tunnel not ready")
-			case <-ticker.C:
+			case <-deadline.C:
+				stdlog.Printf("[SOCKS5] tunnel → %s:%d failed: tunnel not ready", targetAddr, targetPort)
+				return "", fmt.Errorf("tunnel not ready")
+			case <-wait:
 			}
 			m.mu.RLock()
 			tunnel = m.tunnel
@@ -219,7 +281,7 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 	if targetPort == 443 && protocol.SpliceEnabled() {
 		hello, isTLS, ok := sniffTLSHello(clientConn)
 		if !ok {
-			return nil
+			return "", nil
 		}
 		replay = hello
 		if isTLS {
@@ -227,9 +289,11 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 		}
 	}
 
+	dialStarted := time.Now()
 	stream, err := tunnel.OpenStream(ctx, proto, targetAddr, targetPort)
+	logDial("tunnel", targetAddr, targetPort, dialStarted, err)
 	if err != nil {
-		return fmt.Errorf("relay connect: %w", err)
+		return "", fmt.Errorf("relay connect: %w", err)
 	}
 	defer stream.Close()
 
@@ -240,13 +304,29 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 	if targetPort == 443 && CollectHook != nil {
 		src = &collectPeekReader{Reader: src}
 	}
-	buf.Relay(clientConn, stream, src, nil)
-	return nil
+
+	spliced := proto&protocol.SpliceProtoBit != 0
+	counter := &countReader{r: stream}
+	var down io.Reader
+	if spliced {
+		down = counter
+	}
+
+	buf.Relay(clientConn, stream, src, down)
+
+	if spliced {
+		protocol.MessageSpliceResult(counter.n > 0)
+	}
+
+	return "", nil
 }
 
 func (m *Module) directDial(clientConn net.Conn, host string, port uint16) error {
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	upstream, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(context.Background(), "tcp", addr)
+	d := net.Dialer{Timeout: 10 * time.Second, Resolver: m.config.BypassResolver}
+	started := time.Now()
+	upstream, err := d.DialContext(context.Background(), "tcp", addr)
+	logDial("direct (bypass)", host, port, started, err)
 	if err != nil {
 		return fmt.Errorf("direct dial %s: %w", addr, err)
 	}

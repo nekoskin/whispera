@@ -196,11 +196,12 @@ func setupNetworking(cfg *config.ClientConfig) (*socks5.Module, *dns.Resolver, *
 	stm := setupSplitTunnel(cfg)
 
 	socksMod, _ := socks5.New(&socks5.Config{
-		ListenAddr:    *socksAddr,
-		Debug:         true,
-		MTU:           cfg.MTU,
-		BypassFunc:    stm.ShouldBypass,
-		BlockTorrents: true,
+		ListenAddr:     *socksAddr,
+		Debug:          true,
+		MTU:            cfg.MTU,
+		BypassFunc:     stm.ShouldBypass,
+		BypassResolver: bypassDNSResolver,
+		BlockTorrents:  true,
 	})
 	generateSocksAuth()
 	socksMod.SetAuthHandler(socksUser, socksPass)
