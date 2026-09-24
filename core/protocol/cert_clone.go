@@ -29,7 +29,10 @@ type ClonedCertInfo struct {
 	NotAfter  time.Time
 }
 
-func fetchRealCert(domain string) (*x509.Certificate, error) {
+// fetchRealCert returns the site's whole chain, leaf first. The intermediates
+// are what make a real handshake as large as it is; dropping them left our
+// authenticated flight several times smaller than the site we impersonate.
+func fetchRealCert(domain string) ([]*x509.Certificate, error) {
 	host := domain
 	if h, _, err := net.SplitHostPort(domain); err == nil {
 		host = h
@@ -54,7 +57,7 @@ func fetchRealCert(domain string) (*x509.Certificate, error) {
 	if len(certs) == 0 {
 		return nil, fmt.Errorf("no certificate presented by %s", addr)
 	}
-	return certs[0], nil
+	return certs, nil
 }
 
 func cloneCertTemplate(real *x509.Certificate) (*x509.Certificate, error) {
@@ -111,29 +114,38 @@ func existingValidClone(domain, certPath, keyPath string) (*ClonedCertInfo, bool
 	}, true
 }
 
-func reuseExistingClone(certPath, keyPath string) (*ecdsa.PrivateKey, *x509.Certificate) {
+func chainAfterLeaf(der [][]byte) [][]byte {
+	if len(der) < 2 {
+		return nil
+	}
+	out := make([][]byte, len(der)-1)
+	copy(out, der[1:])
+	return out
+}
+
+func reuseExistingClone(certPath, keyPath string) (*ecdsa.PrivateKey, [][]byte, *x509.Certificate) {
 	pair, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil || len(pair.Certificate) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	priv, ok := pair.PrivateKey.(*ecdsa.PrivateKey)
 	if !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
 	leaf, err := x509.ParseCertificate(pair.Certificate[0])
 	if err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	notBefore := time.Now().Add(-24 * time.Hour)
 	validity := leaf.NotAfter.Sub(leaf.NotBefore)
 	if validity <= 0 {
 		validity = 90 * 24 * time.Hour
 	}
-	return priv, &x509.Certificate{
+	return priv, chainAfterLeaf(pair.Certificate), &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               leaf.Subject,
 		DNSNames:              leaf.DNSNames,
@@ -146,10 +158,12 @@ func reuseExistingClone(certPath, keyPath string) (*ecdsa.PrivateKey, *x509.Cert
 	}
 }
 
-func writePEM(path string, mode os.FileMode, block *pem.Block) error {
+func writePEM(path string, mode os.FileMode, blocks ...*pem.Block) error {
 	var buf bytes.Buffer
-	if err := pem.Encode(&buf, block); err != nil {
-		return fmt.Errorf("encode %s: %w", path, err)
+	for _, block := range blocks {
+		if err := pem.Encode(&buf, block); err != nil {
+			return fmt.Errorf("encode %s: %w", path, err)
+		}
 	}
 	if err := fsown.WriteFile(path, buf.Bytes(), mode); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
@@ -172,13 +186,17 @@ func cloneCertToFiles(domain, outCert, outKey string, force bool) (*ClonedCertIn
 		}
 	}
 
-	priv, template := reuseExistingClone(outCert, outKey)
+	priv, chain, template := reuseExistingClone(outCert, outKey)
 	if priv == nil || template == nil {
 		real, err := fetchRealCert(domain)
 		if err != nil {
 			return nil, fmt.Errorf("fetch real certificate from %s: %w", domain, err)
 		}
-		template, err = cloneCertTemplate(real)
+		chain = nil
+		for _, c := range real[1:] {
+			chain = append(chain, c.Raw)
+		}
+		template, err = cloneCertTemplate(real[0])
 		if err != nil {
 			return nil, fmt.Errorf("build certificate template: %w", err)
 		}
@@ -208,7 +226,11 @@ func cloneCertToFiles(domain, outCert, outKey string, force bool) (*ClonedCertIn
 		return nil, fmt.Errorf("create certificate: %w", err)
 	}
 
-	if err := writePEM(outCert, 0644, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
+	blocks := []*pem.Block{{Type: "CERTIFICATE", Bytes: derBytes}}
+	for _, der := range chain {
+		blocks = append(blocks, &pem.Block{Type: "CERTIFICATE", Bytes: der})
+	}
+	if err := writePEM(outCert, 0644, blocks...); err != nil {
 		return nil, err
 	}
 
