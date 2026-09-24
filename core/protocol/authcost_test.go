@@ -53,3 +53,32 @@ func BenchmarkResolveSecret(b *testing.B) {
 		})
 	}
 }
+
+func BenchmarkResolveSecretWithSessionHint(b *testing.B) {
+	const n = 1000
+	users := benchUsers(n)
+	cfg := benchConfig(users)
+	sessionID := make([]byte, 16)
+	rand.Read(sessionID)
+	window := time.Now().UTC().Truncate(time.Second).Unix() / authWindowSeconds
+
+	last := DeriveKeys(users[n-1].PSK)
+	token := AuthToken(last.Auth, window, sessionID)
+
+	b.Run("scan", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, id := resolveSecret(cfg, token, sessionID); id == "" {
+				b.Fatal("expected a match")
+			}
+		}
+	})
+
+	cfg.rememberUser(sessionID, knownUser{id: users[n-1].UserID, psk: users[n-1].PSK})
+	b.Run("hint", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, id := resolveSecretFor(cfg, cfg.userHint(sessionID), token, sessionID); id == "" {
+				b.Fatal("expected a match")
+			}
+		}
+	})
+}

@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -122,7 +123,7 @@ func staticCertTLSConfig(cfg *ServerConfig) (*tls.Config, error) {
 	return &tls.Config{
 		Certificates:           []tls.Certificate{cert},
 		NextProtos:             []string{"h2", "http/1.1"},
-		MinVersion:             tls.VersionTLS13,
+		MinVersion:             tls.VersionTLS12,
 		CipherSuites:           cdnCipherSuites,
 		CurvePreferences:       cdnCurves,
 		SessionTicketsDisabled: SpliceEnabled(),
@@ -322,15 +323,15 @@ func newWhisperaHTTPServer(listenAddr string, mux http.Handler, tlsCfg *tls.Conf
 
 func quicSelector(cfg *ServerConfig) func(random, keyShare []byte) bool {
 	return func(random, keyShare []byte) bool {
-		_, ok := resolveBySelector(cfg, random, keyShare)
-		return ok
+		_, reason := resolveBySelector(cfg, random, keyShare)
+		return reason == selReasonOK
 	}
 }
 
 func camoTLSListener(base net.Listener, cfg *ServerConfig, tlsCfg *tls.Config, camoKeys func() [][]byte, camoAddr func(string) string) net.Listener {
-	bySelector := func(random, keyShare []byte) (string, []byte, bool) {
-		entry, ok := resolveBySelector(cfg, random, keyShare)
-		return entry.userID, entry.psk, ok
+	bySelector := func(random, keyShare []byte) (string, []byte, string) {
+		entry, reason := resolveBySelector(cfg, random, keyShare)
+		return entry.userID, entry.psk, reason
 	}
 	ln := tls.NewListener(newCamouflageListener(base, camoKeys, bySelector, camoAddr), tlsCfg)
 	if perflowEnabled() {
@@ -550,6 +551,7 @@ func handlePerflowConn(c net.Conn, cfg *ServerConfig) {
 		reject("unknown_token", nil)
 		return
 	}
+	cfg.rememberUser(sessionID, knownUser{id: userID, psk: secret})
 	if !cfg.consumeToken(string(tok)) {
 		reject("token_replayed", nil)
 		return
@@ -585,7 +587,7 @@ func registerRTDatagrams(w http.ResponseWriter, r *http.Request, cfg *ServerConf
 	}
 
 	token := tokenHdr[7:]
-	secret, userID := resolveSecret(cfg, token, sessionID)
+	secret, userID := resolveSecretFor(cfg, cfg.userHint(sessionID), token, sessionID)
 	if secret == nil {
 		traceLog.Infow("rt_datagram_decoy_fallback", "reason", "secret_not_resolved", "remote", r.RemoteAddr)
 		return false
@@ -609,9 +611,13 @@ func registerRTDatagrams(w http.ResponseWriter, r *http.Request, cfg *ServerConf
 }
 
 func resolveSecret(cfg *ServerConfig, token string, sessionID []byte) ([]byte, string) {
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(raw) != 32 {
+		return nil, ""
+	}
 	if len(cfg.SharedSecret) == 32 {
 		k := DeriveKeys(cfg.SharedSecret)
-		if VerifyAuthToken(k.Auth, token, sessionID) {
+		if VerifyAuthTokenRaw(k.Auth, raw, sessionID) {
 			return cfg.SharedSecret, "default"
 		}
 	}
@@ -623,7 +629,7 @@ func resolveSecret(cfg *ServerConfig, token string, sessionID []byte) ([]byte, s
 			continue
 		}
 		k := DeriveKeys(u.PSK)
-		if VerifyAuthToken(k.Auth, token, sessionID) {
+		if VerifyAuthTokenRaw(k.Auth, raw, sessionID) {
 			return u.PSK, u.UserID
 		}
 	}

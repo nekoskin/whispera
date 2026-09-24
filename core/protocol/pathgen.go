@@ -29,7 +29,17 @@ func ClientAuthToken(authKey, sessionID []byte) string {
 
 func VerifyAuthToken(authKey []byte, token string, sessionID []byte) bool {
 	raw, err := base64.RawURLEncoding.DecodeString(token)
-	if err != nil || len(raw) != 32 {
+	if err != nil {
+		return false
+	}
+	return VerifyAuthTokenRaw(authKey, raw, sessionID)
+}
+
+// VerifyAuthTokenRaw takes the token already decoded. Resolving a secret walks
+// every user, and decoding the same base64 string once per user was an
+// allocation and a decode repeated as many times as there are keys.
+func VerifyAuthTokenRaw(authKey, raw, sessionID []byte) bool {
+	if len(raw) != 32 {
 		return false
 	}
 	w := time.Now().Unix() / authWindowSeconds
