@@ -88,15 +88,26 @@ func TestKeepAliveStreamFollowsSwitchToRaw(t *testing.T) {
 
 type poolConn struct {
 	net.Conn
-	r      *bytes.Reader
 	closed atomic.Bool
 }
 
-func (c *poolConn) Read(b []byte) (int, error)  { return c.r.Read(b) }
-func (c *poolConn) Write(b []byte) (int, error) { return len(b), nil }
-func (c *poolConn) Close() error                { c.closed.Store(true); return nil }
+func (c *poolConn) Close() error {
+	c.closed.Store(true)
+	return c.Conn.Close()
+}
 
-func (c *poolConn) SetReadDeadline(time.Time) error { return nil }
+func newPoolConn(t *testing.T, wire []byte) *poolConn {
+	t.Helper()
+	local, remote := net.Pipe()
+	t.Cleanup(func() { _ = remote.Close() })
+	go func() {
+		if _, err := remote.Write(wire); err != nil {
+			return
+		}
+		_, _ = io.Copy(io.Discard, remote)
+	}()
+	return &poolConn{Conn: local}
+}
 
 // Wire the server sends for a short answer: data records, then the end marker.
 func shortAnswerWire(payloads [][]byte) []byte {
@@ -110,7 +121,7 @@ func shortAnswerWire(payloads [][]byte) []byte {
 
 func TestKeepAliveStreamReturnsConnectionToPool(t *testing.T) {
 	m := newTestManager(t)
-	base := &poolConn{r: bytes.NewReader(shortAnswerWire([][]byte{[]byte("page"), []byte("body")}))}
+	base := newPoolConn(t, shortAnswerWire([][]byte{[]byte("page"), []byte("body")}))
 	fc := protocol.NewFramedConn(base, protocol.NewShapeBudget())
 	ks := &keepAliveStream{Conn: base, up: fc, down: fc, m: m, base: base}
 
@@ -150,7 +161,7 @@ func TestKeepAliveStreamReturnsConnectionToPool(t *testing.T) {
 
 func TestKeepAliveStreamDiscardsUnfinishedStream(t *testing.T) {
 	m := newTestManager(t)
-	base := &poolConn{r: bytes.NewReader(framedRecord([]byte("partial"), -1))}
+	base := newPoolConn(t, framedRecord([]byte("partial"), -1))
 	fc := protocol.NewFramedConn(base, protocol.NewShapeBudget())
 	ks := &keepAliveStream{Conn: base, up: fc, down: fc, m: m, base: base}
 
@@ -175,6 +186,37 @@ func TestKeepAliveStreamDiscardsUnfinishedStream(t *testing.T) {
 	m.idle.mu.Unlock()
 	if pooled != 0 {
 		t.Errorf("idleSet holds %d connections: an unfinished stream was pooled", pooled)
+	}
+}
+
+func TestPooledConnectionOutlivesTheStreamDeadline(t *testing.T) {
+	m := newTestManager(t)
+	base := newPoolConn(t, shortAnswerWire([][]byte{[]byte("answer")}))
+	fc := protocol.NewFramedConn(base, protocol.NewShapeBudget())
+	ks := &keepAliveStream{Conn: base, up: fc, down: fc, m: m, base: base}
+
+	if err := ks.SetDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+		t.Fatalf("SetDeadline() error = %v", err)
+	}
+	if _, err := io.Copy(io.Discard, ks); err != nil {
+		t.Fatalf("read answer: %v", err)
+	}
+	if err := ks.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for pooled(&m.idle) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	c := m.idle.take()
+	if c == nil {
+		t.Fatal("finished stream was not pooled")
+	}
+	if _, err := c.Write([]byte("next stream")); err != nil {
+		t.Fatalf("write on a pooled connection: %v: the last stream's deadline stayed on it, and TLS spends a record number on every such failed write", err)
 	}
 }
 
