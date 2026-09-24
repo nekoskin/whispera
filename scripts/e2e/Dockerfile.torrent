@@ -1,0 +1,15 @@
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -mod=vendor -o /out/whispera ./app/server \
+ && CGO_ENABLED=0 go build -mod=vendor -o /out/whispera-go-client ./app/goclient \
+ && CGO_ENABLED=0 go build -mod=vendor -o /out/censor ./scripts/e2e/censor \
+ && CGO_ENABLED=0 go build -mod=vendor -o /out/torrentsim ./scripts/e2e/torrentsim
+
+FROM alpine:3.20
+RUN apk add --no-cache curl ca-certificates
+COPY --from=build /out/whispera /app/whispera
+COPY --from=build /out/whispera-go-client /app/whispera-go-client
+COPY --from=build /out/censor /app/censor
+COPY --from=build /out/torrentsim /app/torrentsim
+WORKDIR /app

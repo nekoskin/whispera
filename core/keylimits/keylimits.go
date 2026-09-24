@@ -32,6 +32,7 @@ type Session struct {
 	RemoteIP  string
 	StartedAt time.Time
 	LastSeen  time.Time
+	IsTorrent bool
 }
 
 type Snapshot struct {
@@ -147,7 +148,7 @@ func (m *Manager) Admit(keyID, sessionID, remoteIP string) (DenyReason, string) 
 		m.sessions[keyID] = km
 	}
 
-	if l.MaxActiveSessions > 0 && len(km) >= l.MaxActiveSessions {
+	if l.MaxActiveSessions > 0 && normalCount(km) >= l.MaxActiveSessions {
 		return ReasonActiveCap, fmt.Sprintf(
 			"Too many simultaneous connections from this key (%d). Close some tabs or applications and retry.",
 			l.MaxActiveSessions,
@@ -172,6 +173,26 @@ func (m *Manager) Admit(keyID, sessionID, remoteIP string) (DenyReason, string) 
 	}
 	m.totalSessions.Add(1)
 	return ReasonNone, ""
+}
+
+func normalCount(km map[string]*Session) int {
+	n := 0
+	for _, s := range km {
+		if !s.IsTorrent {
+			n++
+		}
+	}
+	return n
+}
+
+func (m *Manager) MarkTorrent(keyID, sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if km, ok := m.sessions[keyID]; ok {
+		if s, ok := km[sessionID]; ok {
+			s.IsTorrent = true
+		}
+	}
 }
 
 func (m *Manager) Touch(keyID, sessionID string) {

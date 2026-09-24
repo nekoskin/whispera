@@ -1,0 +1,65 @@
+name: whisp-torrent
+
+services:
+  origin:
+    image: nginx:alpine
+    volumes:
+      - ./out/origin:/usr/share/nginx/html:ro
+      - ./cfg/origin-tls:/etc/nginx/tls:ro
+      - ./cfg/origin-nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks: [t]
+
+  sink:
+    build:
+      context: ../..
+      dockerfile: scripts/e2e/Dockerfile.torrent
+    command: ["/app/torrentsim"]
+    environment:
+      MODE: sink
+      SINK_LISTEN: "0.0.0.0:51999"
+    networks: [t]
+
+  server:
+    build:
+      context: ../..
+      dockerfile: scripts/e2e/Dockerfile.torrent
+    command: ["/app/whispera", "-config", "/cfg/config.yaml"]
+    environment:
+      SSL_CERT_FILE: /cfg/origin-tls/ca.crt
+      WHISPERA_MAX_ACTIVE_SESSIONS: "${MAX_SESS:-3}"
+    volumes:
+      - ./cfg:/cfg
+      - ./out:/out
+    networks: [t]
+
+  censor:
+    build:
+      context: ../..
+      dockerfile: scripts/e2e/Dockerfile.torrent
+    environment:
+      CENSOR_LISTEN: ":8443"
+      CENSOR_UPSTREAM: "server:443"
+      CENSOR_MODE: "proxy"
+    command: ["/app/censor"]
+    depends_on: [server]
+    networks: [t]
+
+  client:
+    build:
+      context: ../..
+      dockerfile: scripts/e2e/Dockerfile.torrent
+    command:
+      - /bin/sh
+      - -c
+      - '/app/whispera-go-client -key "$$(cat /cfg/torrent-key.txt)" -socks 0.0.0.0:1081 -no-tun -hwid=false -log-file /out/torrent-client.log'
+    environment:
+      WHISPERA_TORRENT_TAG: "${TAG:-1}"
+      WHISPERA_KEEPALIVE: "0"
+    volumes:
+      - ./cfg:/cfg
+      - ./out:/out
+    depends_on: [server, origin, sink]
+    networks: [t]
+
+networks:
+  t:

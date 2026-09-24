@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime"
 	rtdebug "runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -74,10 +75,17 @@ var (
 	pprofAddr      = flag.String("pprof", "localhost:6060", "Pprof server listen address")
 )
 
+func envInt(name string, def int) int {
+	if v, err := strconv.Atoi(os.Getenv(name)); err == nil {
+		return v
+	}
+	return def
+}
+
 var globalKeyLimits = keylimits.New(keylimits.Limits{
-	MaxActiveSessions: 512,
-	GlobalCap:         10000,
-	SoftIPCap:         5,
+	MaxActiveSessions: envInt("WHISPERA_MAX_ACTIVE_SESSIONS", 2048),
+	GlobalCap:         envInt("WHISPERA_GLOBAL_CAP", 10000),
+	SoftIPCap:         envInt("WHISPERA_SOFT_IP_CAP", 15),
 	BurstPerMinute:    0,
 	SessionTTL:        30 * time.Minute,
 })

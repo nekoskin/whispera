@@ -4,6 +4,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/nekoskin/whispera/core/protocol"
 )
 
 type headerConn struct {
@@ -43,4 +45,21 @@ func FuzzReadProxyStreamHeader(f *testing.F) {
 		_ = h.target()
 		_ = h.network()
 	})
+}
+
+func TestReadProxyStreamHeaderTagsTorrent(t *testing.T) {
+	data := append([]byte{0x06 | protocol.TorrentProtoBit, 0x00, 0x03, 'a', 'b', 'c'}, 0x1a, 0xe1)
+	h, ok := readProxyStreamHeader(&headerConn{in: data}, 0)
+	if !ok {
+		t.Fatal("header parse failed")
+	}
+	if !h.torrent {
+		t.Fatal("torrent bit not detected")
+	}
+	if h.proto&protocol.TorrentProtoBit != 0 {
+		t.Fatal("torrent bit must be stripped from the returned proto")
+	}
+	if h.addr != "abc" || h.port != 6881 {
+		t.Fatalf("addr/port wrong: %s:%d", h.addr, h.port)
+	}
 }

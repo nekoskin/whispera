@@ -282,18 +282,18 @@ func (s *Server) HealthCheck() interfaces.HealthStatus {
 var tunnelTraceSeq uint64
 
 func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
-	s.serveTunnel(conn, streamObf, nil)
+	s.serveTunnel(conn, streamObf, nil, nil)
 }
 
 func (s *Server) ServeTunnelRaw(conn net.Conn, streamObf bool) {
-	s.serveTunnel(conn, streamObf, nil)
+	s.serveTunnel(conn, streamObf, nil, nil)
 }
 
-func (s *Server) ServeTunnelResilient(conn net.Conn, streamObf bool, secret []byte) {
-	s.serveTunnel(conn, streamObf, secret)
+func (s *Server) ServeTunnelResilient(conn net.Conn, streamObf bool, secret []byte, onTorrent func()) {
+	s.serveTunnel(conn, streamObf, secret, onTorrent)
 }
 
-func (s *Server) serveTunnel(conn net.Conn, streamObf bool, secret []byte) {
+func (s *Server) serveTunnel(conn net.Conn, streamObf bool, secret []byte, onTorrent func()) {
 	clientID := conn.RemoteAddr().String()
 	defer conn.Close()
 	defer func() {
@@ -301,10 +301,10 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, secret []byte) {
 			s.log.Error("PANIC in tunnel session for %s: %v\n%s", clientID, r, debug.Stack())
 		}
 	}()
-	s.runSession(conn, streamObf, clientID)
+	s.runSession(conn, streamObf, clientID, onTorrent)
 }
 
-func (s *Server) runSession(under net.Conn, streamObf bool, clientID string) {
+func (s *Server) runSession(under net.Conn, streamObf bool, clientID string, onTorrent func()) {
 	traceID := atomic.AddUint64(&tunnelTraceSeq, 1)
 	logger.Trace().Infow("serve_tunnel_enter",
 		"trace_id", traceID,
@@ -329,7 +329,7 @@ func (s *Server) runSession(under net.Conn, streamObf bool, clientID string) {
 	pad := protocol.NewShapeBudget()
 	wait := proxyHeaderWait
 	for {
-		if !s.handleProxyStream(traceID, clientID, under, wait, pad) {
+		if !s.handleProxyStream(traceID, clientID, under, wait, pad, onTorrent) {
 			return
 		}
 		wait = 0
@@ -664,6 +664,7 @@ type proxyStreamHeader struct {
 	proto     byte
 	splice    bool
 	keepAlive bool
+	torrent   bool
 	addr      string
 	port      uint16
 }
@@ -712,9 +713,10 @@ func readProxyStreamHeader(stream net.Conn, wait time.Duration) (proxyStreamHead
 
 	proto := hdr[0]
 	return proxyStreamHeader{
-		proto:     proto &^ (protocol.SpliceProtoBit | protocol.KeepAliveProtoBit),
+		proto:     proto &^ (protocol.SpliceProtoBit | protocol.KeepAliveProtoBit | protocol.TorrentProtoBit),
 		splice:    proto&protocol.SpliceProtoBit != 0 && protocol.SpliceEnabled(),
 		keepAlive: proto&protocol.KeepAliveProtoBit != 0,
+		torrent:   proto&protocol.TorrentProtoBit != 0,
 		addr:      string(rest[:addrLen]),
 		port:      binary.BigEndian.Uint16(rest[addrLen:]),
 	}, true
@@ -757,7 +759,7 @@ func collectCopyResults(resCh chan copyResult) (up, down int64, firstErr error, 
 	return up, down, firstErr, firstDir
 }
 
-func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.Conn, wait time.Duration, pad *protocol.ShapeBudget) (reusable bool) {
+func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.Conn, wait time.Duration, pad *protocol.ShapeBudget, onTorrent func()) (reusable bool) {
 	defer func() {
 		if !reusable {
 			stream.Close()
@@ -773,6 +775,9 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 	h, ok := readProxyStreamHeader(stream, wait)
 	if !ok {
 		return false
+	}
+	if h.torrent && onTorrent != nil {
+		onTorrent()
 	}
 	targetAddr := h.target()
 	network := h.network()

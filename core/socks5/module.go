@@ -8,6 +8,7 @@ import (
 	"io"
 	stdlog "log"
 	"net"
+	"os"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -144,6 +145,7 @@ func (m *Module) SetAuthHandler(username, password string) {
 	m.authPass = password
 }
 
+const torrentSniffWait = 300 * time.Millisecond
 const tunnelWait = 5 * time.Second
 const tunnelRetryWait = 50 * time.Millisecond
 
@@ -178,10 +180,23 @@ func isTorrentPort(port uint16) bool {
 	return port >= 6881 && port <= 6889
 }
 
-// sniffTLSHello waits for the client to speak first, which on 443 it always
-// does. There is no deadline on purpose: browsers open connections ahead of a
-// click and leave them silent, and a deadline turned every one of those into a
-// tunnel stream and a dial to the site that nobody ever used.
+func torrentTagEnabled() bool { return os.Getenv("WHISPERA_TORRENT_TAG") != "0" }
+
+const btHandshakeLen = 20
+
+func isBitTorrent(prefix []byte) bool {
+	return len(prefix) >= btHandshakeLen && prefix[0] == 0x13 &&
+		string(prefix[1:btHandshakeLen]) == "BitTorrent protocol"
+}
+
+func sniffPrefix(c net.Conn, n int, wait time.Duration) []byte {
+	c.SetReadDeadline(time.Now().Add(wait))
+	buf := make([]byte, n)
+	got, _ := io.ReadFull(c, buf)
+	c.SetReadDeadline(time.Time{})
+	return buf[:got]
+}
+
 func sniffTLSHello(c net.Conn) (prefix []byte, isTLS, ok bool) {
 	hdr := make([]byte, 3)
 	n, err := io.ReadFull(c, hdr)
@@ -285,6 +300,11 @@ func (m *Module) route(clientConn net.Conn, targetAddr string, targetPort uint16
 		}
 		replay = hello
 		if isTLS {
+	} else if torrentTagEnabled() && targetPort != 80 && targetPort != 443 {
+		replay = sniffPrefix(clientConn, btHandshakeLen, torrentSniffWait)
+		if isBitTorrent(replay) {
+			proto |= protocol.TorrentProtoBit
+		}
 			proto |= protocol.SpliceProtoBit
 		}
 	}
