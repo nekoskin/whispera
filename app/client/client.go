@@ -65,6 +65,7 @@ var (
 	bypassDNS        = flag.String("bypass-dns", "77.88.8.8:53", "DNS server used for bypass resolver (never goes through tunnel)")
 	hwidFlag         = flag.Bool("hwid", true, "Send a persistent per-device ID in the handshake (false = random ID per connection)")
 	forceFingerprint = flag.String("force-fingerprint", "", "Force a specific TLS fingerprint for the main tunnel handshake: chrome, chrome_120, chrome_115, firefox, firefox_120, safari, ios, android, edge. Empty = auto/random (default)")
+	verbose          = flag.Bool("verbose", false, "Log every connection. Off keeps only failures and lifecycle events, so a page opening many connections a second does not flood the log")
 )
 
 func loadHandshakeSignal(ctx context.Context) (*protocol.HandshakeStrategy, func()) {
@@ -160,10 +161,10 @@ func (r *clientRuntime) entryCfg(e *TransportEntry) *tunnel.Config {
 	c.NoSNI = noSNI
 	c.RateLimitKB = rateLimitKB
 	c.TLSFragmentSize = *tlsFragSize
-	return c
 	c.TLSFragmentDelayMinMs, c.TLSFragmentDelayMaxMs, c.TLSFragmentDelaySet = parseFragmentDelay(*tlsFragDelay)
 	c.TLSFragmentCount = *tlsFragCount
 	c.TLSFragmentDisabled = !*helloFrag
+	return c
 }
 
 func newPoolEntry(id, transport, server string, status connStatus, m *tunnel.Manager) *TransportEntry {
