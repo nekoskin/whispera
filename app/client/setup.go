@@ -193,6 +193,7 @@ func setupNetworking(cfg *config.ClientConfig) (*socks5.Module, *dns.Resolver, *
 		dnsUpstreamAddr = *dnsUpstream
 	}
 	bypassDNSResolver := newBypassDNSResolver()
+	dohResolver := dns.NewResolver(&dns.Config{Upstream: "https://1.1.1.1/dns-query", CacheEnabled: true})
 	stm := setupSplitTunnel(cfg)
 
 	socksMod, _ := socks5.New(&socks5.Config{
@@ -201,6 +202,7 @@ func setupNetworking(cfg *config.ClientConfig) (*socks5.Module, *dns.Resolver, *
 		MTU:            cfg.MTU,
 		BypassFunc:     stm.ShouldBypass,
 		BypassResolver: bypassDNSResolver,
+		RealResolver:   dohResolver.ResolveUpstream,
 		BlockTorrents:  true,
 	})
 	generateSocksAuth()

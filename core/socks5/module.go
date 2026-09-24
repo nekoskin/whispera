@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,10 +33,9 @@ type Config struct {
 
 	BypassFunc func(addr string, port uint16) bool
 
-	// Resolver for the bypass path. Without it a "direct" dial hands the name
-	// to the system resolver, which on a machine with our TUN up goes back
-	// through the tunnel -- so the bypass is not a bypass at all.
 	BypassResolver *net.Resolver
+
+	RealResolver func(ctx context.Context, host string) ([]net.IP, error)
 
 	BlockFunc func(addr string, port uint16) bool
 
@@ -52,6 +52,7 @@ type Module struct {
 	authUser string
 	authPass string
 	tunnelCh chan struct{}
+	resolve  *resolveCache
 }
 
 type TunnelManager interface {
@@ -59,10 +60,6 @@ type TunnelManager interface {
 	Ready() <-chan struct{}
 	OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error)
 	DialStream(ctx context.Context, network, addr string) (net.Conn, error)
-	// DatagramClient returns the optional FEC-protected QUIC datagram channel
-	// for the low-latency real-time lane. It is shared for the tunnel's
-	// lifetime, so there is nothing to release. ok is false when the real-time
-	// lane isn't on QUIC — callers fall back to OpenStream then.
 	DatagramClient(addr string) (*quic.DatagramClient, bool)
 }
 
@@ -76,8 +73,9 @@ func New(cfg *Config) (*Module, error) {
 		cfg.MTU = 65535
 	}
 	return &Module{
-		Module: base.NewModule(ModuleName, ModuleVersion, nil),
-		config: cfg,
+		Module:  base.NewModule(ModuleName, ModuleVersion, nil),
+		config:  cfg,
+		resolve: newResolveCache(directResolveTTL),
 	}, nil
 }
 
@@ -145,9 +143,9 @@ func (m *Module) SetAuthHandler(username, password string) {
 	m.authPass = password
 }
 
-const torrentSniffWait = 300 * time.Millisecond
 const tunnelWait = 5 * time.Second
 const tunnelRetryWait = 50 * time.Millisecond
+const torrentSniffWait = 300 * time.Millisecond
 
 func (m *Module) tunnelSignal() <-chan struct{} {
 	m.mu.Lock()
@@ -207,13 +205,13 @@ func sniffTLSHello(c net.Conn) (prefix []byte, isTLS, ok bool) {
 	return prefix, hdr[0] == 0x16 && hdr[1] == 0x03, true
 }
 
-// logDial reports how long it took to get the connection up. The time the
-// connection then lives is not interesting here and would drown the useful
-// number: a keep-alive stream sits open for minutes by design.
-func logDial(route, host string, port uint16, since time.Time, err error) {
+func (m *Module) logDial(route, host string, port uint16, since time.Time, err error) {
 	took := time.Since(since).Round(time.Millisecond)
 	if err != nil {
 		stdlog.Printf("[SOCKS5] %s → %s:%d failed in %s: %v", route, host, port, took, err)
+		return
+	}
+	if !m.config.Debug {
 		return
 	}
 	stdlog.Printf("[SOCKS5] %s → %s:%d up in %s", route, host, port, took)
@@ -300,18 +298,18 @@ func (m *Module) route(clientConn net.Conn, targetAddr string, targetPort uint16
 		}
 		replay = hello
 		if isTLS {
+			proto |= protocol.SpliceProtoBit
+		}
 	} else if torrentTagEnabled() && targetPort != 80 && targetPort != 443 {
 		replay = sniffPrefix(clientConn, btHandshakeLen, torrentSniffWait)
 		if isBitTorrent(replay) {
 			proto |= protocol.TorrentProtoBit
 		}
-			proto |= protocol.SpliceProtoBit
-		}
 	}
 
 	dialStarted := time.Now()
 	stream, err := tunnel.OpenStream(ctx, proto, targetAddr, targetPort)
-	logDial("tunnel", targetAddr, targetPort, dialStarted, err)
+	m.logDial("tunnel", targetAddr, targetPort, dialStarted, err)
 	if err != nil {
 		return "", fmt.Errorf("relay connect: %w", err)
 	}
@@ -341,18 +339,150 @@ func (m *Module) route(clientConn net.Conn, targetAddr string, targetPort uint16
 	return "", nil
 }
 
+func fakeIP(ip net.IP) bool {
+	v4 := ip.To4()
+	return v4 != nil && v4[0] == 198 && (v4[1] == 18 || v4[1] == 19)
+}
+
+const directResolveTTL = 60 * time.Second
+
+const maxResolveEntries = 4096
+
+type resolveEntry struct {
+	ip  net.IP
+	exp time.Time
+}
+
+type resolveCache struct {
+	mu  sync.RWMutex
+	m   map[string]resolveEntry
+	ttl time.Duration
+}
+
+func newResolveCache(ttl time.Duration) *resolveCache {
+	return &resolveCache{m: make(map[string]resolveEntry), ttl: ttl}
+}
+
+func (c *resolveCache) get(host string) (net.IP, bool) {
+	c.mu.RLock()
+	e, ok := c.m[host]
+	c.mu.RUnlock()
+	if !ok || time.Now().After(e.exp) {
+		return nil, false
+	}
+	return e.ip, true
+}
+
+func (c *resolveCache) put(host string, ip net.IP) {
+	c.mu.Lock()
+	if len(c.m) >= maxResolveEntries {
+		c.m = make(map[string]resolveEntry)
+	}
+	c.m[host] = resolveEntry{ip: ip, exp: time.Now().Add(c.ttl)}
+	c.mu.Unlock()
+}
+
+func (m *Module) directIP(ctx context.Context, host string) net.IP {
+	if lit := net.ParseIP(host); lit != nil {
+		return lit
+	}
+	if ip, ok := m.resolve.get(host); ok {
+		return ip
+	}
+	ip := m.resolveDirect(ctx, host)
+	if ip != nil && fakeIP(ip) && m.config.RealResolver != nil {
+		if ips, err := m.config.RealResolver(ctx, host); err == nil && len(ips) > 0 {
+			ip = ips[0]
+		}
+	}
+	if ip != nil {
+		m.resolve.put(host, ip)
+	}
+	return ip
+}
+
+func (m *Module) resolveDirect(ctx context.Context, host string) net.IP {
+	if m.config.BypassResolver != nil {
+		if ips, err := m.config.BypassResolver.LookupIPAddr(ctx, host); err == nil && len(ips) > 0 {
+			return ips[0].IP
+		}
+	}
+	return nil
+}
+
+const directIdleTimeout = 120 * time.Second
+
+type readerFunc func(p []byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
+
+func relayWithIdle(a, b net.Conn, idle time.Duration) {
+	var last atomic.Int64
+	last.Store(time.Now().UnixNano())
+	track := func(r io.Reader) io.Reader {
+		return readerFunc(func(p []byte) (int, error) {
+			n, err := r.Read(p)
+			if n > 0 {
+				last.Store(time.Now().UnixNano())
+			}
+			return n, err
+		})
+	}
+
+	stop := make(chan struct{})
+	go func() {
+		t := time.NewTicker(idle / 4)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				if time.Since(time.Unix(0, last.Load())) >= idle {
+					a.Close()
+					b.Close()
+					return
+				}
+			}
+		}
+	}()
+
+	buf.Relay(a, b, track(a), track(b))
+	close(stop)
+}
+
 func (m *Module) directDial(clientConn net.Conn, host string, port uint16) error {
-	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	d := net.Dialer{Timeout: 10 * time.Second, Resolver: m.config.BypassResolver}
+	ctx := context.Background()
+	ip := m.directIP(ctx, host)
+	target := host
+	if ip != nil {
+		target = ip.String()
+	}
+	addr := net.JoinHostPort(target, strconv.Itoa(int(port)))
+	d := net.Dialer{Timeout: 10 * time.Second}
 	started := time.Now()
-	upstream, err := d.DialContext(context.Background(), "tcp", addr)
-	logDial("direct (bypass)", host, port, started, err)
+	upstream, err := d.DialContext(ctx, "tcp", addr)
+	m.logDial("direct (bypass)", host, port, started, err)
 	if err != nil {
 		return fmt.Errorf("direct dial %s: %w", addr, err)
 	}
 	defer upstream.Close()
-	buf.Relay(clientConn, upstream, nil, nil)
+	relayWithIdle(clientConn, upstream, directIdleTimeout)
 	return nil
+}
+
+type targetKey struct {
+	host string
+	port uint16
+}
+
+func (k targetKey) String() string { return fmt.Sprintf("%s:%d", k.host, k.port) }
+
+var udpFramePool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 2048)
+		return &b
+	},
 }
 
 type udpRelay struct {
@@ -360,9 +490,9 @@ type udpRelay struct {
 	udpConn    *net.UDPConn
 	clientAddr *net.UDPAddr
 
-	mu        sync.Mutex
-	streams   map[string]net.Conn
-	rtTargets map[string]func()
+	mu        sync.RWMutex
+	streams   map[targetKey]net.Conn
+	rtTargets map[targetKey]func()
 	lane      *quic.DatagramClient
 }
 
@@ -392,7 +522,7 @@ func (r *udpRelay) switchLane(t TunnelManager, host string) {
 	r.lane = lane
 }
 
-func (r *udpRelay) openTarget(t TunnelManager, key, host string, port uint16) (net.Conn, bool, bool) {
+func (r *udpRelay) openTarget(t TunnelManager, key targetKey, host string, port uint16) (net.Conn, bool, bool) {
 	if stream, ok := r.streams[key]; ok {
 		return stream, false, true
 	}
@@ -424,7 +554,7 @@ func (r *udpRelay) openTarget(t TunnelManager, key, host string, port uint16) (n
 	return stream, false, true
 }
 
-func (r *udpRelay) dropStream(key string, stream net.Conn) {
+func (r *udpRelay) dropStream(key targetKey, stream net.Conn) {
 	r.mu.Lock()
 	delete(r.streams, key)
 	r.mu.Unlock()
@@ -432,35 +562,68 @@ func (r *udpRelay) dropStream(key string, stream net.Conn) {
 }
 
 func (r *udpRelay) forward(host string, port uint16, payload []byte) {
-	key := fmt.Sprintf("%s:%d", host, port)
+	key := targetKey{host: host, port: port}
 
 	r.module.mu.RLock()
 	t := r.module.tunnel
 	r.module.mu.RUnlock()
 
+	r.mu.RLock()
+	stream, viaStream := r.streams[key]
+	_, viaRT := r.rtTargets[key]
+	lane := r.lane
+	r.mu.RUnlock()
+
+	sameLane := true
+	if t != nil {
+		current, _ := t.DatagramClient(host)
+		sameLane = current == lane
+	}
+
+	if sameLane {
+		if viaStream {
+			r.sendStream(key, stream, payload)
+			return
+		}
+		if viaRT {
+			r.sendDatagram(lane, key, host, port, payload)
+			return
+		}
+	}
+
 	r.mu.Lock()
 	r.switchLane(t, host)
 	stream, viaDatagram, ok := r.openTarget(t, key, host, port)
-	lane := r.lane
+	lane = r.lane
 	r.mu.Unlock()
 	if !ok {
 		return
 	}
-
 	if viaDatagram {
-		if lane == nil {
-			return
-		}
-		if err := lane.SendUDP(host, port, payload); err != nil {
-			stdlog.Printf("[SOCKS5-UDP] rt datagram send %s: %v", key, err)
-		}
+		r.sendDatagram(lane, key, host, port, payload)
 		return
 	}
+	r.sendStream(key, stream, payload)
+}
 
-	frame := make([]byte, 2+len(payload))
-	binary.BigEndian.PutUint16(frame[:2], uint16(len(payload)))
-	copy(frame[2:], payload)
-	if _, err := stream.Write(frame); err != nil {
+func (r *udpRelay) sendDatagram(lane *quic.DatagramClient, key targetKey, host string, port uint16, payload []byte) {
+	if lane == nil {
+		return
+	}
+	if err := lane.SendUDP(host, port, payload); err != nil {
+		stdlog.Printf("[SOCKS5-UDP] rt datagram send %s: %v", key, err)
+	}
+}
+
+func (r *udpRelay) sendStream(key targetKey, stream net.Conn, payload []byte) {
+	bp := udpFramePool.Get().(*[]byte)
+	frame := (*bp)[:0]
+	frame = append(frame, byte(len(payload)>>8), byte(len(payload)))
+	frame = append(frame, payload...)
+	_, err := stream.Write(frame)
+	*bp = frame
+	udpFramePool.Put(bp)
+	if err != nil {
 		r.dropStream(key, stream)
 	}
 }
@@ -471,8 +634,8 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 	r := &udpRelay{
 		module:    m,
 		udpConn:   udpConn,
-		streams:   make(map[string]net.Conn),
-		rtTargets: make(map[string]func()),
+		streams:   make(map[targetKey]net.Conn),
+		rtTargets: make(map[targetKey]func()),
 	}
 	defer r.closeAll()
 
@@ -503,10 +666,10 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 	}
 }
 func pumpRTDatagramReplies(ch <-chan []byte, udpConn *net.UDPConn, clientAddr *net.UDPAddr, dstHost string, dstPort uint16) {
+	hdr := replyHeader(dstHost, dstPort)
 	for respPayload := range ch {
 		if clientAddr != nil {
-			reply := buildUDPReply(dstHost, dstPort, respPayload)
-			udpConn.WriteToUDP(reply, clientAddr)
+			sendUDPReply(udpConn, clientAddr, hdr, respPayload)
 		}
 	}
 }
@@ -519,24 +682,37 @@ func pumpUDPStreamReplies(stream net.Conn, udpConn *net.UDPConn, clientAddr *net
 		}
 	}()
 
-	hdr := make([]byte, 2)
-	respBuf := make([]byte, 65535)
+	replyHdr := replyHeader(dstHost, dstPort)
+	sizeBuf := make([]byte, 2)
+	respBuf := make([]byte, 2048)
 	for {
-		if _, err := io.ReadFull(stream, hdr); err != nil {
+		if _, err := io.ReadFull(stream, sizeBuf); err != nil {
 			return
 		}
-		sz := int(binary.BigEndian.Uint16(hdr))
-		if sz == 0 || sz > len(respBuf) {
+		sz := int(binary.BigEndian.Uint16(sizeBuf))
+		if sz == 0 {
 			return
+		}
+		if sz > len(respBuf) {
+			respBuf = make([]byte, sz)
 		}
 		if _, err := io.ReadFull(stream, respBuf[:sz]); err != nil {
 			return
 		}
 		if clientAddr != nil {
-			reply := buildUDPReply(dstHost, dstPort, respBuf[:sz])
-			udpConn.WriteToUDP(reply, clientAddr)
+			sendUDPReply(udpConn, clientAddr, replyHdr, respBuf[:sz])
 		}
 	}
+}
+
+func sendUDPReply(udpConn *net.UDPConn, clientAddr *net.UDPAddr, hdr, payload []byte) {
+	bp := udpFramePool.Get().(*[]byte)
+	reply := (*bp)[:0]
+	reply = append(reply, hdr...)
+	reply = append(reply, payload...)
+	udpConn.WriteToUDP(reply, clientAddr)
+	*bp = reply
+	udpFramePool.Put(bp)
 }
 
 func parseUDPHeader(data []byte) (host string, port uint16, payload []byte, err error) {
@@ -578,6 +754,10 @@ func parseUDPHeader(data []byte) (host string, port uint16, payload []byte, err 
 }
 
 func buildUDPReply(host string, port uint16, payload []byte) []byte {
+	return append(replyHeader(host, port), payload...)
+}
+
+func replyHeader(host string, port uint16) []byte {
 	var hdr []byte
 	ip := net.ParseIP(host)
 	if ip4 := ip.To4(); ip4 != nil {
@@ -597,5 +777,5 @@ func buildUDPReply(host string, port uint16, payload []byte) []byte {
 		copy(hdr[5:], host)
 		binary.BigEndian.PutUint16(hdr[5+len(host):], port)
 	}
-	return append(hdr, payload...)
+	return hdr
 }
