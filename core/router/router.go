@@ -56,9 +56,10 @@ type Engine struct {
 	*base.Module
 	config *Config
 
-	mu    sync.RWMutex
-	rules []interfaces.RoutingRule
-	byID  map[string]*interfaces.RoutingRule
+	mu       sync.RWMutex
+	rules    []interfaces.RoutingRule
+	compiled []compiledRule
+	byID     map[string]*interfaces.RoutingRule
 
 	cache *cache.LRUCache[*interfaces.Destination]
 
@@ -69,6 +70,73 @@ type Engine struct {
 
 	geoMu  sync.RWMutex
 	geoRtr *routing.Router
+}
+
+// A rule is matched against every connection, and the values inside it never
+// change between those matches. Parsing a CIDR on each one turned routing into
+// five allocations per rule per connection.
+type compiledCond struct {
+	field string
+	cidr  *net.IPNet
+	ip    net.IP
+	raw   *interfaces.RuleCondition
+}
+
+type compiledRule struct {
+	conds []compiledCond
+	dest  *interfaces.Destination
+}
+
+func (e *Engine) recompileLocked() {
+	out := make([]compiledRule, 0, len(e.rules))
+	for i := range e.rules {
+		r := &e.rules[i]
+		cr := compiledRule{dest: &r.Destination, conds: make([]compiledCond, 0, len(r.Conditions))}
+		for j := range r.Conditions {
+			cond := &r.Conditions[j]
+			cc := compiledCond{field: cond.Field, raw: cond}
+			if s, ok := cond.Value.(string); ok && (cond.Field == "dst_ip" || cond.Field == "src_ip") {
+				switch cond.Operator {
+				case "cidr":
+					if _, network, err := net.ParseCIDR(s); err == nil {
+						cc.cidr = network
+					}
+				case "eq":
+					cc.ip = net.ParseIP(s)
+				}
+			}
+			cr.conds = append(cr.conds, cc)
+		}
+		out = append(out, cr)
+	}
+	e.compiled = out
+}
+
+func (e *Engine) matchCompiled(cr *compiledRule, packet *interfaces.Packet) bool {
+	for i := range cr.conds {
+		c := &cr.conds[i]
+		if c.cidr == nil && c.ip == nil {
+			if !e.matchCondition(c.raw, packet) {
+				return false
+			}
+			continue
+		}
+		addr := packet.DstAddr
+		if c.field == "src_ip" {
+			addr = packet.SrcAddr
+		}
+		ip, ok := addrIP(addr)
+		if !ok {
+			return false
+		}
+		if c.cidr != nil && !c.cidr.Contains(ip) {
+			return false
+		}
+		if c.ip != nil && !c.ip.Equal(ip) {
+			return false
+		}
+	}
+	return true
 }
 
 func New(cfg *Config) (*Engine, error) {
@@ -150,33 +218,28 @@ func (e *Engine) Route(ctx context.Context, packet *interfaces.Packet) (*interfa
 	}
 
 	e.mu.RLock()
-	rules := e.rules
+	rules := e.compiled
 	e.mu.RUnlock()
 
-	for _, rule := range rules {
-		if e.matchRule(&rule, packet) {
+	for i := range rules {
+		if e.matchCompiled(&rules[i], packet) {
 			atomic.AddUint64(&e.routeHits, 1)
-			dest := &rule.Destination
-
+			dest := rules[i].dest
 			if e.config.EnableCache {
 				e.updateCache(ctx, packet, dest)
 			}
-
 			return dest, nil
 		}
 	}
 
 	atomic.AddUint64(&e.routeMisses, 1)
-	return &e.config.DefaultDestination, nil
-}
-
-func (e *Engine) matchRule(rule *interfaces.RoutingRule, packet *interfaces.Packet) bool {
-	for _, cond := range rule.Conditions {
-		if !e.matchCondition(&cond, packet) {
-			return false
-		}
+	// A destination that matched nothing is worth remembering too: without it
+	// every repeat of the same miss paid for the whole scan again.
+	dest := &e.config.DefaultDestination
+	if e.config.EnableCache {
+		e.updateCache(ctx, packet, dest)
 	}
-	return true
+	return dest, nil
 }
 
 var loggedUnsupportedFields sync.Map
@@ -331,6 +394,7 @@ func (e *Engine) AddRule(rule interfaces.RoutingRule) error {
 	for i := range e.rules {
 		e.byID[e.rules[i].ID] = &e.rules[i]
 	}
+	e.recompileLocked()
 
 	e.clearCache()
 
@@ -353,6 +417,7 @@ func (e *Engine) RemoveRule(id string) error {
 		}
 	}
 	e.rules = newRules
+	e.recompileLocked()
 
 	delete(e.byID, id)
 
@@ -382,6 +447,7 @@ func (e *Engine) UpdateRules(rules []interfaces.RoutingRule) error {
 	})
 
 	e.rules = rules
+	e.recompileLocked()
 	e.byID = make(map[string]*interfaces.RoutingRule)
 	for i := range e.rules {
 		e.byID[e.rules[i].ID] = &e.rules[i]
