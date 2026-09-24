@@ -319,6 +319,7 @@ type FramedConn struct {
 	batch    []byte
 	batchRef *[]byte
 	ended    bool
+	endErr   error
 	switched bool
 	pad      *ShapeBudget
 
@@ -580,12 +581,12 @@ func (c *FramedConn) EndStream() error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	if c.ended {
-		return nil
+		return c.endErr
 	}
 	c.ended = true
-	err := c.writeMarker(0)
+	c.endErr = c.writeMarker(0)
 	c.releaseBatchLocked()
-	return err
+	return c.endErr
 }
 
 func (c *FramedConn) StreamDone() bool {
