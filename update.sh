@@ -4,7 +4,6 @@ set -e
 
 WORK_DIR="/opt/whispera"
 BIN_PATH="/usr/local/bin"
-DAT_PATH="/usr/local/share/whispera"
 CONF_PATH="/etc/whispera"
 INITCWND_SCRIPT="/usr/local/bin/whispera-initcwnd"
 BRANCH="main"
@@ -911,6 +910,9 @@ do_update() {
     trap 'systemctl is-active --quiet whispera 2>/dev/null || { systemctl daemon-reload 2>/dev/null; systemctl start whispera 2>/dev/null || true; }' EXIT
 
     mkdir -p "$WORK_DIR"
+    mkdir -p /var/log/whispera "$CONF_PATH"
+    chown -R whispera:whispera "$CONF_PATH" 2>/dev/null || true
+    chown whispera:whispera /var/log/whispera 2>/dev/null || true
     cd "$WORK_DIR" || exit 1
 
     if command -v whispera-backup &>/dev/null; then
@@ -1034,6 +1036,13 @@ do_update() {
     local SVC=/etc/systemd/system/whispera.service
     if [[ -f "$SVC" ]]; then
         local RELOAD=false
+        mkdir -p /var/log/whispera
+        chown whispera:whispera /var/log/whispera 2>/dev/null || true
+        if grep -qE "ReadWritePaths=.* -?/usr/local/share/whispera( |$)" "$SVC"; then
+            sed -i -E "s| -?/usr/local/share/whispera||" "$SVC"
+            RELOAD=true
+            log_info "Removed unused /usr/local/share/whispera from whispera.service"
+        fi
         if grep -q "^NoNewPrivileges=true" "$SVC"; then
             sed -i '/^NoNewPrivileges=true/d' "$SVC"
             RELOAD=true
