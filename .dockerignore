@@ -1,0 +1,11 @@
+# The build only needs Go sources. Everything below is data or history that was
+# being shipped to the daemon on every build — 7 GB of it, mostly pcap dumps.
+.git
+scripts/e2e/out
+scripts/e2e/cfg
+neural/dumps
+neural/data
+**/*.pcap
+**/*.pcapng
+**/target
+*.log

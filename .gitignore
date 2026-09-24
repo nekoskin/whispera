@@ -126,3 +126,12 @@ core/protocol/fingerprint/corpus_gen_test.go
 scripts/e2e/out/
 scripts/e2e/cfg/key.txt
 scripts/e2e/cfg/.config.checksum
+scripts/e2e/cfg/origin-tls/
+
+# stray build artifacts
+/censor
+/clientinsert
+
+# per-run generated keys
+scripts/e2e/cfg/key-*.txt
+scripts/e2e/cfg/torrent-key.txt

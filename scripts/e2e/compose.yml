@@ -5,6 +5,8 @@ services:
     image: nginx:alpine
     volumes:
       - ./out/origin:/usr/share/nginx/html:ro
+      - ./cfg/origin-tls:/etc/nginx/tls:ro
+      - ./cfg/origin-nginx.conf:/etc/nginx/conf.d/default.conf:ro
     networks: [whisptest]
 
   server:
@@ -12,6 +14,14 @@ services:
       context: ../..
       dockerfile: scripts/e2e/Dockerfile
     command: ["/app/whispera", "-config", "/cfg/config.yaml"]
+    environment:
+      # The stand origin is signed by a CA invented for the stand, so cloning
+      # its certificate fails verification unless the server trusts that root.
+      SSL_CERT_FILE: /cfg/origin-tls/ca.crt
+      # Record payload range for the server side: "min-max", or "0" to fill.
+      WHISPERA_CHUNK: "${WHISPERA_CHUNK:-}"
+      # Names a file and the server writes every chosen record length.
+      WHISPERA_CHUNK_TRACE: "${WHISPERA_CHUNK_TRACE:-}"
     volumes:
       - ./cfg:/cfg
       - ./out:/out
@@ -26,11 +36,34 @@ services:
       RUN_ID: "${RUN_ID:-run}"
       CENSOR_LISTEN: ":8443"
       CENSOR_UPSTREAM: "server:443"
+      CENSOR_MODE: "${CENSOR_MODE:-packets}"
+      CENSOR_BLOCK_SNI: "${CENSOR_BLOCK_SNI:-origin}"
+      # Which hello fingerprints the fingerprint rule kills, and how big a hello
+      # the bighello rule tolerates.
+      CENSOR_BLOCK_FP: "${CENSOR_BLOCK_FP:-}"
+      # Exact JA3 hashes to ban, comma-separated. Bans one fingerprint rather
+      # than a whole browser family, the way real DPI keys on a tool's JA3.
+      CENSOR_BLOCK_JA3: "${CENSOR_BLOCK_JA3:-}"
+      CENSOR_BLOCK_JA4: "${CENSOR_BLOCK_JA4:-}"
+      CENSOR_MAX_HELLO: "${CENSOR_MAX_HELLO:-}"
+      # "silent" holds a killed connection open instead of resetting it, the
+      # way the reported Russian block behaves. Empty sends a reset.
+      CENSOR_PUNISH: "${CENSOR_PUNISH:-}"
+      # How many packets before the reply the packets rule tolerates. 2 makes a
+      # two-packet hello suspicious too; empty keeps 3.
+      CENSOR_PACKET_LIMIT: "${CENSOR_PACKET_LIMIT:-}"
+      # Seconds a caught client stays out of service. Negative never lapses,
+      # the way an IP or AS filter behaves; empty or 0 disables the ban.
+      CENSOR_BAN_SECONDS: "${CENSOR_BAN_SECONDS:-}"
+      # The freeze rule stops carrying data back past this many bytes.
+      CENSOR_FREEZE_BYTES: "${CENSOR_FREEZE_BYTES:-}"
+      CENSOR_THROTTLE_KBPS: "${CENSOR_THROTTLE_KBPS:-}"
+      CENSOR_RESET_ON_ROTATE: "${CENSOR_RESET_ON_ROTATE:-}"
       CENSOR_ROTATE: "${CENSOR_ROTATE:-20s}"
     command:
       - /bin/sh
       - -c
-      - "tcpdump -i eth0 -s 0 -w /out/dump-${RUN_ID}.pcap tcp and not port 22 & exec /app/censor 2>&1 | tee /out/censor.log"
+      - "tcpdump -i eth0 -s ${PCAP_SNAP:-0} -w /out/dump-${RUN_ID}.pcap tcp and not port 22 & exec /app/censor 2>&1 | tee /out/censor.log"
     volumes:
       - ./out:/out
     depends_on: [server]
@@ -42,10 +75,49 @@ services:
       dockerfile: scripts/e2e/Dockerfile
     command: ["/app/client-run.sh"]
     environment:
+      # Empty keeps hello fragmentation on; "0" turns it off so the hello
+      # leaves in a single packet, the way a browser sends it.
+      WHISPERA_HELLO_FRAG: "${WHISPERA_HELLO_FRAG:-}"
+      # How many records the hello may become; empty leaves the default 4-8.
+      WHISP_FRAG_COUNT: "${WHISP_FRAG_COUNT:-}"
+      WHISP_HELLO_FRAG: "${WHISP_HELLO_FRAG:-}"
+      # Names a file and the client writes one line per dial: the arm it
+      # played and whether the handshake lived. Training data, off by default.
+      # "0" makes every request dial afresh. The pool otherwise parks a
+      # handful of connections and a whole run yields a dozen dials, which
+      # is too few to tell exploration from preference.
+      WHISPERA_KEEPALIVE: "${WHISPERA_KEEPALIVE:-}"
+      WHISPERA_DIAL_TRACE: "${WHISPERA_DIAL_TRACE:-}"
+      WHISPERA_DIAL_TRACE_MB: "${WHISPERA_DIAL_TRACE_MB:-}"
+      # "1" hands the fragment budget to the trained model instead of
+      # the bandit. Off by default; the bandit stays the shipped path.
+      WHISPERA_POLICY: "${WHISPERA_POLICY:-}"
+      # "1" picks the preset and the hello budget as one arm instead of one
+      # bandit each. Off by default.
+      WHISPERA_JOINT_ARM: "${WHISPERA_JOINT_ARM:-}"
+      # Force one uTLS preset (calibration), and whether PQ key shares are cut.
+      # DROP_PQ is on by default in code, which itself moves JA3 off real Chrome.
+      WHISP_FP: "${WHISP_FP:-}"
+      WHISPERA_DROP_PQ: "${WHISPERA_DROP_PQ:-}"
+      # "1" lets the model keep learning from its own dials, with a fallback to
+      # the frozen weights if survival collapses. Off by default.
+      WHISPERA_POLICY_ONLINE: "${WHISPERA_POLICY_ONLINE:-}"
+      # "1" rotates the datapath padding arm by arm; the epoch is how long
+      # each one is held. Both off by default.
+      WHISPERA_SHAPE_CONTROL: "${WHISPERA_SHAPE_CONTROL:-}"
+      WHISPERA_SHAPE_EPOCH_S: "${WHISPERA_SHAPE_EPOCH_S:-}"
+      # "min-max" sets the record payload range, "0" turns it off.
+      WHISP_CHUNK: "${WHISP_CHUNK:-}"
+      # "shape" draws record sizes from the measured real distribution.
+      WHISPERA_CHUNK: "${WHISPERA_CHUNK:-}"
       WHISP_KEY_FILE: /cfg/key.txt
       WHISP_SERVER: "censor:8443"
-      ORIGIN_URL: "http://origin/payload.bin"
+      ORIGIN_URL: "https://origin/payload.bin"
       PROBE_EVERY: "${PROBE_EVERY:-2}"
+      # Requests in flight at once per user, and how many user slots there are
+      # to claim.
+      CONCURRENCY: "${CONCURRENCY:-1}"
+      USERS: "${USERS:-1}"
       RUN_SECONDS: "${RUN_SECONDS:-120}"
       FILLER_IDLE_MS: "${FILLER_IDLE_MS:-400}"
       FILLER_INTERVAL_MS: "${FILLER_INTERVAL_MS:-}"
@@ -55,6 +127,31 @@ services:
       - ./cfg:/cfg
       - ./out:/out
     depends_on: [censor, origin]
+    networks: [whisptest]
+
+  # Ordinary traffic through the same censor: system TLS, no tunnel, no uTLS
+  # preset. It gives the censor something to be wrong about, so an over-eager
+  # rule shows up as false positives instead of looking free.
+  legit:
+    build:
+      context: ../..
+      dockerfile: scripts/e2e/Dockerfile
+    # With LEGIT_FP set, a real browser fingerprint via uTLS (legit-tls);
+    # otherwise plain curl/OpenSSL. The browser path is what makes a banned JA3
+    # collateral against a real browser.
+    command: ["/bin/sh", "-c", "if [ -n \"$LEGIT_FP\" ]; then exec /app/legit-tls; else exec /bin/sh /app/legit-run.sh; fi"]
+    environment:
+      LEGIT_URL: "${LEGIT_URL:-https://censor:8443/}"
+      LEGIT_ADDR: "${LEGIT_ADDR:-censor:8443}"
+      LEGIT_SNI: "${LEGIT_SNI:-www.google.com}"
+      LEGIT_FP: "${LEGIT_FP:-}"
+      LEGIT_USERS: "${LEGIT_USERS:-1}"
+      LEGIT_EVERY: "${LEGIT_EVERY:-1}"
+      RUN_SECONDS: "${RUN_SECONDS:-120}"
+    volumes:
+      - ./cfg:/cfg
+      - ./out:/out
+    depends_on: [censor]
     networks: [whisptest]
 
 networks:
