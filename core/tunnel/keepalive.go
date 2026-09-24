@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,16 +15,22 @@ import (
 )
 
 const (
-	drainWait  = 250 * time.Millisecond
-	idleMax    = 8
-	drainLimit = 64 << 10
+	drainWait   = 250 * time.Millisecond
+	reclaimWait = 100 * time.Millisecond
+	idleMax     = 8
+	drainLimit  = 64 << 10
 )
 
 type idleSet struct {
 	mu      sync.Mutex
-	conns   []net.Conn
+	conns   []*parkedConn
 	closed  bool
 	filling atomic.Bool
+}
+
+type parkedConn struct {
+	net.Conn
+	alive chan bool
 }
 
 func (s *idleSet) fillLoop() {
@@ -54,16 +61,37 @@ func (s *idleSet) fillLoop() {
 	}
 }
 
-func idleAlive(c net.Conn) bool {
+func (s *idleSet) watch(c *parkedConn) {
+	var probe [1]byte
+	_, err := c.Read(probe[:])
+	alive := errors.Is(err, os.ErrDeadlineExceeded)
+	c.alive <- alive
+	if !alive && s.remove(c) {
+		c.Close()
+	}
+}
+
+func (s *idleSet) remove(c *parkedConn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := slices.Index(s.conns, c)
+	if i < 0 {
+		return false
+	}
+	s.conns = slices.Delete(s.conns, i, i+1)
+	return true
+}
+
+func (c *parkedConn) reclaim() bool {
 	if err := c.SetReadDeadline(time.Now()); err != nil {
 		return false
 	}
-	var probe [1]byte
-	_, err := c.Read(probe[:])
-	if rerr := c.SetReadDeadline(time.Time{}); rerr != nil {
+	select {
+	case alive := <-c.alive:
+		return alive && c.SetReadDeadline(time.Time{}) == nil
+	case <-time.After(reclaimWait):
 		return false
 	}
-	return errors.Is(err, os.ErrDeadlineExceeded)
 }
 
 func (s *idleSet) take() net.Conn {
@@ -78,8 +106,8 @@ func (s *idleSet) take() net.Conn {
 		s.conns = s.conns[:last]
 		s.mu.Unlock()
 
-		if idleAlive(c) {
-			return c
+		if c.reclaim() {
+			return c.Conn
 		}
 		c.Close()
 	}
@@ -95,13 +123,15 @@ func (s *idleSet) put(c net.Conn) {
 		c.Close()
 		return
 	}
-	s.conns = append(s.conns, c)
-	var evict []net.Conn
+	p := &parkedConn{Conn: c, alive: make(chan bool, 1)}
+	s.conns = append(s.conns, p)
+	var evict []*parkedConn
 	if over := len(s.conns) - idleMax; over > 0 {
 		evict = append(evict, s.conns[:over]...)
 		s.conns = s.conns[over:]
 	}
 	s.mu.Unlock()
+	go s.watch(p)
 	for _, e := range evict {
 		e.Close()
 	}
@@ -178,7 +208,9 @@ func drainToEnd(base net.Conn, down *protocol.FramedConn) bool {
 func (c *keepAliveStream) Close() error {
 	var err error
 	c.once.Do(func() {
-		err = c.up.EndStream()
+		if err = c.base.SetDeadline(time.Time{}); err == nil {
+			err = c.up.EndStream()
+		}
 		if err != nil || c.down.SwitchedRaw() {
 			c.base.Close()
 			return
