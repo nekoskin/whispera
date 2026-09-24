@@ -192,11 +192,26 @@ func TestFramedRecordsFillOneTLSRecord(t *testing.T) {
 		t.Fatalf("only %d records observed, need the steady state", len(got))
 	}
 	steady := got[rampUp : len(got)-1]
+	// The chunk range varies the payload: still one TLS record each, still in
+	// range, but spread across the stream rather than one repeated size.
+	hi := 5 + framedWireTarget
+	seen := map[int]bool{}
 	for i, n := range steady {
-		if n != framedWireTarget {
-			t.Fatalf("steady-state record %d is %d bytes, want %d: our records no longer line up with TLS records",
-				i, n, framedWireTarget)
+		if n <= 5 || n > hi {
+			t.Fatalf("steady-state record %d is %d bytes, not a single framed TLS record (<= %d)", i, n, hi)
 		}
+		seen[n] = true
 	}
-	t.Logf("%d steady-state records, all %d bytes", len(steady), framedWireTarget)
+	if len(seen) < 20 {
+		t.Fatalf("only %d distinct record sizes: the stream is still close to a constant", len(seen))
+	}
+	t.Logf("%d steady-state records, %d distinct sizes, largest %d", len(steady), len(seen), func() int {
+		m := 0
+		for _, n := range steady {
+			if n > m {
+				m = n
+			}
+		}
+		return m
+	}())
 }

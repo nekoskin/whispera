@@ -497,6 +497,7 @@ func handleSpeedtest(w http.ResponseWriter, r *http.Request) {
 func camoState() map[string]int {
 	records, min, max := protocol.Shape.Get()
 	fillIdle, fillInterval, fillMin, fillMax := protocol.Shape.Filler()
+	chunkMin, chunkMax := protocol.Shape.Chunk()
 	return map[string]int{
 		"pad_records":        records,
 		"pad_min":            min,
@@ -505,12 +506,15 @@ func camoState() map[string]int {
 		"filler_interval_ms": fillInterval,
 		"filler_min":         fillMin,
 		"filler_max":         fillMax,
+		"chunk_min":          chunkMin,
+		"chunk_max":          chunkMax,
 	}
 }
 
 func handleCamo(w http.ResponseWriter, r *http.Request) {
 	records, min, max := protocol.Shape.Get()
 	fillIdle, fillInterval, fillMin, fillMax := protocol.Shape.Filler()
+	chunkMin, chunkMax := protocol.Shape.Chunk()
 	if r.Method == http.MethodGet {
 		json.NewEncoder(w).Encode(camoState())
 		return
@@ -527,6 +531,8 @@ func handleCamo(w http.ResponseWriter, r *http.Request) {
 		FillerIntervalMs *int `json:"filler_interval_ms"`
 		FillerMin        *int `json:"filler_min"`
 		FillerMax        *int `json:"filler_max"`
+		ChunkMin         *int `json:"chunk_min"`
+		ChunkMax         *int `json:"chunk_max"`
 	}{}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
@@ -553,11 +559,21 @@ func handleCamo(w http.ResponseWriter, r *http.Request) {
 	if body.FillerMax != nil {
 		fillMax = *body.FillerMax
 	}
+	if body.ChunkMin != nil {
+		chunkMin = *body.ChunkMin
+	}
+	if body.ChunkMax != nil {
+		chunkMax = *body.ChunkMax
+	}
 	if err := protocol.Shape.Set(records, min, max); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if err := protocol.Shape.SetFiller(fillIdle, fillInterval, fillMin, fillMax); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := protocol.Shape.SetChunk(chunkMin, chunkMax); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

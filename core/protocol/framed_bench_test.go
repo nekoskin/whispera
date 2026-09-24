@@ -35,6 +35,9 @@ func benchStreamStart(b *testing.B, size int, warm bool) {
 		if _, err := fc.Write(payload); err != nil {
 			b.Fatal(err)
 		}
+		if err := fc.EndStream(); err != nil {
+			b.Fatal(err)
+		}
 		wire += cc.wire
 		writes += cc.writes
 	}
