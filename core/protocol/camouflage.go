@@ -198,14 +198,14 @@ type camouflageListener struct {
 	closed     chan struct{}
 	closeOnce  sync.Once
 	keysFn     func() [][]byte
-	bySelector func(random, keyShare []byte) (string, []byte, bool)
+	bySelector func(random, keyShare []byte) (string, []byte, string)
 	decoyAddr  func(sni string) string
 
 	driftMu   sync.Mutex
 	driftLast time.Time
 }
 
-func newCamouflageListener(inner net.Listener, keysFn func() [][]byte, bySelector func(random, keyShare []byte) (string, []byte, bool), decoyAddr func(string) string) *camouflageListener {
+func newCamouflageListener(inner net.Listener, keysFn func() [][]byte, bySelector func(random, keyShare []byte) (string, []byte, string), decoyAddr func(string) string) *camouflageListener {
 	l := &camouflageListener{
 		Listener:   inner,
 		ready:      make(chan net.Conn),
@@ -298,12 +298,15 @@ func (l *camouflageListener) handle(conn net.Conn) {
 	}()
 	ph, err := peekClientHello(conn)
 
+	selReason := ""
 	if err == nil && l.bySelector != nil {
-		if userID, psk, ok := l.bySelector(ph.random, ph.keyShare); ok {
+		userID, psk, reason := l.bySelector(ph.random, ph.keyShare)
+		if reason == selReasonOK {
 			traceLog.Infow("camo_authenticated", "remote", remote, "sni", ph.sni, "via", "selector", "user", userID)
 			l.pass(conn, ph, userID, psk)
 			return
 		}
+		selReason = reason
 	}
 
 	var keys [][]byte
@@ -346,7 +349,8 @@ func (l *camouflageListener) handle(conn net.Conn) {
 
 	target := l.decoyAddr(ph.sni)
 	traceLog.Infow("camo_relay_decoy", "remote", remote, "sni", ph.sni, "hello_err", err,
-		"camo_keys", len(keys), "has_keyshare", len(ph.keyShare) > 0, "target", target)
+		"camo_keys", len(keys), "has_keyshare", len(ph.keyShare) > 0, "target", target,
+		"why", selReason)
 	if relayToOrigin(conn, ph.raw, target) {
 		return
 	}

@@ -88,35 +88,48 @@ func (s *selectorIndex) snapshot(cfg *ServerConfig) map[[camo.SelectorSize]byte]
 	return built
 }
 
-func resolveBySelector(cfg *ServerConfig, random, keyShare []byte) (selectorEntry, bool) {
+// The reason a hello was not recognized. Every one of these ends in the same
+// decoy, and without saying which, a support case comes down to guessing.
+const (
+	selReasonOK          = "ok"
+	selReasonShortFields = "hello fields are not 32 bytes"
+	selReasonNoIdentity  = "server has no cert identity"
+	selReasonNoKey       = "server selector key unavailable"
+	selReasonBadRandom   = "hello random carries no selector"
+	selReasonOpenFailed  = "selector did not open with our key"
+	selReasonUnknownTag  = "key is not on this server"
+	selReasonStaleMarker = "marker did not match, clocks may differ"
+)
+
+func resolveBySelector(cfg *ServerConfig, random, keyShare []byte) (selectorEntry, string) {
 	var none selectorEntry
 	if len(random) != 32 || len(keyShare) != 32 {
-		return none, false
+		return none, selReasonShortFields
 	}
 	id := activeCertIdentity()
 	if id == nil {
-		return none, false
+		return none, selReasonNoIdentity
 	}
 	priv, err := id.SelectorKey()
 	if err != nil {
-		return none, false
+		return none, selReasonNoKey
 	}
 	sel, marker, ok := camo.SplitRandom(random)
 	if !ok {
-		return none, false
+		return none, selReasonBadRandom
 	}
 	tag, err := camo.OpenSelector(sel, priv, keyShare)
 	if err != nil {
-		return none, false
+		return none, selReasonOpenFailed
 	}
 	entry, found := cfg.selectors.snapshot(cfg)[tag]
 	if !found {
-		return none, false
+		return none, selReasonUnknownTag
 	}
 	if !camo.MarkerMatchesKey(entry.camoKey, marker, keyShare, time.Now().Unix()) {
-		return none, false
+		return none, selReasonStaleMarker
 	}
-	return entry, true
+	return entry, selReasonOK
 }
 
 type knownUser struct {
