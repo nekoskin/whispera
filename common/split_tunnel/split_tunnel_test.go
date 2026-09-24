@@ -103,7 +103,7 @@ func geoWith(t *testing.T, cidrs ...string) *GeoIPSet {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.ranges = ranges
+	g.ranges.Store(&ranges)
 	return g
 }
 
@@ -193,9 +193,7 @@ func TestVerdictCacheStaysBounded(t *testing.T) {
 		stm.ShouldBypassByHostname(fmt.Sprintf("host%d.example.com", i))
 	}
 
-	stm.mu.RLock()
-	n := len(stm.verdicts)
-	stm.mu.RUnlock()
+	n := stm.verdicts.len()
 	if n > verdictMax {
 		t.Fatalf("verdict cache grew to %d entries, it must not accumulate without bound", n)
 	}
