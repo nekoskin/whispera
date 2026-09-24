@@ -67,7 +67,7 @@ func TestFragmentSplitsSNI(t *testing.T) {
 	for _, padding := range []int{0, 1600} {
 		record, sniStart, sniEnd := buildClientHello("www.google.com", padding)
 		conn := &captureConn{}
-		if err := writeFragmentedTLSRecord(conn, record, 40); err != nil {
+		if err := writeFragmentedTLSRecord(conn, record, fragmentPlan{size: 40, maxRecords: defaultMaxHelloRecords}); err != nil {
 			t.Fatalf("padding=%d: %v", padding, err)
 		}
 
@@ -85,8 +85,41 @@ func TestFragmentSplitsSNI(t *testing.T) {
 			t.Fatalf("padding=%d: no record boundary landed inside the SNI (%d..%d), records %d",
 				padding, sniStart, sniEnd, len(conn.records))
 		}
-		if len(conn.records) > maxHelloRecords+1 {
-			t.Fatalf("padding=%d: %d records, budget is %d", padding, len(conn.records), maxHelloRecords+1)
+		if len(conn.records) > defaultMaxHelloRecords {
+			t.Fatalf("padding=%d: %d records, budget is %d", padding, len(conn.records), defaultMaxHelloRecords)
+		}
+	}
+}
+
+func TestFragmentRespectsRecordBudget(t *testing.T) {
+	record, _, _ := buildClientHello("www.google.com", 1600)
+	want := record[5:]
+	for budget := 1; budget <= defaultMaxHelloRecords; budget++ {
+		for attempt := 0; attempt < 200; attempt++ {
+			conn := &captureConn{}
+			if err := writeFragmentedTLSRecord(conn, record, fragmentPlan{size: 40, maxRecords: budget}); err != nil {
+				t.Fatalf("budget=%d: %v", budget, err)
+			}
+			if len(conn.records) > budget {
+				t.Fatalf("budget=%d: wrote %d records", budget, len(conn.records))
+			}
+			if budget == 1 && len(conn.records) != 1 {
+				t.Fatalf("a budget of one must leave in one record, got %d", len(conn.records))
+			}
+			var got []byte
+			for i, r := range conn.records {
+				if len(r) < 5 {
+					t.Fatalf("budget=%d: record %d is shorter than a header", budget, i)
+				}
+				if int(binary.BigEndian.Uint16(r[3:5])) != len(r)-5 {
+					t.Fatalf("budget=%d: record %d header says %d, body is %d",
+						budget, i, binary.BigEndian.Uint16(r[3:5]), len(r)-5)
+				}
+				got = append(got, r[5:]...)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("budget=%d: reassembled %d bytes, hello is %d", budget, len(got), len(want))
+			}
 		}
 	}
 }

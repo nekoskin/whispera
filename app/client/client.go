@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,7 +28,7 @@ import (
 
 var log = logger.Module("client")
 
-var Version = "2.0.0"
+var Version = "neuro_0.0.6"
 
 type clientRuntimeParams struct {
 	serverAddress    string
@@ -54,6 +55,9 @@ var (
 	splitRulesJSON   = flag.String("split-rules", "", "Split tunnel rules as JSON, same format the host app uses")
 	dnsUpstream      = flag.String("dns", "", "DNS upstream: host:port for UDP (8.8.8.8:53), https://... for DoH (https://1.1.1.1/dns-query). Empty = 1.1.1.1:53. 'system' = ISP resolver")
 	tlsFragSize      = flag.Int("tls-fragment", 0, "TLS ClientHello fragment size in bytes (0=default 40, range 16-200). Smaller = harder for DPI but more RTT")
+	tlsFragCount     = flag.Int("tls-fragment-count", 0, "How many records the ClientHello may become (0=default: 4-8, drawn per connection). Fewer records with a longer delay separate more than many with a short one")
+	tlsFragDelay     = flag.String("tls-fragment-delay", "", "Pause between hello fragments, milliseconds, as min-max (default 1-4). \"0\" splits without waiting: keeps the record split, drops up to 28ms per new connection")
+	helloFrag        = flag.Bool("hello-frag", true, "Split the ClientHello across TLS records. Off sends it in one packet, the way a browser does; an inspector that counts packets before the server replies cannot tell us apart there")
 	logFilePath      = flag.String("log-file", "", "Write logs to file (default: in-memory only, no disk storage)")
 	forceSNIFlag     = flag.String("sni", "", "Force custom SNI in TLS ClientHello for all connections (e.g. www.google.com). Overrides asn-bypass SNI")
 	subURL           = flag.String("sub-url", "", "Subscription URL for automatic key refresh (checked every 24h)")
@@ -157,6 +161,9 @@ func (r *clientRuntime) entryCfg(e *TransportEntry) *tunnel.Config {
 	c.RateLimitKB = rateLimitKB
 	c.TLSFragmentSize = *tlsFragSize
 	return c
+	c.TLSFragmentDelayMinMs, c.TLSFragmentDelayMaxMs, c.TLSFragmentDelaySet = parseFragmentDelay(*tlsFragDelay)
+	c.TLSFragmentCount = *tlsFragCount
+	c.TLSFragmentDisabled = !*helloFrag
 }
 
 func newPoolEntry(id, transport, server string, status connStatus, m *tunnel.Manager) *TransportEntry {
@@ -438,4 +445,27 @@ func RunMain() {
 	stdlog.Printf("SOCKS5 proxy listening on %s", *socksAddr)
 
 	waitForShutdown(ctx)
+}
+
+// parseFragmentDelay reads "min-max", "n" or "0" milliseconds. An empty or
+// unreadable value leaves the tunnel default in place; "0" is a real answer
+// and means no wait at all.
+func parseFragmentDelay(spec string) (minMs, maxMs int, set bool) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return 0, 0, false
+	}
+	lo, hi, ranged := strings.Cut(spec, "-")
+	minMs, err := strconv.Atoi(strings.TrimSpace(lo))
+	if err != nil || minMs < 0 {
+		return 0, 0, false
+	}
+	if !ranged {
+		return minMs, minMs, true
+	}
+	maxMs, err = strconv.Atoi(strings.TrimSpace(hi))
+	if err != nil || maxMs < minMs {
+		return minMs, minMs, true
+	}
+	return minMs, maxMs, true
 }

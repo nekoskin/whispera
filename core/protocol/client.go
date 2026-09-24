@@ -21,6 +21,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nekoskin/whispera/core/protocol/camo"
@@ -61,12 +62,31 @@ type livenessConn struct {
 	net.Conn
 	onReset func()
 	onOK    func()
+	onEnd   func(time.Duration, int64, bool)
+
+	// Atomic: Read/Write are the hot path and must not take the mutex.
+	moved atomic.Int64
 
 	mu            sync.Mutex
 	establishedAt time.Time
 	established   bool
 	closedByUs    bool
 	fired         bool
+	ended         bool
+}
+
+// reportEnd fires once per established connection, however it ended.
+func (c *livenessConn) reportEnd(reset bool) {
+	c.mu.Lock()
+	if c.ended || !c.established || c.onEnd == nil {
+		c.mu.Unlock()
+		return
+	}
+	c.ended = true
+	dur := time.Since(c.establishedAt)
+	cb := c.onEnd
+	c.mu.Unlock()
+	cb(dur, c.moved.Load(), reset)
 }
 
 func (c *livenessConn) NetConn() net.Conn { return c.Conn }
@@ -82,6 +102,9 @@ func (c *livenessConn) markEstablished() {
 
 func (c *livenessConn) Read(b []byte) (int, error) {
 	n, err := c.Conn.Read(b)
+	if n > 0 {
+		c.moved.Add(int64(n))
+	}
 	if err != nil {
 		c.note(err)
 	}
@@ -90,6 +113,9 @@ func (c *livenessConn) Read(b []byte) (int, error) {
 
 func (c *livenessConn) Write(b []byte) (int, error) {
 	n, err := c.Conn.Write(b)
+	if n > 0 {
+		c.moved.Add(int64(n))
+	}
 	if err != nil {
 		c.note(err)
 	}
@@ -105,6 +131,7 @@ func (c *livenessConn) Close() error {
 	if report && cb != nil {
 		cb()
 	}
+	c.reportEnd(false)
 	return c.Conn.Close()
 }
 
@@ -122,6 +149,7 @@ func (c *livenessConn) note(err error) {
 	cb := c.onReset
 	c.mu.Unlock()
 	cb()
+	c.reportEnd(true)
 }
 
 func isCensorReset(err error) bool {
@@ -178,6 +206,11 @@ func (r HandshakeResult) Reward() float64 {
 }
 
 var splitOffsets = []int{0, 8, 24, 64}
+
+// fragmentBudgets is how many records the ClientHello may become. One matches a
+// browser; larger values only help where the censor reads records and blocks on
+// the name inside them. The controller picks per network.
+var fragmentBudgets = []int{1, 2, 4, 8}
 
 type HandshakeStrategy struct {
 	mu       sync.Mutex
@@ -370,29 +403,85 @@ func armMean(sum float64, cnt int64) float64 {
 }
 
 func (h *HandshakeStrategy) SelectSplit(ctx string) (offset, arm int) {
+	return h.selectFromRepertoire(ctx, splitOffsets, anyArm)
+}
+
+// SelectFragments picks how many records this connection's hello may become.
+func (h *HandshakeStrategy) SelectFragments(ctx string) (budget, arm int) {
+	return h.selectFromRepertoire(ctx, fragmentBudgets, anyArm)
+}
+
+// A joint arm is a (preset, budget) pair. Kept apart on two bandit contexts,
+// neither can represent a rule where the safe budget depends on the
+// fingerprint, and that is what the stand measures: a whole hello gives up its
+// preset, a longer split trips the packet count, so what survives is the pair.
+func JointArmCount(presets int) int {
+	if presets < 1 {
+		presets = 1
+	}
+	return presets * len(fragmentBudgets)
+}
+
+// JointArmParts splits an arm back into the preset index and the hello budget.
+func JointArmParts(arm, presets int) (preset, budget int) {
+	if presets < 1 {
+		presets = 1
+	}
+	n := len(fragmentBudgets)
+	if arm < 0 || arm >= presets*n {
+		return 0, fragmentBudgets[0]
+	}
+	return arm / n, fragmentBudgets[arm%n]
+}
+
+func anyArm(int) bool { return true }
+
+func jointArmFits(fragmented bool) func(int) bool {
+	return func(arm int) bool {
+		return fragmented || fragmentBudgets[arm%len(fragmentBudgets)] == 1
+	}
+}
+
+// SelectJoint plays UCB1 over the pairs, on the same formula as one axis.
+func (h *HandshakeStrategy) SelectJoint(ctx string, presets int, fragmented bool) int {
+	seq := make([]int, JointArmCount(presets))
+	for i := range seq {
+		seq[i] = i
+	}
+	_, arm := h.selectFromRepertoire(ctx, seq, jointArmFits(fragmented))
+	return arm
+}
+
+func (h *HandshakeStrategy) selectFromRepertoire(ctx string, repertoire []int, fits func(int) bool) (value, arm int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.ensure(ctx, len(splitOffsets))
+	h.ensure(ctx, len(repertoire))
 	sum, cnt := h.sum[ctx], h.cnt[ctx]
 
 	var total int64
-	for i, c := range cnt {
-		if c == 0 {
-			return splitOffsets[i], i
+	for i := range repertoire {
+		if !fits(i) {
+			continue
 		}
-		total += c
+		if cnt[i] == 0 {
+			return repertoire[i], i
+		}
+		total += cnt[i]
 	}
 
 	lnTotal := math.Log(float64(total))
 	best := math.Inf(-1)
-	for i := range splitOffsets {
+	for i := range repertoire {
+		if !fits(i) {
+			continue
+		}
 		norm := (armMean(sum[i], cnt[i]) + 1) / 2
 		score := norm + math.Sqrt(2*lnTotal/float64(cnt[i]))
 		if score > best {
 			best, arm = score, i
 		}
 	}
-	return splitOffsets[arm], arm
+	return repertoire[arm], arm
 }
 
 func (h *HandshakeStrategy) Observe(ctx string, arm int, r HandshakeResult) {
@@ -486,7 +575,7 @@ func (d *clientDialer) dialRaw(ctx context.Context, network, addr string) (net.C
 		tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
 		tcpConn.SetNoDelay(true)
 	}
-	lc := &livenessConn{Conn: rawConn, onReset: d.cfg.OnLiveReset, onOK: d.cfg.OnLiveOK}
+	lc := &livenessConn{Conn: rawConn, onReset: d.cfg.OnLiveReset, onOK: d.cfg.OnLiveOK, onEnd: d.cfg.OnLiveEnd}
 	d.mu.Lock()
 	d.live = lc
 	d.mu.Unlock()
@@ -658,9 +747,19 @@ func dialPerflow(ctx context.Context, d *clientDialer, sessionID []byte, token s
 	pre = append(pre, sessionID...)
 	pre = binary.BigEndian.AppendUint16(pre, uint16(len(token)))
 	pre = append(pre, token...)
-	if _, err := uConn.Write(pre); err != nil {
-		uConn.Close()
-		return nil, err
+	// One Write is one TLS record, so a whole-preamble write is a fixed 62-byte
+	// record on every connection. The server reads a stream, so splitting it
+	// removes the constant at no cost.
+	for off := 0; off < len(pre); {
+		n := len(pre) - off
+		if n > 16 {
+			n = 8 + mrand.Intn(n-8)
+		}
+		if _, err := uConn.Write(pre[off : off+n]); err != nil {
+			uConn.Close()
+			return nil, err
+		}
+		off += n
 	}
 	d.markEstablished()
 	logTransportMode("perflow")
