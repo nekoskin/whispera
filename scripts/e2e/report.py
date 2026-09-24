@@ -176,9 +176,15 @@ def main():
         )
     lines.append("")
 
-    events = os.path.join(OUT, "events.csv")
-    if os.path.exists(events):
-        rows = list(csv.DictReader(open(events)))
+    # One file per user when the run is scaled, a single one when it is not.
+    files = [os.path.join(OUT, n) for n in sorted(os.listdir(OUT))
+             if n.startswith("events-") and n.endswith(".csv")]
+    if not files and os.path.exists(os.path.join(OUT, "events.csv")):
+        files = [os.path.join(OUT, "events.csv")]
+    if files:
+        rows = []
+        for path in files:
+            rows.extend(csv.DictReader(open(path)))
         ok = sum(1 for r in rows if r["http_code"] == "200")
         reshapes = [r for r in rows if r["action"] == "reshape"]
         lines.append("## Проба и реакция клиента")

@@ -1,0 +1,7 @@
+services:
+  server:
+    build:
+      dockerfile: scripts/e2e/Dockerfile.race
+  client:
+    build:
+      dockerfile: scripts/e2e/Dockerfile.race
