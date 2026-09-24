@@ -863,8 +863,7 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 	)
 
 	if downFramed != nil {
-		_ = downFramed.EndStream()
-		reusable = framed.StreamDone() && !downFramed.SwitchedRaw() && firstErr == nil
+		reusable = framed.StreamDone() && !downFramed.SwitchedRaw() && downFramed.EndStream() == nil
 	}
 	return reusable
 }
