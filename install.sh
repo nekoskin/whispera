@@ -4,7 +4,6 @@
 REPO_URL="https://github.com/nekoskin/whispera.git"
 BRANCH="main"
 WORK_DIR="/opt/whispera"
-DAT_PATH="/usr/local/share/whispera"
 CONF_PATH="/etc/whispera"
 BIN_PATH="/usr/local/bin"
 LOG_PATH="/var/log/whispera"
@@ -1363,7 +1362,7 @@ setup_systemd() {
 
     mkdir -p "$LOG_PATH"
     mkdir -p /var/lib/whispera/acme
-    chown -R whispera:whispera "$WORK_DIR" "$CONF_PATH" "$DAT_PATH" "$LOG_PATH" /var/lib/whispera 2>/dev/null || true
+    chown -R whispera:whispera "$WORK_DIR" "$CONF_PATH" "$LOG_PATH" /var/lib/whispera 2>/dev/null || true
     chmod 750 "$CONF_PATH"
     chmod 640 "$CONF_PATH/config.yaml" 2>/dev/null || true
 
@@ -1395,7 +1394,7 @@ LimitNOFILE=infinity
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=$WORK_DIR $CONF_PATH $DAT_PATH /var/log/whispera /run -/etc/ufw -/lib/ufw -/var/lib/ufw -/var/crash
+ReadWritePaths=$WORK_DIR $CONF_PATH /var/log/whispera /run -/etc/ufw -/lib/ufw -/var/lib/ufw -/var/crash
 StandardOutput=append:/var/log/whispera/whispera.log
 StandardError=append:/var/log/whispera/whispera.log
 
@@ -1554,7 +1553,7 @@ install_relay() {
     clone_or_update_repo
     build_whispera
 
-    mkdir -p "$CONF_PATH"
+    mkdir -p "$CONF_PATH" "$LOG_PATH"
 
     local RELAY_SECRET
     RELAY_SECRET=$("$BIN_PATH/whispera" keygen 2>/dev/null)
@@ -1641,7 +1640,7 @@ LimitNOFILE=infinity
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=$WORK_DIR $CONF_PATH $DAT_PATH /var/log/whispera /run
+ReadWritePaths=$WORK_DIR $CONF_PATH /var/log/whispera /run
 
 [Install]
 WantedBy=multi-user.target
