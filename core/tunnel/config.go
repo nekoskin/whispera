@@ -96,6 +96,19 @@ type Config struct {
 
 	TLSFragmentSize int
 
+	// Pause between hello fragments, milliseconds. Left alone the tunnel keeps
+	// its own default; Set says the caller means these values, zero included.
+	TLSFragmentDelayMinMs int
+	TLSFragmentDelayMaxMs int
+	TLSFragmentDelaySet   bool
+
+	// How many records the hello may become. Zero keeps the default.
+	TLSFragmentCount int
+
+	// A flag, not just WHISPERA_HELLO_FRAG, because a Windows service takes no
+	// env. Zero value keeps fragmentation on.
+	TLSFragmentDisabled bool
+
 	ForceSNI string
 }
 

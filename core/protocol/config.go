@@ -35,6 +35,10 @@ type ClientConfig struct {
 }
 
 type ServerConfig struct {
+
+	// OnLiveEnd reports a finished connection's lifetime, bytes and whether it
+	// ended in a censor-looking reset. OnLiveReset/OnLiveOK cover only its start.
+	OnLiveEnd func(dur time.Duration, bytes int64, reset bool)
 	ListenAddr       string
 	ExtraListenAddrs []string
 	BackendH2CAddr   string

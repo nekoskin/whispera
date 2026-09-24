@@ -94,10 +94,24 @@ type Manager struct {
 	missedKAs      int32
 }
 
+// The pause between hello fragments keeps its old value unless the caller
+// asks otherwise, so nobody's obfuscation weakens by accident.
+const (
+	defaultFragmentDelayMinMs = 1
+	defaultFragmentDelayMaxMs = 4
+)
+
 func newASNBypassDialer(cfg *Config) *asnbypass.Dialer {
+	minMs, maxMs := defaultFragmentDelayMinMs, defaultFragmentDelayMaxMs
+	if cfg.TLSFragmentDelaySet {
+		minMs, maxMs = cfg.TLSFragmentDelayMinMs, cfg.TLSFragmentDelayMaxMs
+	}
 	return asnbypass.NewDialer(&asnbypass.Config{
-		EnableTLSFragmentation: os.Getenv("WHISPERA_HELLO_FRAG") != "0",
+		EnableTLSFragmentation: (!cfg.TLSFragmentDisabled && os.Getenv("WHISPERA_HELLO_FRAG") != "0") || protocol.ShapeSearchEnabled(),
 		TLSFragmentSize:        cfg.TLSFragmentSize,
+		FragmentDelayMinMs:     minMs,
+		FragmentDelayMaxMs:     maxMs,
+		MaxFragments:           cfg.TLSFragmentCount,
 	})
 }
 

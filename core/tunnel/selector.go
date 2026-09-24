@@ -22,6 +22,16 @@ import (
 
 func helloSplitEnabled() bool { return os.Getenv("WHISPERA_HELLO_SPLIT") == "1" }
 
+var (
+	shapeSearchOnce sync.Once
+	shapeSearchInst *protocol.ShapeSearch
+)
+
+func shapeSearch() *protocol.ShapeSearch {
+	shapeSearchOnce.Do(func() { shapeSearchInst = protocol.NewShapeSearch() })
+	return shapeSearchInst
+}
+
 const altTransportSessionIDLen = 8
 
 func sendAltTransportAuth(conn net.Conn, psk []byte) error {
@@ -61,6 +71,7 @@ type selector struct {
 	sessionCache any
 	lane         datagramLane
 	strategy     *protocol.HandshakeStrategy
+	shape        *shapeController
 }
 
 func newSelector(m *Manager) *selector {
@@ -68,10 +79,15 @@ func newSelector(m *Manager) *selector {
 	if strategy == nil {
 		strategy = protocol.NewHandshakeStrategy()
 	}
+	sni := m.config.WhisperaSNI
+	if net.ParseIP(sni) != nil {
+		sni = ""
+	}
 	return &selector{
 		m:            m,
 		sessionCache: protocol.SharedSessionCache(),
 		strategy:     strategy,
+		shape:        newShapeController(strategy, sni),
 	}
 }
 
@@ -105,6 +121,14 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 	}
 	strategy := s.strategy
 	splitCtx := sni + "|split"
+	fragCtx := sni + "|frag"
+	jointCtx := sni + "|joint"
+	// A pinned count is the operator's word and outranks the controller.
+	fragDialer := m.asnBypassDialer
+	if m.config.TLSFragmentCount > 0 {
+		fragDialer = nil
+	}
+	fragmented := fragDialer != nil && fragDialer.Fragmenting()
 	return func(ctx context.Context) (net.Conn, error) {
 		c := *cCfg
 		if c.ServerSelPub == "" {
@@ -113,29 +137,110 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 		c.OnServerSelPub = func(selPub string) {
 			protocol.RememberSelPub(c.ServerIDPub, selPub)
 		}
-		arm := strategy.Select(sni, fingerprint.PresetCount())
-		c.HelloID = fingerprint.PresetAt(arm)
+		presets := fingerprint.PresetCount()
+		arm, fragArm, jointArm := -1, -1, -1
+
+		if protocol.JointArmEnabled() {
+			a, ok := 0, false
+			// A model that keeps learning outranks the frozen one, and both
+			// outrank the bandit. Each falls through when its weights were
+			// built for a different repertoire.
+			if protocol.PolicyOnlineEnabled() {
+				a, _, ok = strategy.SelectJointOnline(jointCtx, presets, fragmented)
+			}
+			if !ok && protocol.PolicyEnabled() {
+				a, ok = strategy.SelectJointPolicy(jointCtx, presets, fragmented)
+			}
+			if !ok {
+				a = strategy.SelectJoint(jointCtx, presets, fragmented)
+			}
+			jointArm = a
+			preset, budget := protocol.JointArmParts(a, presets)
+			c.HelloID = fingerprint.PresetAt(preset)
+			if fragmented {
+				c.TCPDialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+					return fragDialer.DialTCPWithFragments(ctx, network, addr, budget)
+				}
+			}
+		} else {
+			arm = strategy.Select(sni, presets)
+			c.HelloID = fingerprint.PresetAt(arm)
+			if fragmented {
+				budget, a := 0, 0
+				if protocol.PolicyEnabled() {
+					var ok bool
+					if budget, a, ok = strategy.SelectFragmentsPolicy(fragCtx); !ok {
+						budget, a = strategy.SelectFragments(fragCtx)
+					}
+				} else {
+					budget, a = strategy.SelectFragments(fragCtx)
+				}
+				fragArm = a
+				c.TCPDialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+					return fragDialer.DialTCPWithFragments(ctx, network, addr, budget)
+				}
+			}
+		}
+
+		shapeUsed := false
+		var chosenShape protocol.HelloShape
+		if protocol.ShapeSearchEnabled() && fragDialer != nil {
+			chosenShape = shapeSearch().Select()
+			shapeUsed = true
+			c.TCPDialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return fragDialer.DialTCPWithShape(ctx, network, addr, chosenShape.Records, chosenShape.PauseMs)
+			}
+		}
 
 		splitArm := -1
 		if helloSplitEnabled() {
 			c.HelloSplitOffset, splitArm = strategy.SelectSplit(splitCtx)
 		}
 
-		observe := func(result protocol.HandshakeResult) {
+		observe := func(result protocol.HandshakeResult, stage string) {
 			strategy.Record(sni, result)
-			strategy.Observe(sni, arm, result)
+			if shapeUsed && stage == dialStageHandshake {
+				shapeSearch().Observe(chosenShape, result == protocol.HandshakeOK)
+			}
+			// One arm carried both axes, so one context judges it and the
+			// per-axis contexts stay out of it entirely.
+			if jointArm >= 0 {
+				if stage == dialStageHandshake {
+					alive := result == protocol.HandshakeOK
+					strategy.Observe(jointCtx, jointArm, result)
+					strategy.NoteDial(jointCtx, jointArm, alive)
+					if protocol.PolicyOnlineEnabled() {
+						strategy.NoteJointOnline(jointCtx, jointArm, alive)
+					}
+					recordDial(jointCtx, jointArm, result, stage)
+				}
+				return
+			}
+			if arm >= 0 {
+				strategy.Observe(sni, arm, result)
+			}
 			if splitArm >= 0 {
 				strategy.Observe(splitCtx, splitArm, result)
 			}
-		}
-
-		c.OnHandshake = func(result protocol.HandshakeResult, _ time.Duration) {
-			if result != protocol.HandshakeOK {
-				observe(result)
+			// Only the handshake judges the budget; a later reset blames the
+			// datapath, not the arm that got through the gate.
+			if fragArm >= 0 && stage == dialStageHandshake {
+				strategy.Observe(fragCtx, fragArm, result)
+				strategy.NoteDial(fragCtx, fragArm, result == protocol.HandshakeOK)
+				recordDial(fragCtx, fragArm, result, stage)
 			}
 		}
-		c.OnLiveReset = func() { observe(protocol.HandshakeResetFast) }
-		c.OnLiveOK = func() { observe(protocol.HandshakeOK) }
+
+		// Report the success here too, not through OnLiveOK, or the budget's
+		// counter only grows on failures and the controller never converges.
+		c.OnHandshake = func(result protocol.HandshakeResult, _ time.Duration) {
+			observe(result, dialStageHandshake)
+		}
+		c.OnLiveReset = func() { observe(protocol.HandshakeResetFast, dialStageLiveReset) }
+		c.OnLiveOK = func() { observe(protocol.HandshakeOK, dialStageLiveOK) }
+		c.OnLiveEnd = func(dur time.Duration, bytes int64, reset bool) {
+			s.shape.note(dur, bytes, reset)
+		}
 		return protocol.Client(ctx, &c)
 	}, true
 }

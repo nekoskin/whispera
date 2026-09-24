@@ -355,3 +355,51 @@ func TestLivenessConnIgnoresLateReset(t *testing.T) {
 		t.Fatalf("a reset after a long healthy life is normal churn, got %d", fired)
 	}
 }
+
+func TestFragmentBudgetAvoidsPacketCounting(t *testing.T) {
+	// An inspector that drops any hello arriving in three or more packets
+	// before the server has replied leaves only the browser-sized budgets
+	// usable. The controller has to find that out from resets alone.
+	censor := func(budget int) HandshakeResult {
+		if budget >= 3 {
+			return HandshakeResetFast
+		}
+		return HandshakeOK
+	}
+	strategy := NewHandshakeStrategy()
+	ctx := "origin|frag"
+	for i := 0; i < 2000; i++ {
+		budget, arm := strategy.SelectFragments(ctx)
+		strategy.Observe(ctx, arm, censor(budget))
+	}
+	budget, _ := strategy.SelectFragments(ctx)
+	if budget >= 3 {
+		t.Fatalf("controller settled on a budget of %d records, which the inspector drops", budget)
+	}
+}
+
+func TestFragmentBudgetKeepsBrowserParity(t *testing.T) {
+	if fragmentBudgets[0] != 1 {
+		t.Fatalf("the repertoire must offer a single-record hello, got %d", fragmentBudgets[0])
+	}
+}
+
+func TestFragmentBudgetLearnsRecordReadingCensor(t *testing.T) {
+	// The opposite network: an inspector that reads whole records and blocks on
+	// the name inside them, so only a split hello survives.
+	censor := func(budget int) HandshakeResult {
+		if budget == 1 {
+			return HandshakeResetFast
+		}
+		return HandshakeOK
+	}
+	strategy := NewHandshakeStrategy()
+	ctx := "origin|frag"
+	for i := 0; i < 2000; i++ {
+		budget, arm := strategy.SelectFragments(ctx)
+		strategy.Observe(ctx, arm, censor(budget))
+	}
+	if budget, _ := strategy.SelectFragments(ctx); budget == 1 {
+		t.Fatal("controller stayed on the single-record hello the inspector drops")
+	}
+}
