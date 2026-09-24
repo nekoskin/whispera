@@ -52,7 +52,9 @@ func serveWhisperaConn(ac protocol.AcceptedConn) {
 	tracked := stats.WrapConn(ac.Conn, ac.UserID)
 	go func() {
 		defer globalKeyLimits.Release(ac.UserID, sid)
-		globalRelay.ServeTunnelResilient(tracked, false, ac.Secret)
+		globalRelay.ServeTunnelResilient(tracked, false, ac.Secret, func() {
+			globalKeyLimits.MarkTorrent(ac.UserID, sid)
+		})
 		log.Debug("whispera: tunnel closed userID=%s remote=%s", ac.UserID, remote)
 	}()
 }

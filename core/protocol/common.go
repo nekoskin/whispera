@@ -73,6 +73,8 @@ func perflowEnabled() bool { return os.Getenv("WHISPERA_PERFLOW") != "0" }
 
 const SpliceProtoBit byte = 0x80
 
+const TorrentProtoBit byte = 0x40
+
 func FullFrameEnabled() bool { return os.Getenv("WHISPERA_FULL_FRAME") == "1" }
 
 var (

@@ -83,3 +83,40 @@ func TestSameSessionAcrossFlowsTakesOneSlot(t *testing.T) {
 		t.Fatalf("20 flows of one session produced %d slots, want 1", got)
 	}
 }
+
+func TestTorrentSessionsAreExemptFromActiveCap(t *testing.T) {
+	m := New(Limits{MaxActiveSessions: 2, GlobalCap: 100, SessionTTL: time.Hour})
+
+	for i := 0; i < 2; i++ {
+		if reason, _ := m.Admit("key", fmt.Sprintf("n-%d", i), "10.0.0.1"); reason != ReasonNone {
+			t.Fatalf("normal session %d rejected", i)
+		}
+	}
+
+	if reason, _ := m.Admit("key", "n-3", "10.0.0.1"); reason != ReasonActiveCap {
+		t.Fatalf("3rd normal session got %q, want active cap", reason)
+	}
+
+	// A torrent session is admitted under the cap, then reclassified so it no
+	// longer counts, freeing a slot for a normal session.
+	if reason, _ := m.Admit("key", "n-3", "10.0.0.1"); reason != ReasonActiveCap {
+		t.Fatalf("expected still capped before marking torrent")
+	}
+	m.MarkTorrent("key", "n-0")
+	if reason, _ := m.Admit("key", "n-3", "10.0.0.1"); reason != ReasonNone {
+		t.Fatalf("normal session rejected after a peer became torrent: %q", reason)
+	}
+}
+
+func TestTorrentStillCountsTowardGlobalCap(t *testing.T) {
+	m := New(Limits{MaxActiveSessions: 100, GlobalCap: 2, SessionTTL: time.Hour})
+
+	m.Admit("key", "a", "10.0.0.1")
+	m.MarkTorrent("key", "a")
+	m.Admit("key", "b", "10.0.0.1")
+	m.MarkTorrent("key", "b")
+
+	if reason, _ := m.Admit("key", "c", "10.0.0.1"); reason != ReasonGlobalCap {
+		t.Fatalf("torrent sessions must still count toward the global cap, got %q", reason)
+	}
+}
