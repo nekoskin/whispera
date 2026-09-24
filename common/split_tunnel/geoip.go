@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	stdlog "log"
@@ -33,16 +34,18 @@ type ipRange struct{ lo, hi [16]byte }
 
 type GeoIPSet struct {
 	mu     sync.RWMutex
-	ranges []ipRange
+	ranges atomic.Pointer[[]ipRange]
 	etag   string
 }
 
 func NewGeoIPSet() *GeoIPSet { return &GeoIPSet{} }
 
 func (g *GeoIPSet) Len() int {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return len(g.ranges)
+	ranges := g.ranges.Load()
+	if ranges == nil {
+		return 0
+	}
+	return len(*ranges)
 }
 
 func (g *GeoIPSet) Contains(ip net.IP) bool {
@@ -53,13 +56,16 @@ func (g *GeoIPSet) Contains(ip net.IP) bool {
 	var addr [16]byte
 	copy(addr[:], v16)
 
-	g.mu.RLock()
-	defer g.mu.RUnlock()
+	loaded := g.ranges.Load()
+	if loaded == nil {
+		return false
+	}
+	ranges := *loaded
 
-	i := sort.Search(len(g.ranges), func(i int) bool {
-		return bytes.Compare(g.ranges[i].hi[:], addr[:]) >= 0
+	i := sort.Search(len(ranges), func(i int) bool {
+		return bytes.Compare(ranges[i].hi[:], addr[:]) >= 0
 	})
-	return i < len(g.ranges) && bytes.Compare(g.ranges[i].lo[:], addr[:]) <= 0
+	return i < len(ranges) && bytes.Compare(ranges[i].lo[:], addr[:]) <= 0
 }
 
 func rangeOf(ipnet *net.IPNet) (ipRange, bool) {
@@ -118,9 +124,7 @@ func (g *GeoIPSet) load(r io.Reader) (int, error) {
 	if len(ranges) < geoIPMinNetworks {
 		return 0, fmt.Errorf("geoip: got %d networks, refusing to replace a working list", len(ranges))
 	}
-	g.mu.Lock()
-	g.ranges = ranges
-	g.mu.Unlock()
+	g.ranges.Store(&ranges)
 	return len(ranges), nil
 }
 

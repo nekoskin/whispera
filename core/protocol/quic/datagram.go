@@ -28,9 +28,17 @@ const (
 	markerRaw byte = 0xFE
 )
 
+// addrLen is an upper bound on the encoded address: type, length, the host
+// itself and the port. An IP needs less, a name exactly this.
+func addrLen(host string) int { return 2 + len(host) + 2 }
+
 func encodeAddr(host string, port uint16) []byte {
-	var b []byte
-	if ip := net.ParseIP(host); ip != nil {
+	return appendAddr(nil, host, port)
+}
+
+// appendAddr writes into a caller-owned buffer to avoid a per-datagram alloc.
+func appendAddr(b []byte, host string, port uint16) []byte {
+	if ip := parseIPFast(host); ip != nil {
 		if ip4 := ip.To4(); ip4 != nil {
 			b = append(b, 0x01)
 			b = append(b, ip4...)
@@ -43,6 +51,31 @@ func encodeAddr(host string, port uint16) []byte {
 		b = append(b, []byte(host)...)
 	}
 	return binary.BigEndian.AppendUint16(b, port)
+}
+
+// parseIPFast keeps net.ParseIP away from host names: on anything that is not
+// an address it builds an error value that is thrown away at once.
+func parseIPFast(host string) net.IP {
+	digits, colon := false, false
+	for i := 0; i < len(host); i++ {
+		switch c := host[i]; {
+		case c == ':':
+			colon = true
+		case c == '.':
+		case c >= '0' && c <= '9':
+			digits = true
+		case (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'):
+			if !colon {
+				return nil
+			}
+		default:
+			return nil
+		}
+	}
+	if !digits && !colon {
+		return nil
+	}
+	return net.ParseIP(host)
 }
 
 func decodeAddr(b []byte) (host string, port uint16, rest []byte, ok bool) {
@@ -65,7 +98,10 @@ func decodeAddr(b []byte) (host string, port uint16, rest []byte, ok bool) {
 			return "", 0, nil, false
 		}
 		l := int(b[1])
-		if len(b) < 2+l+2 {
+		// A zero-length name used to pass as a valid address. Downstream that
+		// becomes a target keyed on "", a registered reply pump and a dial to
+		// nowhere -- all from one crafted datagram.
+		if l == 0 || len(b) < 2+l+2 {
 			return "", 0, nil, false
 		}
 		return string(b[2 : 2+l]), binary.BigEndian.Uint16(b[2+l : 4+l]), b[4+l:], true
@@ -340,7 +376,10 @@ func (c *DatagramClient) sweepLoop(ctx context.Context) {
 }
 
 func (c *DatagramClient) SendUDP(host string, port uint16, payload []byte) error {
-	full := append(encodeAddr(host, port), payload...)
+	full := make([]byte, 0, addrLen(host)+len(payload))
+	full = appendAddr(full, host, port)
+	full = append(full, payload...)
+
 	for _, pkt := range c.sender.encode(full) {
 		if err := c.conn.SendDatagram(pkt); err != nil {
 			return err

@@ -8,10 +8,32 @@ import (
 	"github.com/klauspost/reedsolomon"
 )
 
+// Sized to a protected datagram, not 64K. The pool holds pointers so Put does
+// not box the slice (staticcheck SA6002).
+const packetPoolSize = 2048
+
 var packetPool = sync.Pool{
-	New: func() interface{} {
-		return make([]byte, 65536)
+	New: func() any {
+		b := make([]byte, packetPoolSize)
+		return &b
 	},
+}
+
+func getPacketBuf(size int) []byte {
+	bp := packetPool.Get().(*[]byte)
+	if cap(*bp) < size {
+		packetPool.Put(bp)
+		return make([]byte, size)
+	}
+	return (*bp)[:size]
+}
+
+func putPacketBuf(b []byte) {
+	if cap(b) < packetPoolSize {
+		return
+	}
+	b = b[:cap(b)]
+	packetPool.Put(&b)
 }
 
 type FECEncoder struct {
@@ -42,12 +64,7 @@ func (fe *FECEncoder) EncodeFEC(data []byte, seqNum uint32, headroom int) []byte
 	payloadLen := 7 + rsShardLen
 	totalLen := headroom + payloadLen
 
-	buf := packetPool.Get().([]byte)
-
-	if cap(buf) < totalLen {
-		packetPool.Put(buf)
-		buf = make([]byte, totalLen)
-	}
+	buf := getPacketBuf(totalLen)
 
 	buf = buf[:totalLen]
 
@@ -60,11 +77,7 @@ func (fe *FECEncoder) EncodeFEC(data []byte, seqNum uint32, headroom int) []byte
 	binary.BigEndian.PutUint16(buf[ptr+7:ptr+9], uint16(len(data)))
 	copy(buf[ptr+9:], data)
 
-	shardBuf := packetPool.Get().([]byte)
-	if cap(shardBuf) < rsShardLen {
-		packetPool.Put(shardBuf)
-		shardBuf = make([]byte, rsShardLen)
-	}
+	shardBuf := getPacketBuf(rsShardLen)
 	shardBuf = shardBuf[:rsShardLen]
 	copy(shardBuf, buf[ptr+7:ptr+7+rsShardLen])
 
@@ -94,11 +107,7 @@ func (fe *FECEncoder) GetParityPackets(baseSeq uint32, headroom int) [][]byte {
 	}
 
 	for i := 0; i < fe.m; i++ {
-		buf := packetPool.Get().([]byte)
-		if cap(buf) < fe.shardSize {
-			packetPool.Put(buf)
-			buf = make([]byte, fe.shardSize)
-		}
+		buf := getPacketBuf(fe.shardSize)
 		fe.shards[fe.k+i] = buf[:fe.shardSize]
 	}
 
@@ -114,11 +123,7 @@ func (fe *FECEncoder) GetParityPackets(baseSeq uint32, headroom int) [][]byte {
 		pktLen := 7 + len(parityData)
 		totalLen := headroom + pktLen
 
-		buf := packetPool.Get().([]byte)
-		if cap(buf) < totalLen {
-			packetPool.Put(buf)
-			buf = make([]byte, totalLen)
-		}
+		buf := getPacketBuf(totalLen)
 		buf = buf[:totalLen]
 
 		ptr := headroom
@@ -133,7 +138,7 @@ func (fe *FECEncoder) GetParityPackets(baseSeq uint32, headroom int) [][]byte {
 
 	for i := 0; i < fe.k+fe.m; i++ {
 		if fe.shards[i] != nil {
-			packetPool.Put(fe.shards[i])
+			putPacketBuf(fe.shards[i])
 			fe.shards[i] = nil
 		}
 	}
@@ -147,7 +152,7 @@ func (fe *FECEncoder) GetParityPackets(baseSeq uint32, headroom int) [][]byte {
 func (fe *FECEncoder) reset() {
 	for i := 0; i < len(fe.shards); i++ {
 		if fe.shards[i] != nil {
-			packetPool.Put(fe.shards[i])
+			putPacketBuf(fe.shards[i])
 			fe.shards[i] = nil
 		}
 	}
@@ -254,12 +259,7 @@ func (fd *FECDecoder) Reconstruct(blockStartSeq uint32, k, m int) [][]byte {
 			}
 			data := shard[2 : 2+dataLen]
 
-			res := packetPool.Get().([]byte)
-			if cap(res) < len(data) {
-				packetPool.Put(res)
-				res = make([]byte, len(data))
-			}
-			res = res[:len(data)]
+			res := getPacketBuf(len(data))
 			copy(res, data)
 
 			recovered = append(recovered, res)
