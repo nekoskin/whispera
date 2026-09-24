@@ -27,6 +27,9 @@ func ownerOf(path string) (owner, error) {
 }
 
 func MatchParent(path string) error {
+	if os.Geteuid() != 0 {
+		return nil
+	}
 	want, err := ownerOf(filepath.Dir(path))
 	if err != nil {
 		return err
