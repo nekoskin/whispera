@@ -3,9 +3,13 @@ package protocol
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	mrand "math/rand"
 	"net"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,6 +26,9 @@ const (
 	shapePadMax     = 1111
 	shapePadRecords = 3
 
+	shapeChunkMin = 4096
+	shapeChunkMax = framedMaxData
+
 	framedSwitchMarker = 0xFFFF
 	framedFillerMarker = 0xFFFE
 )
@@ -35,6 +42,64 @@ type ShapeKnobs struct {
 	fillInterval atomic.Int32
 	fillMin      atomic.Int32
 	fillMax      atomic.Int32
+
+	// Payload length range per record. Zero fills every record to the brim.
+	chunkMin atomic.Int32
+	chunkMax atomic.Int32
+
+	// Draw from chunkShape instead of the range above.
+	chunkShaped atomic.Bool
+}
+
+// 5 TLS header, 1 content type, 16 AEAD tag, 7 ours.
+const chunkWireOverhead = 29
+
+// Record sizes of real browsing, measured by neural/fast.py diff.
+// Bounds are wire sizes, weights percent.
+var chunkShape = []struct {
+	lo, hi int
+	w      float64
+}{
+	{0, 64, 7.2},
+	{64, 128, 2.3},
+	{128, 256, 1.6},
+	{256, 512, 3.1},
+	{512, 1024, 4.1},
+	{1024, 2048, 52.7},
+	{2048, 4096, 1.2},
+	{4096, 8192, 7.0},
+	{8192, 16000, 1.0},
+	{16000, framedMaxData + chunkWireOverhead, 19.7},
+}
+
+func shapedChunk(left int) int {
+	total := 0.0
+	for _, c := range chunkShape {
+		total += c.w
+	}
+	r := mrand.Float64() * total
+	for _, c := range chunkShape {
+		r -= c.w
+		if r > 0 {
+			continue
+		}
+		lo, hi := c.lo-chunkWireOverhead, c.hi-chunkWireOverhead
+		if lo < 1 {
+			lo = 1
+		}
+		if hi > framedMaxData {
+			hi = framedMaxData
+		}
+		if hi <= lo {
+			hi = lo + 1
+		}
+		n := lo + mrand.Intn(hi-lo)
+		if n < left {
+			return n
+		}
+		return left
+	}
+	return left
 }
 
 var Shape = newShapeKnobs()
@@ -44,11 +109,109 @@ func newShapeKnobs() *ShapeKnobs {
 	k.records.Store(shapePadRecords)
 	k.min.Store(shapePadMin)
 	k.max.Store(shapePadMax)
+	if strings.TrimSpace(os.Getenv("WHISPERA_CHUNK")) == "shape" {
+		k.chunkShaped.Store(true)
+	}
+	lo, hi := chunkDefaults()
+	k.chunkMin.Store(int32(lo))
+	k.chunkMax.Store(int32(hi))
 	return k
+}
+
+// chunkDefaults reads WHISPERA_CHUNK as "min-max", or a single number, or "0"
+// to fill every record. Anything unparsable keeps the built-in range.
+func chunkDefaults() (min, max int) {
+	min, max = shapeChunkMin, shapeChunkMax
+	v := strings.TrimSpace(os.Getenv("WHISPERA_CHUNK"))
+	if v == "" {
+		return min, max
+	}
+	lo, hi := v, v
+	if i := strings.IndexByte(v, '-'); i > 0 {
+		lo, hi = v[:i], v[i+1:]
+	}
+	a, err1 := strconv.Atoi(lo)
+	b, err2 := strconv.Atoi(hi)
+	if err1 != nil || err2 != nil || a < 0 || b < 0 || b > framedMaxData || (b > 0 && a > b) {
+		return min, max
+	}
+	return a, b
 }
 
 func (k *ShapeKnobs) Get() (records, min, max int) {
 	return int(k.records.Load()), int(k.min.Load()), int(k.max.Load())
+}
+
+func (k *ShapeKnobs) Chunk() (min, max int) {
+	return int(k.chunkMin.Load()), int(k.chunkMax.Load())
+}
+
+func (k *ShapeKnobs) SetChunk(min, max int) error {
+	if min < 0 || max < 0 || max > framedMaxData || (max > 0 && min > max) {
+		return errShapeRange
+	}
+	k.chunkMin.Store(int32(min))
+	k.chunkMax.Store(int32(max))
+	return nil
+}
+
+// chunkTrace records the lengths actually chosen, so they can be matched against
+// the record lengths on the wire. Off unless WHISPERA_CHUNK_TRACE names a file.
+var chunkTrace struct {
+	once sync.Once
+	mu   sync.Mutex
+	file *os.File
+}
+
+func chunkTraceFile() *os.File {
+	chunkTrace.once.Do(func() {
+		path := os.Getenv("WHISPERA_CHUNK_TRACE")
+		if path == "" {
+			return
+		}
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return
+		}
+		chunkTrace.file = f
+	})
+	return chunkTrace.file
+}
+
+func noteChunk(n int) {
+	f := chunkTraceFile()
+	if f == nil {
+		return
+	}
+	chunkTrace.mu.Lock()
+	fmt.Fprintln(f, n)
+	chunkTrace.mu.Unlock()
+}
+
+// chunkLen is how much data the next record carries, given what is left.
+func chunkLen(left int) int {
+	if Shape.chunkShaped.Load() {
+		n := shapedChunk(left)
+		noteChunk(n)
+		return n
+	}
+	min, max := Shape.Chunk()
+	if max <= 0 {
+		return left
+	}
+	if min < 1 {
+		min = 1
+	}
+	want := min
+	if max > min {
+		want = min + mrand.Intn(max-min+1)
+	}
+	if want < left {
+		noteChunk(want)
+		return want
+	}
+	noteChunk(left)
+	return left
 }
 
 func (k *ShapeKnobs) Filler() (idleMs, intervalMs, min, max int) {
@@ -154,6 +317,7 @@ type FramedConn struct {
 
 	wmu      sync.Mutex
 	batch    []byte
+	batchRef *[]byte
 	ended    bool
 	switched bool
 	pad      *ShapeBudget
@@ -161,6 +325,7 @@ type FramedConn struct {
 	lastWrite atomic.Int64
 	stop      chan struct{}
 	stopOnce  sync.Once
+	filling   atomic.Bool
 }
 
 func NewFramedConn(c net.Conn, pad *ShapeBudget) *FramedConn {
@@ -170,24 +335,58 @@ func NewFramedConn(c net.Conn, pad *ShapeBudget) *FramedConn {
 	fc := &FramedConn{Conn: c, pad: pad}
 	fc.lastWrite.Store(time.Now().UnixNano())
 	fc.stop = make(chan struct{})
-	go fc.fillLoop()
+	fc.armFiller()
 	return fc
 }
 
+// armFiller starts the loop only once the filler is actually switched on. It
+// used to run for every connection: with the filler off it never wrote, so it
+// never saw the connection die and never left. A stream that ends through
+// EndStream rather than Close left one such goroutine behind for good.
+func (c *FramedConn) armFiller() {
+	if _, intervalMs, _, _ := Shape.Filler(); intervalMs <= 0 {
+		return
+	}
+	if c.filling.Swap(true) {
+		return
+	}
+	go c.fillLoop()
+}
+
+// A stream carries its own 16K record buffer, and in a per-flow datapath every
+// flow is a new stream: that buffer was allocated and thrown away once per
+// flow. It now comes from a pool and goes back when the stream ends.
+var framedBatchPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, framedPlainTarget)
+		return &b
+	},
+}
+
+func (c *FramedConn) releaseBatchLocked() {
+	if c.batchRef == nil {
+		return
+	}
+	*c.batchRef = c.batch[:0]
+	framedBatchPool.Put(c.batchRef)
+	c.batchRef, c.batch = nil, nil
+}
+
 func (c *FramedConn) fillLoop() {
+	defer c.filling.Store(false)
+
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
 	for {
 		idleMs, intervalMs, min, max := Shape.Filler()
-		wait := time.Second
-		if intervalMs > 0 {
-			wait = time.Duration(intervalMs) * time.Millisecond
+		if intervalMs <= 0 {
+			return
 		}
+		timer.Reset(time.Duration(intervalMs) * time.Millisecond)
 		select {
 		case <-c.stop:
 			return
-		case <-time.After(wait):
-		}
-		if intervalMs <= 0 {
-			continue
+		case <-timer.C:
 		}
 		if time.Since(time.Unix(0, c.lastWrite.Load())) < time.Duration(idleMs)*time.Millisecond {
 			continue
@@ -256,12 +455,15 @@ func (c *FramedConn) Write(b []byte) (int, error) {
 		return 0, io.ErrClosedPipe
 	}
 	if c.batch == nil {
-		c.batch = make([]byte, 0, framedPlainTarget)
+		bp := framedBatchPool.Get().(*[]byte)
+		c.batchRef = bp
+		c.batch = (*bp)[:0]
 	}
 	c.lastWrite.Store(time.Now().UnixNano())
+	c.armFiller()
 	sent := 0
 	for len(b) > 0 {
-		n := len(b)
+		n := chunkLen(len(b))
 		if n > framedMaxData {
 			n = framedMaxData
 		}
@@ -381,7 +583,9 @@ func (c *FramedConn) EndStream() error {
 		return nil
 	}
 	c.ended = true
-	return c.writeMarker(0)
+	err := c.writeMarker(0)
+	c.releaseBatchLocked()
+	return err
 }
 
 func (c *FramedConn) StreamDone() bool {
