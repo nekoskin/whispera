@@ -198,7 +198,7 @@ func setupNetworking(cfg *config.ClientConfig) (*socks5.Module, *dns.Resolver, *
 
 	socksMod, _ := socks5.New(&socks5.Config{
 		ListenAddr:     *socksAddr,
-		Debug:          true,
+		Debug:          *verbose,
 		MTU:            cfg.MTU,
 		BypassFunc:     stm.ShouldBypass,
 		BypassResolver: bypassDNSResolver,
