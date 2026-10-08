@@ -438,6 +438,19 @@ func (stm *SplitTunnelManager) ShouldBypass(addr string, port uint16) bool {
 	return stm.bypassHost(snap, addr)
 }
 
+func (stm *SplitTunnelManager) BypassDecision(addr string, port uint16) (direct, byCountry bool) {
+	snap := stm.snap.Load()
+	if snap == nil || !snap.enabled {
+		return false, false
+	}
+	if looksLikeIP(addr) {
+		if ip := net.ParseIP(addr); ip != nil {
+			return stm.bypassIP(snap, ip), false
+		}
+	}
+	return stm.bypassHostReason(snap, addr)
+}
+
 // looksLikeIP keeps net.ParseIP away from host names. On anything that is not
 // an address ParseIP builds an error value that is thrown away at once, and
 // that allocation lands on every dial we make by name.
@@ -500,6 +513,11 @@ func (stm *SplitTunnelManager) ShouldBypassByHostname(hostname string) bool {
 }
 
 func (stm *SplitTunnelManager) bypassHost(snap *ruleSnapshot, hostname string) bool {
+	direct, _ := stm.bypassHostReason(snap, hostname)
+	return direct
+}
+
+func (stm *SplitTunnelManager) bypassHostReason(snap *ruleSnapshot, hostname string) (direct, byCountry bool) {
 	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
 
 	best := -1
@@ -525,9 +543,9 @@ func (stm *SplitTunnelManager) bypassHost(snap *ruleSnapshot, hostname string) b
 		}
 	}
 	if best >= 0 {
-		return snap.direct[best]
+		return snap.direct[best], false
 	}
-	return stm.byCountryVerdict(snap, hostname)
+	return stm.byCountryVerdict(snap, hostname), true
 }
 
 func (stm *SplitTunnelManager) byCountryVerdict(snap *ruleSnapshot, hostname string) bool {

@@ -33,6 +33,10 @@ type Config struct {
 
 	BypassFunc func(addr string, port uint16) bool
 
+	BypassDecision func(addr string, port uint16) (direct, byCountry bool)
+
+	BypassAddrDirect func(ip net.IP) bool
+
 	BypassResolver *net.Resolver
 
 	RealResolver func(ctx context.Context, host string) ([]net.IP, error)
@@ -249,8 +253,8 @@ func (m *Module) route(clientConn net.Conn, targetAddr string, targetPort uint16
 		return "", nil
 	}
 
-	if m.config.BypassFunc != nil && m.config.BypassFunc(targetAddr, targetPort) {
-		return "", m.directDial(clientConn, targetAddr, targetPort)
+	if direct, dialIP := m.bypassRoute(targetAddr, targetPort); direct {
+		return "", m.dialDirect(clientConn, dialIP, targetAddr, targetPort)
 	}
 
 	m.mu.RLock()
@@ -451,9 +455,32 @@ func relayWithIdle(a, b net.Conn, idle time.Duration) {
 	close(stop)
 }
 
-func (m *Module) directDial(clientConn net.Conn, host string, port uint16) error {
+func (m *Module) bypassRoute(host string, port uint16) (direct bool, dialIP net.IP) {
+	if m.config.BypassDecision != nil {
+		bypass, byCountry := m.config.BypassDecision(host, port)
+		if !bypass {
+			return false, nil
+		}
+		if !byCountry || m.config.BypassAddrDirect == nil {
+			return true, nil
+		}
+		ip := m.directIP(context.Background(), host)
+		if ip == nil || !m.config.BypassAddrDirect(ip) {
+			return false, nil
+		}
+		return true, ip
+	}
+	if m.config.BypassFunc != nil && m.config.BypassFunc(host, port) {
+		return true, nil
+	}
+	return false, nil
+}
+
+func (m *Module) dialDirect(clientConn net.Conn, ip net.IP, host string, port uint16) error {
 	ctx := context.Background()
-	ip := m.directIP(ctx, host)
+	if ip == nil {
+		ip = m.directIP(ctx, host)
+	}
 	target := host
 	if ip != nil {
 		target = ip.String()
