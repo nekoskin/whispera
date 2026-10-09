@@ -1,6 +1,6 @@
 module github.com/nekoskin/whispera
 
-go 1.26
+go 1.26.0
 
 toolchain go1.26.6
 
@@ -12,9 +12,9 @@ require (
 	github.com/sagernet/sing-mux v0.3.5
 	go.uber.org/automaxprocs v1.6.0
 	go.uber.org/zap v1.27.1
-	golang.org/x/crypto v0.53.0
-	golang.org/x/net v0.56.0
-	google.golang.org/grpc v1.82.1
+	golang.org/x/crypto v0.57.0
+	golang.org/x/net v0.60.0
+	google.golang.org/grpc v1.83.2
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -22,13 +22,12 @@ require (
 	github.com/hashicorp/yamux v0.1.2 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/sagernet/smux v1.5.50-sing-box-mod.1 // indirect
-	go.opentelemetry.io/otel v1.44.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 )
 
 replace (
 	golang.org/x/crypto => golang.org/x/crypto v0.53.0
-	golang.org/x/net => golang.org/x/net v0.56.0
+	golang.org/x/net => golang.org/x/net v0.60.0
 	golang.org/x/sys => golang.org/x/sys v0.35.0
 	golang.org/x/text => golang.org/x/text v0.39.0
 // gvisor.dev/gvisor => ./internal/gvisor/gvisor@v0.0.0-20251115042331-9fc4303aefe1
@@ -39,8 +38,8 @@ require (
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/reedsolomon v1.13.0
-	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/protobuf v1.36.11
 )
