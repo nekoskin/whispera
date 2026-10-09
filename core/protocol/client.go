@@ -190,6 +190,21 @@ func classifyHandshake(err error, latency time.Duration) HandshakeResult {
 	}
 }
 
+func (r HandshakeResult) String() string {
+	switch r {
+	case HandshakeOK:
+		return "ok"
+	case HandshakeResetFast:
+		return "reset"
+	case HandshakeIncomplete:
+		return "incomplete"
+	case HandshakeRejected:
+		return "rejected"
+	default:
+		return "error"
+	}
+}
+
 func (r HandshakeResult) Reward() float64 {
 	switch r {
 	case HandshakeOK:
@@ -270,7 +285,7 @@ func (h *HandshakeStrategy) Select(ctx string, arms int) int {
 	}
 	if h.seen[ctx] >= int64(arms) && h.surv[ctx] < survSwitchThreshold {
 		if next := h.bestArm(ctx, arms); next != cur {
-			traceLog.Infow("arm_switch", "ctx", ctx, "from", cur, "to", next, "survival", h.surv[ctx])
+			traceLog.Infow("arm switched", "ctx", ctx, "from", cur, "to", next, "survival", h.surv[ctx])
 			h.current[ctx] = next
 			h.surv[ctx] = survSwitchThreshold
 			h.rev++
@@ -327,7 +342,7 @@ func (h *HandshakeStrategy) Record(ctx string, r HandshakeResult) {
 	h.seen[ctx]++
 	h.survEWMA += 0.05 * (surv - h.survEWMA)
 	h.rev++
-	traceLog.Infow("handshake_signal",
+	traceLog.Infow("handshake signal",
 		"ctx", ctx, "result", int(r), "survival", h.surv[ctx], "seen", h.seen[ctx])
 }
 
@@ -500,7 +515,7 @@ func (h *HandshakeStrategy) Observe(ctx string, arm int, r HandshakeResult) {
 	}
 	h.survEWMA += 0.05 * (surv - h.survEWMA)
 	h.rev++
-	traceLog.Infow("handshake_control_observe",
+	traceLog.Infow("handshake control observed",
 		"ctx", ctx, "arm", arm,
 		"result", int(r), "reward", reward, "survival_ewma", h.survEWMA)
 }

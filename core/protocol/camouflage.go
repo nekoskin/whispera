@@ -292,7 +292,7 @@ func (l *camouflageListener) handle(conn net.Conn) {
 	remote := conn.RemoteAddr().String()
 	defer func() {
 		if r := recover(); r != nil {
-			traceLog.Errorw("camo_handle_panic", "remote", remote, "err", fmt.Sprint(r), "stack", string(debug.Stack()))
+			traceLog.Errorw("camouflage handler panic", "remote", remote, "err", fmt.Sprint(r), "stack", string(debug.Stack()))
 			conn.Close()
 		}
 	}()
@@ -302,7 +302,7 @@ func (l *camouflageListener) handle(conn net.Conn) {
 	if err == nil && l.bySelector != nil {
 		userID, psk, reason := l.bySelector(ph.random, ph.keyShare)
 		if reason == selReasonOK {
-			traceLog.Infow("camo_authenticated", "remote", remote, "sni", ph.sni, "via", "selector", "user", userID)
+			traceLog.Infow("client authenticated", "remote", remote, "sni", ph.sni, "via", "selector", "user", userID)
 			l.pass(conn, ph, userID, psk)
 			return
 		}
@@ -313,18 +313,18 @@ func (l *camouflageListener) handle(conn net.Conn) {
 	if err == nil {
 		keys = l.keysFn()
 		if camo.MarkerMatches(keys, ph.random, ph.keyShare) {
-			traceLog.Infow("camo_authenticated", "remote", remote, "sni", ph.sni, "via", "scan")
+			traceLog.Infow("client authenticated", "remote", remote, "sni", ph.sni, "via", "scan")
 			l.pass(conn, ph, "", nil)
 			return
 		}
 	}
 	if len(ph.raw) == 0 {
-		traceLog.Infow("camo_no_hello", "remote", remote, "err", err)
+		traceLog.Infow("no client hello", "remote", remote, "err", err)
 		conn.Close()
 		return
 	}
 	if errors.Is(err, errHelloIncomplete) && ph.raw[0] == 0x16 {
-		traceLog.Infow("camo_partial_hello", "remote", remote, "err", err)
+		traceLog.Infow("partial client hello", "remote", remote, "err", err)
 		conn.Close()
 		return
 	}
@@ -333,12 +333,12 @@ func (l *camouflageListener) handle(conn net.Conn) {
 			keys = l.keysFn()
 		}
 		if drift, found := camo.MarkerDrift(keys, ph.random, ph.keyShare); found {
-			traceLog.Warnw("camo_marker_drift_suspected", "remote", remote, "sni", ph.sni,
+			traceLog.Warnw("camouflage marker clock drift suspected", "remote", remote, "sni", ph.sni,
 				"drift_windows", drift, "drift_seconds", drift*camoWindowSeconds)
 		}
 	}
 	if !decoyIPRateAllow(remote) {
-		traceLog.Infow("camo_relay_decoy_throttled", "remote", remote, "sni", ph.sni)
+		traceLog.Infow("relaying to decoy, throttled", "remote", remote, "sni", ph.sni)
 		conn.Close()
 		return
 	}
@@ -348,7 +348,7 @@ func (l *camouflageListener) handle(conn net.Conn) {
 	}
 
 	target := l.decoyAddr(ph.sni)
-	traceLog.Infow("camo_relay_decoy", "remote", remote, "sni", ph.sni, "hello_err", err,
+	traceLog.Infow("relaying to decoy", "remote", remote, "sni", ph.sni, "hello_err", err,
 		"camo_keys", len(keys), "has_keyshare", len(ph.keyShare) > 0, "target", target,
 		"why", selReason)
 	if relayToOrigin(conn, ph.raw, target) {
@@ -358,7 +358,7 @@ func (l *camouflageListener) handle(conn net.Conn) {
 	// not answer. Dropping the connection here is what a tunnel does; a web
 	// server presents its certificate and serves something. So the handshake
 	// goes on as usual and the decoy pages answer it.
-	traceLog.Infow("camo_serve_local_decoy", "remote", remote, "sni", ph.sni, "target", target)
+	traceLog.Infow("serving local decoy", "remote", remote, "sni", ph.sni, "target", target)
 	l.passAsDecoy(conn, ph)
 }
 

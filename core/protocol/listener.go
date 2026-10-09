@@ -55,7 +55,7 @@ type noDelayListener struct {
 type serverErrLogWriter struct{}
 
 func (serverErrLogWriter) Write(p []byte) (int, error) {
-	traceLog.Warnw("whispera_server_error", "msg", strings.TrimSpace(string(p)))
+	traceLog.Warnw("server error", "msg", strings.TrimSpace(string(p)))
 	return len(p), nil
 }
 
@@ -71,7 +71,7 @@ func newACMEManager(cfg *ServerConfig) *autocert.Manager {
 	}
 	go func() {
 		if err := http.ListenAndServe(":80", m.HTTPHandler(nil)); err != nil {
-			traceLog.Errorw("acme_http_listener_failed", "err", err.Error(),
+			traceLog.Errorw("ACME HTTP listener failed", "err", err.Error(),
 				"hint", "port 80 is needed for the http-01 challenge; certificate renewal will fail")
 		}
 	}()
@@ -184,9 +184,9 @@ func listenUDPRetry(ctx context.Context, addr string) (net.PacketConn, error) {
 		}
 		switch {
 		case attempt < quicListenLoudAttempts:
-			traceLog.Warnw("quic_listen_retry", "addr", addr, "attempt", attempt+1, "in", wait.String(), "err", err.Error())
+			traceLog.Warnw("QUIC listen retry", "addr", addr, "attempt", attempt+1, "in", wait.String(), "err", err.Error())
 		case attempt == quicListenLoudAttempts:
-			traceLog.Errorw("quic_listen_down", "addr", addr, "attempts", attempt, "err", err.Error(), "impact", "datagram lane is down, clients fall back to TCP")
+			traceLog.Errorw("QUIC listener down", "addr", addr, "attempts", attempt, "err", err.Error(), "impact", "datagram lane is down, clients fall back to TCP")
 		}
 		select {
 		case <-ctx.Done():
@@ -211,7 +211,7 @@ func startQUICServers(ctx context.Context, cfg *ServerConfig, mux *http.ServeMux
 		port = "443"
 	}
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		traceLog.Errorw("quic_listen_loopback_only", "addr", cfg.QUICListenAddr,
+		traceLog.Errorw("QUIC listening on loopback only", "addr", cfg.QUICListenAddr,
 			"hint", "no client can reach this address, so the datagram lane never comes up and all UDP rides the TCP tunnel; bind 0.0.0.0 or the public address, ideally on the same port as TCP")
 	}
 	cfg.altSvcHeader = fmt.Sprintf(`h3=":%s"; ma=2592000`, port)
@@ -230,10 +230,10 @@ func startQUICServers(ctx context.Context, cfg *ServerConfig, mux *http.ServeMux
 			if err != nil {
 				return
 			}
-			traceLog.Infow("quic_listening", "addr", addr)
+			traceLog.Infow("QUIC listening", "addr", addr)
 			camoConn := quicpkg.NewCamoConn(pconn, camoKeys, quicSelector(cfg), camoAddr, decoyIPRateAllow)
 			if err := srv.Serve(camoConn); err != nil && ctx.Err() == nil {
-				traceLog.Errorw("quic_serve_stopped", "addr", addr, "err", err.Error())
+				traceLog.Errorw("QUIC serve stopped", "addr", addr, "err", err.Error())
 			}
 		}()
 	}
@@ -281,9 +281,9 @@ func serveBackendH2C(ctx context.Context, cfg *ServerConfig, mux *http.ServeMux)
 			}
 		}
 		go func(c net.Conn) {
-			traceLog.Infow("whispera_conn_state", "remote", c.RemoteAddr().String(), "state", "active")
+			traceLog.Infow("connection state", "remote", c.RemoteAddr().String(), "state", "active")
 			h2s.ServeConn(c, opts)
-			traceLog.Infow("whispera_conn_state", "remote", c.RemoteAddr().String(), "state", "closed")
+			traceLog.Infow("connection state", "remote", c.RemoteAddr().String(), "state", "closed")
 		}(conn)
 	}
 }
@@ -308,7 +308,7 @@ func newWhisperaHTTPServer(listenAddr string, mux http.Handler, tlsCfg *tls.Conf
 		TLSConfig: tlsCfg,
 		ErrorLog:  stdlog.New(serverErrLogWriter{}, "", 0),
 		ConnState: func(c net.Conn, state http.ConnState) {
-			traceLog.Infow("whispera_conn_state", "remote", c.RemoteAddr().String(), "state", state.String())
+			traceLog.Infow("connection state", "remote", c.RemoteAddr().String(), "state", state.String())
 		},
 	}
 	perConn, perStream := h2Buffers()
@@ -344,7 +344,7 @@ func serveExtraListeners(ctx context.Context, cfg *ServerConfig, srv *http.Serve
 	for _, extraAddr := range cfg.ExtraListenAddrs {
 		extraLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", extraAddr)
 		if err != nil {
-			traceLog.Warnw("whispera_extra_listen_failed", "addr", extraAddr, "err", err.Error())
+			traceLog.Warnw("extra listener failed", "addr", extraAddr, "err", err.Error())
 			continue
 		}
 		base := &noDelayListener{TCPListener: extraLn.(*net.TCPListener)}
@@ -383,7 +383,7 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 
 	camoKeys := camoKeysFunc(cfg)
 	if len(camoKeys()) == 0 {
-		traceLog.Errorw("camo_gate_no_keys",
+		traceLog.Errorw("camouflage gate has no keys",
 			"hint", "no registered users with a 32-byte PSK; every TLS connection is relayed to the decoy — register a user and check /etc/whispera/users.json is readable by the service user")
 	}
 	camoAddr := camoDecoyAddr(cfg.DecoyOrigin)
@@ -455,7 +455,7 @@ func (m *perflowMux) run() {
 func (m *perflowMux) classify(c net.Conn) {
 	defer func() {
 		if r := recover(); r != nil {
-			traceLog.Errorw("perflow_classify_panic", "remote", c.RemoteAddr().String(), "err", fmt.Sprint(r), "stack", string(debug.Stack()))
+			traceLog.Errorw("per-flow classify panic", "remote", c.RemoteAddr().String(), "err", fmt.Sprint(r), "stack", string(debug.Stack()))
 			c.Close()
 		}
 	}()
@@ -519,7 +519,7 @@ func (m *perflowMux) Close() error {
 func handlePerflowConn(c net.Conn, cfg *ServerConfig) {
 	remote := c.RemoteAddr().String()
 	reject := func(reason string, err error) {
-		traceLog.Infow("perflow_preamble_rejected", "remote", remote, "reason", reason, "err", err)
+		traceLog.Infow("per-flow preamble rejected", "remote", remote, "reason", reason, "err", err)
 		c.Close()
 	}
 
@@ -578,7 +578,7 @@ func registerRTDatagrams(w http.ResponseWriter, r *http.Request, cfg *ServerConf
 
 	quicConn, ok := r.Context().Value(quicpkg.ConnContextKey).(*quicgo.Conn)
 	if !ok {
-		traceLog.Infow("rt_datagram_decoy_fallback", "reason", "not_a_quic_request", "remote", r.RemoteAddr, "proto", r.Proto)
+		traceLog.Infow("datagram fell back to decoy", "reason", "not_a_quic_request", "remote", r.RemoteAddr, "proto", r.Proto)
 		return false
 	}
 	sessionID, err := hex.DecodeString(r.Header.Get(rtDatagramSessionHeader))
@@ -589,16 +589,16 @@ func registerRTDatagrams(w http.ResponseWriter, r *http.Request, cfg *ServerConf
 	token := tokenHdr[7:]
 	secret, userID := resolveSecretFor(cfg, cfg.userHint(sessionID), token, sessionID)
 	if secret == nil {
-		traceLog.Infow("rt_datagram_decoy_fallback", "reason", "secret_not_resolved", "remote", r.RemoteAddr)
+		traceLog.Infow("datagram fell back to decoy", "reason", "secret_not_resolved", "remote", r.RemoteAddr)
 		return false
 	}
 	if !cfg.consumeToken(token) {
-		traceLog.Infow("rt_datagram_decoy_fallback", "reason", "token_replay_or_expired", "remote", r.RemoteAddr, "user", userID)
+		traceLog.Infow("datagram fell back to decoy", "reason", "token_replay_or_expired", "remote", r.RemoteAddr, "user", userID)
 		return false
 	}
 
 	quicpkg.RegisterDatagramConn(sessionID, quicConn)
-	traceLog.Infow("rt_datagram_registered", "user", userID, "remote", r.RemoteAddr)
+	traceLog.Infow("datagram registered", "user", userID, "remote", r.RemoteAddr)
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Cache-Control", "no-store")
@@ -650,7 +650,7 @@ func probeClockDriftOnFailure(cfg *ServerConfig, token string, sessionID []byte)
 	if len(cfg.SharedSecret) == 32 {
 		k := DeriveKeys(cfg.SharedSecret)
 		if drift, found := ProbeClockDrift(k.Auth, token, sessionID); found {
-			traceLog.Warnw("whispera_auth_clock_drift_suspected", "user", "default", "drift_windows", drift, "drift_seconds", drift*authWindowSeconds)
+			traceLog.Warnw("auth clock drift suspected", "user", "default", "drift_windows", drift, "drift_seconds", drift*authWindowSeconds)
 			return
 		}
 	}
@@ -663,7 +663,7 @@ func probeClockDriftOnFailure(cfg *ServerConfig, token string, sessionID []byte)
 		}
 		k := DeriveKeys(u.PSK)
 		if drift, found := ProbeClockDrift(k.Auth, token, sessionID); found {
-			traceLog.Warnw("whispera_auth_clock_drift_suspected", "user", u.UserID, "drift_windows", drift, "drift_seconds", drift*authWindowSeconds)
+			traceLog.Warnw("auth clock drift suspected", "user", u.UserID, "drift_windows", drift, "drift_seconds", drift*authWindowSeconds)
 			return
 		}
 	}

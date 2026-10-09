@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,8 +104,11 @@ func recordDial(ctx string, arm int, result protocol.HandshakeResult, stage stri
 	// lines a user actually sees: the zap level starts at Error and only
 	// WHISPERA_LOG_LEVEL moves it, which a GUI build cannot set, and lowering it
 	// globally would turn on Info for every module at once.
-	stdlog.Printf("[INFO] dial_trace %d,%s,%d,%d,%d,%s",
-		time.Now().UnixMilli(), ctx, arm, int(result), alive, stage)
+	target := ctx
+	if i := strings.IndexByte(ctx, '|'); i >= 0 {
+		target = ctx[:i] + " " + ctx[i+1:]
+	}
+	stdlog.Printf("[INFO] dial %s arm %d %s → %s", target, arm, stage, result)
 
 	f := dialTraceFile()
 	if f == nil {

@@ -333,7 +333,7 @@ func (c *DatagramClient) deliver(payload []byte) {
 		select {
 		case ch <- data:
 		default:
-			traceLog.Warnw("rt_datagram_client_channel_full", "target", key)
+			traceLog.Warnw("datagram client channel full", "target", key)
 		}
 	}
 	c.mu.Unlock()
@@ -491,7 +491,7 @@ func (s *serverSession) handlePayload(payload []byte) {
 		fresh, err := (&net.Dialer{}).DialContext(ctx, "udp", key)
 		cancel()
 		if err != nil {
-			traceLog.Infow("rt_datagram_target_dial_failed", "target", key, "err", err.Error())
+			traceLog.Infow("datagram target dial failed", "target", key, "err", err.Error())
 			return
 		}
 
@@ -504,7 +504,7 @@ func (s *serverSession) handlePayload(payload []byte) {
 			s.targets[key] = fresh
 			s.mu.Unlock()
 			uc = fresh
-			traceLog.Infow("rt_datagram_target_dial", "target", key)
+			traceLog.Infow("datagram dialing target", "target", key)
 			go s.pumpTargetResponses(fresh, key, host, port)
 		}
 	}
@@ -531,7 +531,7 @@ func (s *serverSession) pumpTargetResponses(uc net.Conn, key, host string, port 
 			payload := append(encodeAddr(host, port), buf[:n]...)
 			for _, pkt := range s.sender.encode(payload) {
 				if serr := s.conn.SendDatagram(pkt); serr != nil {
-					traceLog.Warnw("rt_datagram_target_send_failed", "target", key, "err", serr.Error())
+					traceLog.Warnw("datagram target send failed", "target", key, "err", serr.Error())
 				}
 			}
 		}
@@ -572,7 +572,7 @@ func RegisterDatagramConn(sessionID []byte, conn *quicgo.Conn) {
 	if old != nil {
 		old.Close()
 	}
-	traceLog.Infow("rt_datagram_session_registered", "remote", conn.RemoteAddr().String())
+	traceLog.Infow("datagram session registered", "remote", conn.RemoteAddr().String())
 
 	go func() {
 		<-conn.Context().Done()

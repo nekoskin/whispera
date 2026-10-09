@@ -236,7 +236,7 @@ func restartTransportEntry(ctx context.Context, e *TransportEntry, tunnelCfg *tu
 	e.Error = ""
 	e.mu.Unlock()
 
-	stdlog.Printf("restartEntry %s reconnecting %s...", e.ID, transport)
+	stdlog.Printf("tunnel %s reconnecting over %s...", e.ID, transport)
 
 	if oldMgr != nil {
 		oldMgr.Stop()
@@ -244,19 +244,19 @@ func restartTransportEntry(ctx context.Context, e *TransportEntry, tunnelCfg *tu
 
 	newMgr, err := tunnel.New(tunnelCfg)
 	if err != nil {
-		stdlog.Printf("restartEntry %s build failed: %v", e.ID, err)
+		stdlog.Printf("tunnel %s rebuild failed: %v", e.ID, err)
 		setEntryFailed(e, err)
 		return true
 	}
 	if tunnelCfg.BehavioralProfile != "" {
 		if err := newMgr.SetBehavioralProfile(tunnelCfg.BehavioralProfile); err != nil {
-			stdlog.Printf("restartEntry %s: set profile %q: %v", e.ID, tunnelCfg.BehavioralProfile, err)
+			stdlog.Printf("tunnel %s set profile %q failed: %v", e.ID, tunnelCfg.BehavioralProfile, err)
 		}
 	}
 
 	newCtx, newCancel := context.WithCancel(ctx)
 	if err := newMgr.Init(newCtx, nil); err != nil {
-		stdlog.Printf("restartEntry %s: init failed: %v", e.ID, err)
+		stdlog.Printf("tunnel %s init failed: %v", e.ID, err)
 		newCancel()
 		setEntryFailed(e, err)
 		return true
@@ -271,7 +271,7 @@ func restartTransportEntry(ctx context.Context, e *TransportEntry, tunnelCfg *tu
 	cancelConnect()
 
 	if err != nil {
-		stdlog.Printf("restartEntry %s connect failed: %v", e.ID, err)
+		stdlog.Printf("tunnel %s connect failed: %v", e.ID, err)
 		newCancel()
 		newMgr.Stop()
 		setEntryFailed(e, err)
@@ -280,7 +280,7 @@ func restartTransportEntry(ctx context.Context, e *TransportEntry, tunnelCfg *tu
 		e.Status = connStatusConnected
 		e.ConnectedAt = time.Now()
 		e.mu.Unlock()
-		stdlog.Printf("restartEntry %s connected (encap=%v)", e.ID, tunnelCfg.CustomDialFn != nil)
+		stdlog.Printf("tunnel %s connected (encapsulated: %v)", e.ID, tunnelCfg.CustomDialFn != nil)
 	}
 	return true
 }

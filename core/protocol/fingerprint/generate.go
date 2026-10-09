@@ -251,11 +251,11 @@ func DeviceHello() ([]byte, kind, bool) {
 		}
 		raw, err := DeviceFingerprint(filepath.Join(dir, "device.hello"))
 		if err != nil {
-			traceLog.Errorw("fingerprint_generate_failed", "err", err.Error())
+			traceLog.Errorw("fingerprint generation failed", "err", err.Error())
 			return
 		}
 		deviceRaw, deviceKind = raw, ClassifyClientHello(raw)
-		traceLog.Infow("fingerprint_generated", "bytes", len(raw))
+		traceLog.Infow("fingerprint generated", "bytes", len(raw))
 	})
 	if len(deviceRaw) == 0 {
 		return nil, 0, false

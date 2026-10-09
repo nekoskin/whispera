@@ -77,7 +77,7 @@ func TestProxyStreamKeepsConnectionAfterOriginReset(t *testing.T) {
 
 	reusable := make(chan bool, 1)
 	go func() {
-		reusable <- s.handleProxyStream(1, "test", server, time.Second, protocol.NewShapeBudget(), nil)
+		reusable <- s.handleProxyStream(1, "", "test", server, time.Second, protocol.NewShapeBudget(), nil)
 	}()
 
 	ip := origin.IP.String()

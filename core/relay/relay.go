@@ -282,18 +282,18 @@ func (s *Server) HealthCheck() interfaces.HealthStatus {
 var tunnelTraceSeq uint64
 
 func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
-	s.serveTunnel(conn, streamObf, nil, nil)
+	s.serveTunnel(conn, streamObf, "", nil, nil)
 }
 
 func (s *Server) ServeTunnelRaw(conn net.Conn, streamObf bool) {
-	s.serveTunnel(conn, streamObf, nil, nil)
+	s.serveTunnel(conn, streamObf, "", nil, nil)
 }
 
-func (s *Server) ServeTunnelResilient(conn net.Conn, streamObf bool, secret []byte, onTorrent func()) {
-	s.serveTunnel(conn, streamObf, secret, onTorrent)
+func (s *Server) ServeTunnelResilient(conn net.Conn, streamObf bool, user string, secret []byte, onTorrent func()) {
+	s.serveTunnel(conn, streamObf, user, secret, onTorrent)
 }
 
-func (s *Server) serveTunnel(conn net.Conn, streamObf bool, secret []byte, onTorrent func()) {
+func (s *Server) serveTunnel(conn net.Conn, streamObf bool, user string, secret []byte, onTorrent func()) {
 	clientID := conn.RemoteAddr().String()
 	defer conn.Close()
 	defer func() {
@@ -301,17 +301,16 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, secret []byte, onTor
 			s.log.Error("PANIC in tunnel session for %s: %v\n%s", clientID, r, debug.Stack())
 		}
 	}()
-	s.runSession(conn, streamObf, clientID, onTorrent)
+	s.runSession(conn, streamObf, user, clientID, onTorrent)
 }
 
-func (s *Server) runSession(under net.Conn, streamObf bool, clientID string, onTorrent func()) {
+func (s *Server) runSession(under net.Conn, streamObf bool, user, clientID string, onTorrent func()) {
 	traceID := atomic.AddUint64(&tunnelTraceSeq, 1)
-	logger.Trace().Infow("serve_tunnel_enter",
-		"trace_id", traceID,
-		"client", clientID,
-		"conn_type", fmt.Sprintf("%T", under),
-		"stream_obf", streamObf,
-	)
+	openFields := []any{"trace_id", traceID, "client", clientID}
+	if user != "" {
+		openFields = append(openFields, "user", user)
+	}
+	logger.Trace().Infow("tunnel stream opened", openFields...)
 
 	if tcpConn := buf.RawTCP(under); tcpConn != nil {
 		_ = tcpConn.SetNoDelay(true)
@@ -329,7 +328,7 @@ func (s *Server) runSession(under net.Conn, streamObf bool, clientID string, onT
 	pad := protocol.NewShapeBudget()
 	wait := proxyHeaderWait
 	for {
-		if !s.handleProxyStream(traceID, clientID, under, wait, pad, onTorrent) {
+		if !s.handleProxyStream(traceID, user, clientID, under, wait, pad, onTorrent) {
 			return
 		}
 		wait = 0
@@ -471,7 +470,7 @@ func (h *muxHandler) serveStream(stream net.Conn, dest singM.Socksaddr) {
 	targetAddr := net.JoinHostPort(addr, strconv.Itoa(int(port)))
 	target, err := h.s.dialProxyTarget(outboundTag, network, targetAddr, addr, port, dialer, ips)
 	if err != nil {
-		logger.Trace().Warnw("stream_mux_dial_fail", "trace_id", h.traceID, "target", targetAddr, "err", err.Error())
+		logger.Trace().Warnw("stream-mux dial failed", "trace_id", h.traceID, "target", targetAddr, "err", err.Error())
 		return
 	}
 	defer target.Close()
@@ -740,7 +739,7 @@ func spliceWrap(stream net.Conn, framed *protocol.FramedConn, h proxyStreamHeade
 		left = spliceAfterBytes
 	}
 	down := protocol.NewFramedConn(raw, pad)
-	logger.Trace().Infow("proxy_stream_splice", "trace_id", tunnelID, "target", targetAddr, "to_raw_after", left)
+	logger.Trace().Infow("proxy stream spliced", "trace_id", tunnelID, "target", targetAddr, "to_raw_after", left)
 	return &serverSpliceConn{Conn: stream, up: framed, down: down, raw: raw, left: left}, down
 }
 
@@ -759,7 +758,7 @@ func collectCopyResults(resCh chan copyResult) (up, down int64, firstErr error, 
 	return up, down, firstErr, firstDir
 }
 
-func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.Conn, wait time.Duration, pad *protocol.ShapeBudget, onTorrent func()) (reusable bool) {
+func (s *Server) handleProxyStream(tunnelID uint64, user, clientID string, stream net.Conn, wait time.Duration, pad *protocol.ShapeBudget, onTorrent func()) (reusable bool) {
 	defer func() {
 		if !reusable {
 			stream.Close()
@@ -783,12 +782,16 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 	network := h.network()
 
 	streamStart := time.Now()
-	logger.Trace().Infow("proxy_stream_start",
+	startFields := []any{
 		"trace_id", tunnelID,
 		"client", clientID,
 		"target", targetAddr,
 		"proto", fmt.Sprintf("0x%02x", h.proto),
-	)
+	}
+	if user != "" {
+		startFields = append(startFields, "user", user)
+	}
+	logger.Trace().Infow("proxy stream started", startFields...)
 
 	ips := s.routeIPs(h.addr)
 	dialer, outboundTag, blocked := s.resolveProxyDialer(network, h.addr, h.port, ips)
@@ -800,7 +803,7 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 	target, err := s.dialProxyTarget(outboundTag, network, targetAddr, h.addr, h.port, dialer, ips)
 	dialDur := time.Since(dialStart)
 	if err != nil {
-		logger.Trace().Warnw("proxy_stream_dial_fail",
+		logger.Trace().Warnw("proxy stream dial failed",
 			"trace_id", tunnelID,
 			"target", targetAddr,
 			"dial_ms", dialDur.Milliseconds(),
@@ -810,11 +813,6 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 		return false
 	}
 	defer target.Close()
-	logger.Trace().Infow("proxy_stream_dial_ok",
-		"trace_id", tunnelID,
-		"target", targetAddr,
-		"dial_ms", dialDur.Milliseconds(),
-	)
 
 	if tcpTarget, ok := target.(*net.TCPConn); ok {
 		tcpTarget.SetKeepAlive(true)
@@ -852,15 +850,21 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 	if firstErr != nil && !isNormalConnClose(firstErr) && !errors.Is(firstErr, io.EOF) {
 		errField = firstErr.Error()
 	}
-	logger.Trace().Infow("proxy_stream_done",
+	fields := []any{
 		"trace_id", tunnelID,
 		"target", targetAddr,
 		"up", up,
 		"down", down,
+		"dial_ms", dialDur.Milliseconds(),
 		"dur_ms", time.Since(streamStart).Milliseconds(),
-		"err_dir", firstDir,
-		"err", errField,
-	)
+	}
+	if user != "" {
+		fields = append(fields, "user", user)
+	}
+	if errField != "" {
+		fields = append(fields, "err_dir", firstDir, "err", errField)
+	}
+	logger.Trace().Infow("proxy stream finished", fields...)
 
 	if downFramed != nil {
 		reusable = framed.StreamDone() && !downFramed.SwitchedRaw() && downFramed.EndStream() == nil

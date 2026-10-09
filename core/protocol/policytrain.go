@@ -355,7 +355,7 @@ func (o *onlinePolicy) revert() {
 	o.reverts++
 	// Logged because a run where the copy was abandoned repeatedly looks, from
 	// the outside, exactly like a run where it learned something.
-	traceLog.Infow("policy_online_revert", "reverts", o.reverts, "steps", o.steps)
+	traceLog.Infow("online policy reverted", "reverts", o.reverts, "steps", o.steps)
 }
 
 var onlinePolicyOnce struct {

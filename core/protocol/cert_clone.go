@@ -297,7 +297,7 @@ func loadSNICert(decoyCertDir, sni string) (*tls.Certificate, bool) {
 	if err != nil {
 		if statErr == nil {
 			if _, seen := sniCertLoadFailed.LoadOrStore(sni, true); !seen {
-				traceLog.Errorw("decoy_sni_cert_load_failed", "sni", sni,
+				traceLog.Errorw("decoy cert load failed", "sni", sni,
 					"hint", "clone exists but unreadable (check ownership: must match the service user); serving static cert -> client cert-pin mismatch",
 					"err", err.Error())
 			}
@@ -376,17 +376,17 @@ func EnsureSNICerts(decoyCertDir string) {
 		before := clonePin(certPath)
 		info, err := CloneCertToFiles(sni, certPath, keyPath)
 		if err != nil {
-			traceLog.Errorw("decoy_sni_cert_unrepairable", "sni", sni,
+			traceLog.Errorw("decoy cert unrepairable", "sni", sni,
 				"hint", "this SNI will be served the static cert, and every key pinned to it will refuse the connection",
 				"err", err.Error())
 			continue
 		}
 		if after := clonePin(certPath); before != "" && after == before {
-			traceLog.Infow("decoy_sni_cert_reissued", "sni", sni, "subject", info.Subject,
+			traceLog.Infow("decoy cert reissued", "sni", sni, "subject", info.Subject,
 				"hint", "the clone was rebuilt to carry the current identity bindings; its key was kept, so pinned client keys keep working")
 			continue
 		}
-		traceLog.Warnw("decoy_sni_cert_reissued", "sni", sni, "subject", info.Subject,
+		traceLog.Warnw("decoy cert reissued", "sni", sni, "subject", info.Subject,
 			"hint", "the clone on disk was unreadable or broken; a fresh key was issued, so keys carrying a cert pin (rather than an identity key) must be reissued")
 	}
 }
