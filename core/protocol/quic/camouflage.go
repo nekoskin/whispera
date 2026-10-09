@@ -114,7 +114,7 @@ func parseInitialSafely(packet []byte) (parsed *parsedQUICInitial, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			parsed, err = nil, fmt.Errorf("whispera: quic initial parse panicked: %v", r)
-			traceLog.Errorw("quic_initial_parse_panic", "err", fmt.Sprint(r), "size", len(packet))
+			traceLog.Errorw("QUIC initial parse panic", "err", fmt.Sprint(r), "size", len(packet))
 		}
 	}()
 	return parseQUICInitialClientHello(packet)
@@ -151,12 +151,12 @@ func (c *camoConn) ReadFrom(p []byte) (int, net.Addr, error) {
 			c.mu.Lock()
 			c.realPeers[key] = time.Now().Add(quicCamoTrustWindow)
 			c.mu.Unlock()
-			traceLog.Infow("quic_camo_authenticated", "remote", key)
+			traceLog.Infow("QUIC client authenticated", "remote", key)
 			continue
 		}
 
 		if c.rateAllow != nil && !c.rateAllow(key) {
-			traceLog.Infow("quic_camo_relay_decoy_throttled", "remote", key)
+			traceLog.Infow("QUIC relaying to decoy, throttled", "remote", key)
 			continue
 		}
 		sni := ""
@@ -168,7 +168,7 @@ func (c *camoConn) ReadFrom(p []byte) (int, net.Addr, error) {
 		if serr != nil {
 			continue
 		}
-		traceLog.Infow("quic_camo_relay_decoy", "remote", key, "sni", sni, "target", target)
+		traceLog.Infow("QUIC relaying to decoy", "remote", key, "sni", sni, "target", target)
 		c.mu.Lock()
 		c.decoySessions[key] = newSess
 		c.mu.Unlock()

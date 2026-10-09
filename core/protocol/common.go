@@ -26,7 +26,7 @@ var loggedTransportModes sync.Map
 
 func logTransportMode(mode string) {
 	if _, seen := loggedTransportModes.LoadOrStore(mode, struct{}{}); !seen {
-		stdlog.Printf("whispera: transport=%s", mode)
+		stdlog.Printf("whispera transport: %s", mode)
 	}
 }
 

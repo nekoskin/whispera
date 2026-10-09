@@ -296,7 +296,7 @@ func pick() (id utls.ClientHelloID, raw []byte, uaID utls.ClientHelloID) {
 		return utls.HelloCustom, append([]byte(nil), collectRaw[i]...), repIDForKind(collectKinds[i])
 	}
 
-	traceLog.Errorw("fingerprint_pool_empty_emergency_hello")
+	traceLog.Errorw("fingerprint pool empty, using emergency hello")
 	return utls.HelloChrome_Auto, nil, utls.HelloChrome_Auto
 }
 
