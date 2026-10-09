@@ -56,6 +56,7 @@ func resettingOrigin(t *testing.T) *net.TCPAddr {
 		if err != nil {
 			return
 		}
+		_, _ = io.Copy(io.Discard, c)
 		_ = c.(*net.TCPConn).SetLinger(0)
 		_ = c.Close()
 	}()
