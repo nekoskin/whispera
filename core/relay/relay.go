@@ -21,6 +21,7 @@ import (
 	logger "github.com/nekoskin/whispera/common/log"
 	"github.com/nekoskin/whispera/common/runtime/base"
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
+	"github.com/nekoskin/whispera/common/targetguard"
 	"github.com/nekoskin/whispera/core/protocol"
 
 	xmux "github.com/sagernet/sing-mux"
@@ -57,6 +58,7 @@ type Config struct {
 	EnableUDP     bool
 	Debug         bool
 	UpstreamProxy string
+	TargetGuard   *targetguard.Guard
 }
 
 func DefaultConfig() *Config {
@@ -148,7 +150,7 @@ func firstTCPAddr(ips []net.IP, port uint16) net.Addr {
 	return &net.TCPAddr{IP: ips[0], Port: int(port)}
 }
 
-func dialTarget(dialer proxy.Dialer, network, host string, port uint16, ips []net.IP) (net.Conn, error) {
+func (s *Server) dialTarget(dialer proxy.Dialer, network, host string, port uint16, ips []net.IP) (net.Conn, error) {
 	addr := net.JoinHostPort(host, strconv.Itoa(int(port)))
 	ctx, cancel := context.WithTimeout(context.Background(), targetDialTimeout)
 	defer cancel()
@@ -158,7 +160,7 @@ func dialTarget(dialer proxy.Dialer, network, host string, port uint16, ips []ne
 		}
 		return dialer.Dial(network, a)
 	}
-	if dialer != proxy.Direct || net.ParseIP(host) != nil || len(ips) == 0 {
+	if dialer != s.direct || net.ParseIP(host) != nil || len(ips) == 0 {
 		return dial(addr)
 	}
 	var lastErr error
@@ -190,6 +192,7 @@ func preferIPv6(ips []net.IP) []net.IP {
 type Server struct {
 	*base.Module
 	config      *Config
+	direct      *net.Dialer
 	proxyDialer proxy.Dialer
 	router      interfaces.Router
 	routerMu    sync.RWMutex
@@ -220,7 +223,8 @@ func New(cfg *Config) (*Server, error) {
 		log:    logger.Module("relay"),
 	}
 
-	s.proxyDialer = proxy.Direct
+	s.direct = cfg.TargetGuard.Dialer()
+	s.proxyDialer = s.direct
 	if cfg.UpstreamProxy != "" {
 		u, err := url.Parse(cfg.UpstreamProxy)
 		if err != nil {
@@ -267,6 +271,10 @@ func (s *Server) SetOutboundDial(fn func(ctx context.Context, tag, network, addr
 	s.mu.Lock()
 	s.outboundDial = fn
 	s.mu.Unlock()
+}
+
+func (s *Server) TargetDialer() *net.Dialer {
+	return s.direct
 }
 
 func (s *Server) SetProxyDialer(d proxy.Dialer) {
@@ -492,13 +500,13 @@ func (h *muxHandler) serveStream(stream net.Conn, dest singM.Socksaddr) {
 
 func (s *Server) dialProxyTarget(outboundTag, network, targetAddr, addr string, port uint16, dialer proxy.Dialer, ips []net.IP) (net.Conn, error) {
 	if outboundTag == "" {
-		return dialTarget(dialer, network, addr, port, ips)
+		return s.dialTarget(dialer, network, addr, port, ips)
 	}
 	s.mu.RLock()
 	dialFn := s.outboundDial
 	s.mu.RUnlock()
 	if dialFn == nil {
-		return dialTarget(dialer, network, addr, port, ips)
+		return s.dialTarget(dialer, network, addr, port, ips)
 	}
 	dctx, dcancel := context.WithTimeout(context.Background(), targetDialTimeout)
 	defer dcancel()
@@ -523,7 +531,7 @@ func (s *Server) routeIPs(host string) []net.IP {
 
 func (s *Server) resolveProxyDialer(network, addr string, port uint16, ips []net.IP) (proxy.Dialer, string, bool) {
 	if network == "udp" {
-		return proxy.Direct, "", false
+		return s.direct, "", false
 	}
 	s.routerMu.RLock()
 	rtr := s.router
@@ -537,7 +545,7 @@ func (s *Server) resolveProxyDialer(network, addr string, port uint16, ips []net
 	}
 	switch dest.Type {
 	case interfaces.DestinationDirect:
-		return proxy.Direct, "", false
+		return s.direct, "", false
 	case interfaces.DestinationBlock:
 		return nil, "", true
 	default:

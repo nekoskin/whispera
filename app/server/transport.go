@@ -72,6 +72,7 @@ func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 		GetUsers:       registeredWhisperaUsers,
 		UsersVersion:   apiserver.UserStoreVersion,
 		OnConn:         serveWhisperaConn,
+		TargetDialer:   globalRelay.TargetDialer(),
 	}
 	cCfg.QUICListenAddr = sc.Whispera.QUICListenAddr
 	if len(sc.Whispera.ExtraPorts) > 0 {

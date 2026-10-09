@@ -583,7 +583,7 @@ func registerRTDatagrams(w http.ResponseWriter, r *http.Request, cfg *ServerConf
 		return false
 	}
 
-	quicpkg.RegisterDatagramConn(sessionID, quicConn)
+	quicpkg.RegisterDatagramConn(sessionID, quicConn, cfg.TargetDialer)
 	traceLog.Infow("datagram registered", "user", userID, "remote", r.RemoteAddr)
 
 	w.Header().Set("Content-Type", "application/octet-stream")

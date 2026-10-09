@@ -60,6 +60,7 @@ type ServerConfig struct {
 	GetUsers     func() []UserEntry
 	UsersVersion func() uint64
 	OnConn       func(AcceptedConn)
+	TargetDialer *net.Dialer
 
 	sessionRegistry
 }
