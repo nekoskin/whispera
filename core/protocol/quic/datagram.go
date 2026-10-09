@@ -414,6 +414,7 @@ func (c *DatagramClient) Close() {
 
 type serverSession struct {
 	conn     *quicgo.Conn
+	dialer   *net.Dialer
 	sender   *fecSender
 	receiver *fecReceiver
 	cancel   context.CancelFunc
@@ -422,10 +423,11 @@ type serverSession struct {
 	targets map[string]net.Conn
 }
 
-func newServerSession(conn *quicgo.Conn) *serverSession {
+func newServerSession(conn *quicgo.Conn, dialer *net.Dialer) *serverSession {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &serverSession{
 		conn:     conn,
+		dialer:   dialer,
 		sender:   newRTFECSender(),
 		receiver: newRTFECReceiver(),
 		cancel:   cancel,
@@ -488,7 +490,7 @@ func (s *serverSession) handlePayload(payload []byte) {
 		// holding the session lock through that stalls every other datagram on
 		// this session — on the lane that exists for latency.
 		ctx, cancel := context.WithTimeout(context.Background(), targetDialTimeout)
-		fresh, err := (&net.Dialer{}).DialContext(ctx, "udp", key)
+		fresh, err := s.dialer.DialContext(ctx, "udp", key)
 		cancel()
 		if err != nil {
 			traceLog.Infow("datagram target dial failed", "target", key, "err", err.Error())
@@ -559,14 +561,17 @@ var (
 	sessions   = make(map[string]*serverSession)
 )
 
-func RegisterDatagramConn(sessionID []byte, conn *quicgo.Conn) {
+func RegisterDatagramConn(sessionID []byte, conn *quicgo.Conn, dialer *net.Dialer) {
 	if conn == nil || len(sessionID) == 0 {
 		return
+	}
+	if dialer == nil {
+		dialer = &net.Dialer{}
 	}
 	key := string(sessionID)
 	sessionsMu.Lock()
 	old := sessions[key]
-	sess := newServerSession(conn)
+	sess := newServerSession(conn, dialer)
 	sessions[key] = sess
 	sessionsMu.Unlock()
 	if old != nil {

@@ -24,6 +24,9 @@ rate_limit:
   handshake: 100
   packets: 10000000
 
+relay:
+  blocked_targets: [loopback, unspecified, private, link-local]
+
 logging:
   level: "info"
   format: "json"

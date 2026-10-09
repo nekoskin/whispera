@@ -7,6 +7,7 @@ import (
 	"github.com/nekoskin/whispera/common/runtime/base"
 	"github.com/nekoskin/whispera/common/runtime/events"
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
+	"github.com/nekoskin/whispera/common/targetguard"
 	"log"
 	"net"
 	"os"
@@ -43,10 +44,11 @@ type ServerConfig struct {
 }
 
 type RelayConfig struct {
-	EnableTCP     bool   `yaml:"enable_tcp"`
-	EnableUDP     bool   `yaml:"enable_udp"`
-	Debug         bool   `yaml:"debug"`
-	UpstreamProxy string `yaml:"upstream_proxy"`
+	EnableTCP      bool     `yaml:"enable_tcp"`
+	EnableUDP      bool     `yaml:"enable_udp"`
+	Debug          bool     `yaml:"debug"`
+	UpstreamProxy  string   `yaml:"upstream_proxy"`
+	BlockedTargets []string `yaml:"blocked_targets"`
 }
 
 type UpdateConfig struct {
@@ -423,6 +425,12 @@ func DefaultServerConfig() *ServerConfig {
 			EnableTCP: true,
 			EnableUDP: true,
 			Debug:     false,
+			BlockedTargets: []string{
+				targetguard.ClassLoopback,
+				targetguard.ClassUnspecified,
+				targetguard.ClassPrivate,
+				targetguard.ClassLinkLocal,
+			},
 		},
 	}
 }

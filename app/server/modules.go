@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/nekoskin/whispera/core/relay"
 
 	"github.com/nekoskin/whispera/common/runtime/lifecycle"
+	"github.com/nekoskin/whispera/common/targetguard"
 	"github.com/nekoskin/whispera/common/update"
 	"github.com/nekoskin/whispera/core/apiserver"
 	"github.com/nekoskin/whispera/core/config"
@@ -105,11 +107,16 @@ func initCore(m *lifecycle.Manager, sc *config.ServerConfig) error {
 }
 
 func initTransports(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Context, cfgProvider *config.Provider) error {
+	targetGuard, err := targetguard.New(sc.Relay.BlockedTargets)
+	if err != nil {
+		return fmt.Errorf("relay.blocked_targets: %w", err)
+	}
 	relayServer, err := relay.New(&relay.Config{
 		EnableTCP:     sc.Relay.EnableTCP,
 		EnableUDP:     sc.Relay.EnableUDP,
 		Debug:         sc.Relay.Debug || *debug,
 		UpstreamProxy: sc.Relay.UpstreamProxy,
+		TargetGuard:   targetGuard,
 	})
 	if err != nil {
 		return err
