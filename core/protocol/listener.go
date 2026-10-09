@@ -23,7 +23,6 @@ import (
 	quicgo "github.com/quic-go/quic-go"
 	http3 "github.com/quic-go/quic-go/http3"
 	"golang.org/x/crypto/acme/autocert"
-	"golang.org/x/net/http2"
 )
 
 func h2Buffers() (perConn, perStream int32) {
@@ -255,37 +254,36 @@ func serveBackendH2C(ctx context.Context, cfg *ServerConfig, mux *http.ServeMux)
 	if err != nil {
 		return fmt.Errorf("whispera: backend h2c listen: %w", err)
 	}
-	defer backendLn.Close()
+
+	var protocols http.Protocols
+	protocols.SetUnencryptedHTTP2(true)
+	srv := &http.Server{
+		Handler:   mux,
+		Protocols: &protocols,
+		HTTP2:     h2Config(),
+		ErrorLog:  stdlog.New(serverErrLogWriter{}, "", 0),
+		ConnState: logConnState,
+	}
 	go func() {
 		<-ctx.Done()
-		backendLn.Close()
+		srv.Close()
 	}()
+	if err := srv.Serve(backendLn); ctx.Err() == nil {
+		return fmt.Errorf("whispera: backend h2c serve: %w", err)
+	}
+	return nil
+}
 
+func h2Config() *http.HTTP2Config {
 	perConn, perStream := h2Buffers()
-	h2s := &http2.Server{
-		MaxUploadBufferPerConnection: perConn,
-		MaxUploadBufferPerStream:     perStream,
+	return &http.HTTP2Config{
+		MaxReceiveBufferPerConnection: int(perConn),
+		MaxReceiveBufferPerStream:     int(perStream),
 	}
-	opts := &http2.ServeConnOpts{
-		Handler:    mux,
-		BaseConfig: &http.Server{ErrorLog: stdlog.New(serverErrLogWriter{}, "", 0)},
-	}
-	for {
-		conn, err := backendLn.Accept()
-		if err != nil {
-			select {
-			case <-ctx.Done():
-				return nil
-			default:
-				continue
-			}
-		}
-		go func(c net.Conn) {
-			traceLog.Infow("connection state", "remote", c.RemoteAddr().String(), "state", "active")
-			h2s.ServeConn(c, opts)
-			traceLog.Infow("connection state", "remote", c.RemoteAddr().String(), "state", "closed")
-		}(conn)
-	}
+}
+
+func logConnState(c net.Conn, state http.ConnState) {
+	traceLog.Infow("connection state", "remote", c.RemoteAddr().String(), "state", state.String())
 }
 
 func sweepSeenTokens(ctx context.Context, cfg *ServerConfig) {
@@ -301,24 +299,15 @@ func sweepSeenTokens(ctx context.Context, cfg *ServerConfig) {
 	}
 }
 
-func newWhisperaHTTPServer(listenAddr string, mux http.Handler, tlsCfg *tls.Config) (*http.Server, error) {
-	srv := &http.Server{
+func newWhisperaHTTPServer(listenAddr string, mux http.Handler, tlsCfg *tls.Config) *http.Server {
+	return &http.Server{
 		Addr:      listenAddr,
 		Handler:   mux,
 		TLSConfig: tlsCfg,
+		HTTP2:     h2Config(),
 		ErrorLog:  stdlog.New(serverErrLogWriter{}, "", 0),
-		ConnState: func(c net.Conn, state http.ConnState) {
-			traceLog.Infow("connection state", "remote", c.RemoteAddr().String(), "state", state.String())
-		},
+		ConnState: logConnState,
 	}
-	perConn, perStream := h2Buffers()
-	if err := http2.ConfigureServer(srv, &http2.Server{
-		MaxUploadBufferPerConnection: perConn,
-		MaxUploadBufferPerStream:     perStream,
-	}); err != nil {
-		return nil, fmt.Errorf("whispera: h2 server config: %w", err)
-	}
-	return srv, nil
 }
 
 func quicSelector(cfg *ServerConfig) func(random, keyShare []byte) bool {
@@ -372,10 +361,7 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 	if err != nil {
 		return err
 	}
-	srv, err := newWhisperaHTTPServer(listenAddr, mux, tlsCfg)
-	if err != nil {
-		return err
-	}
+	srv := newWhisperaHTTPServer(listenAddr, mux, tlsCfg)
 
 	if cfg.DecoyOrigin != "" {
 		cfg.proxy = newDecoyProxy(cfg.DecoyOrigin)
