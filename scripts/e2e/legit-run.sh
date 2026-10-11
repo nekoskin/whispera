@@ -1,10 +1,6 @@
 #!/bin/sh
 set -e
 
-# Ordinary traffic through the same censor: system TLS, no tunnel, no uTLS
-# preset. It exists so the censor has something to be wrong about. A rule that
-# bans these is a rule a real operator would have to withdraw, which is what
-# keeps real blocking selective.
 
 ID=1
 i=1

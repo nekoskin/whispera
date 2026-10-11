@@ -3,8 +3,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /out/whispera ./app/server \
- && CGO_ENABLED=0 go build -o /out/whispera-go-client ./app/goclient \
+RUN CGO_ENABLED=0 go build -tags e2e -o /out/whispera ./app/server \
+ && CGO_ENABLED=0 go build -tags stand -o /out/whispera-go-client ./app/goclient \
  && CGO_ENABLED=0 go build -o /out/censor ./scripts/e2e/censor \
  && CGO_ENABLED=0 go build -o /out/legit-tls ./scripts/e2e/legit-tls \
  && CGO_ENABLED=0 go build -o /out/torrentsim ./scripts/e2e/torrentsim

@@ -26,7 +26,7 @@ if [ -n "$WHISPERA_DIAL_TRACE" ]; then
   export WHISPERA_DIAL_TRACE
 fi
 
-/app/whispera-go-client -key "$KEY" -server "$WHISP_SERVER" \
+"${CLIENT_BIN:-/app/whispera-go-client}" -key "$KEY" -server "$WHISP_SERVER" \
   ${WHISP_FP:+-force-fingerprint $WHISP_FP} \
   ${WHISP_FRAG_COUNT:+-tls-fragment-count $WHISP_FRAG_COUNT} \
   ${WHISP_HELLO_FRAG:+-hello-frag=$WHISP_HELLO_FRAG} \

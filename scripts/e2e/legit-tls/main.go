@@ -1,8 +1,3 @@
-// A legitimate browser on the stand: it opens ordinary TLS to the censor with a
-// real uTLS browser fingerprint and no tunnel. It exists so the censor's JA3 of
-// this client equals the JA3 of a tunnel dialing with the same preset — which
-// is the whole point of replication. Banning that hash then takes this browser
-// too, and a rule with that collateral is one a real operator has to withdraw.
 package main
 
 import (
@@ -11,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -24,11 +20,24 @@ var presets = map[string]utls.ClientHelloID{
 	"edge":    utls.HelloEdge_Auto,
 }
 
+var mix = []string{"chrome", "firefox", "safari", "edge", "ios"}
+
 func presetByName(name string) utls.ClientHelloID {
 	if id, ok := presets[name]; ok {
 		return id
 	}
 	return utls.HelloChrome_Auto
+}
+
+func browserFor(fp string, n int) string {
+	switch fp {
+	case "":
+		return "chrome"
+	case "mix":
+		return mix[n%len(mix)]
+	default:
+		return fp
+	}
 }
 
 func claimSlot(users int) int {
@@ -61,13 +70,35 @@ func dialOnce(addr, sni string, id utls.ClientHelloID) (bool, error) {
 	if err := u.Handshake(); err != nil {
 		return false, err
 	}
-	// A real browser would speak HTTP now; a tiny request is enough for the
-	// censor to have judged the hello, which is all this measures.
 	fmt.Fprintf(u, "GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", sni)
 	buf := make([]byte, 512)
 	_, _ = u.Read(buf)
 	io.Copy(io.Discard, u)
 	return true, nil
+}
+
+func neighbor(tag, addr, sni, browser string, every time.Duration, deadline time.Time) {
+	id := presetByName(browser)
+	out, err := os.Create(fmt.Sprintf("/out/legit-%s.csv", tag))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "legit: cannot open output:", err)
+		return
+	}
+	defer out.Close()
+	fmt.Fprintln(out, "ts,ok,fp")
+
+	for time.Now().Before(deadline) {
+		ok, derr := dialOnce(addr, sni, id)
+		code := "ok"
+		if !ok {
+			code = "fail"
+			_ = derr
+		}
+		fmt.Fprintf(out, "%d,%s,%s\n", time.Now().Unix(), code, browser)
+		out.Sync()
+		time.Sleep(every)
+	}
+	os.WriteFile(fmt.Sprintf("/out/legit-%s.finished", tag), []byte("done\n"), 0o644)
 }
 
 func main() {
@@ -80,33 +111,23 @@ func main() {
 		sni = "www.google.com"
 	}
 	fp := os.Getenv("LEGIT_FP")
-	if fp == "" {
-		fp = "chrome"
-	}
-	id := presetByName(fp)
 
-	slot := claimSlot(envInt("LEGIT_USERS", 1))
+	base := claimSlot(envInt("LEGIT_USERS", 1))
+	conc := envInt("LEGIT_CONC", 1)
 	every := time.Duration(envInt("LEGIT_EVERY", 1)) * time.Second
 	deadline := time.Now().Add(time.Duration(envInt("RUN_SECONDS", 120)) * time.Second)
 
-	out, err := os.Create(fmt.Sprintf("/out/legit-%d.csv", slot))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "legit: cannot open output:", err)
-		os.Exit(1)
+	var wg sync.WaitGroup
+	for w := 0; w < conc; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			tag := fmt.Sprintf("%d", base)
+			if conc > 1 {
+				tag = fmt.Sprintf("%d-%d", base, w+1)
+			}
+			neighbor(tag, addr, sni, browserFor(fp, base+w), every, deadline)
+		}(w)
 	}
-	defer out.Close()
-	fmt.Fprintln(out, "ts,ok,fp")
-
-	for time.Now().Before(deadline) {
-		ok, derr := dialOnce(addr, sni, id)
-		code := "ok"
-		if !ok {
-			code = "fail"
-			_ = derr
-		}
-		fmt.Fprintf(out, "%d,%s,%s\n", time.Now().Unix(), code, fp)
-		out.Sync()
-		time.Sleep(every)
-	}
-	os.WriteFile(fmt.Sprintf("/out/legit-%d.finished", slot), []byte("done\n"), 0o644)
+	wg.Wait()
 }

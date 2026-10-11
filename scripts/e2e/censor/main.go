@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"math/bits"
+	mrand "math/rand"
 	"net"
 	"os"
 	"sort"
@@ -18,14 +19,8 @@ import (
 	"time"
 )
 
-// A browser sends the hello in one packet, two at most. More before the server
-// replies is a deliberate split. Tightening this to 2 makes a two-packet hello
-// suspicious as well, which is a rule a controller trained on the looser one
-// has never seen.
 var leadingPacketLimit = 3
 
-// packets: count segments before the reply. sni: block a whole name in the
-// first packet. shape: drop a datapath whose records are all one size.
 const (
 	modePackets     = "packets"
 	modeSNI         = "sni"
@@ -33,20 +28,14 @@ const (
 	modeFingerprint = "fingerprint"
 	modeJA3         = "ja3"
 	modeJA4         = "ja4"
+	modeTLSInTLS    = "tlsintls"
 	modeBigHello    = "bighello"
 	modeFreeze      = "freeze"
-	// Every rule against every connection, which is how a real DPI works: it
-	// pulls the parameters it cares about out of each flow and checks them all,
-	// rather than having one rule switched on at a time.
-	modeAll = "all"
+	modeAll         = "all"
 )
 
-// How long a silently dropped connection is held open before it is let go. The
-// client is meant to hit its own handshake timeout first.
 const silentHold = 20 * time.Second
 
-// The shape rule is synthetic, built to be visible to the knobs we have. It is a
-// test of the machinery, not evidence about a real censor.
 const (
 	shapeSamples = 6
 	shapeSpread  = 32
@@ -58,30 +47,23 @@ var (
 	blockedFP    map[string]bool
 	blockedJA3   map[string]bool
 	blockedJA4   map[string]bool
+	blockedJA4B  map[string]bool
 	maxHello     int
 	punishMode   string
 	freezeBytes  int
 	throttleKBps int
+	reassemble   bool
+	observe      bool
 
-	// A caught client is out for a while, the way the GFW holds a triple of
-	// client, destination and port for 180 s. One bad arm then costs every
-	// dial until the ban lapses, not just the dial that tripped it.
 	banFor time.Duration
 	banned sync.Map
 
-	// Tear down live flows on a mode switch, or keep-alive hides the client
-	// from a handshake-only detector and the rotation measures nothing.
 	resetOnRotate bool
 	live          sync.Map
 )
 
 func currentMode() string { return mode.Load().(string) }
 
-// A rotation entry may join several rules with "+", so they apply together.
-// Rules taking turns cannot corner a controller holding two arms that cover
-// each other: whichever rule is up, one of the two is safe. Split by hand
-// rather than with strings.Split because the freeze rule is checked on every
-// packet read.
 func active(mode, rule string) bool {
 	for len(mode) > 0 {
 		part := mode
@@ -97,8 +79,6 @@ func active(mode, rule string) bool {
 	return false
 }
 
-// rotate switches the detector on a timer, so the stand has an opponent that
-// moves instead of one rule held for the whole run.
 func rotate(modes []string, every time.Duration) {
 	for i := 1; ; i++ {
 		time.Sleep(every)
@@ -119,10 +99,6 @@ func rotate(modes []string, every time.Duration) {
 		}
 	}
 }
-
-// GFW fully-encrypted-traffic detector from "How the Great Firewall of China
-// Detects and Blocks Fully Encrypted Traffic" (USENIX Security 2023): pass the
-// first data packet if any exemption holds, else drop. Real TLS trips Ex5.
 
 func avgBitsSet(p []byte) float64 {
 	if len(p) == 0 {
@@ -194,7 +170,6 @@ func looksHTTP(p []byte) bool {
 	return false
 }
 
-// exemptReason returns the first exemption a packet satisfies, or "" to block.
 func exemptReason(p []byte) string {
 	if b := avgBitsSet(p); b <= 3.4 || b >= 4.6 {
 		return "ex1_popcount"
@@ -217,6 +192,7 @@ func exemptReason(p []byte) string {
 func handle(c net.Conn, upstream string) {
 	defer c.Close()
 	m := currentMode()
+	sampled := verdictJudge.sampled()
 	live.Store(c, struct{}{})
 	defer live.Delete(c)
 	up, err := net.DialTimeout("tcp", upstream, 5*time.Second)
@@ -229,6 +205,30 @@ func handle(c net.Conn, upstream string) {
 	var wg sync.WaitGroup
 	var serverSpoke atomic.Bool
 
+	var hs *hsWatch
+	if active(m, modeTLSInTLS) {
+		hs = newHSWatch()
+		defer func() {
+			log.Printf("TLSINTLS %s %s", c.RemoteAddr(), hs.report())
+			if sampled {
+				var tells []string
+				if hs.encapsulatedLocked() {
+					tells = append(tells, "encap")
+				}
+				if hs.splitLocked() {
+					tells = append(tells, "tlsintls-split")
+				}
+				verdictJudge.note(c, tells)
+			}
+		}()
+	}
+
+	var rtt *rttWatch
+	if rttEnabled() {
+		rtt = &rttWatch{}
+		defer func() { log.Printf("RTTDIFF %s %s", c.RemoteAddr(), rtt.report()) }()
+	}
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -238,18 +238,28 @@ func handle(c net.Conn, upstream string) {
 		for {
 			n, rerr := up.Read(buf)
 			if n > 0 {
+				if hs != nil {
+					hs.feedDown(buf[:n])
+				}
+				if rtt != nil {
+					rtt.feedDown(time.Now())
+				}
 				serverSpoke.Store(true)
 				down += int64(n)
-				// Past the byte limit the connection stops carrying anything
-				// back, with no reset: the client waits for a timeout instead.
 				if active(currentMode(), modeFreeze) && down > int64(freezeBytes) {
 					if !frozen {
-						log.Printf("FREEZE %s %d bytes downstream, nothing more gets through", c.RemoteAddr(), down)
 						frozen = true
+						if observe {
+							log.Printf("WOULDFREEZE %s past %d bytes downstream", c.RemoteAddr(), down)
+						} else {
+							log.Printf("FREEZE %s %d bytes downstream, nothing more gets through", c.RemoteAddr(), down)
+						}
 					}
-					continue
+					if !observe {
+						continue
+					}
 				}
-				if throttleKBps > 0 {
+				if throttleKBps > 0 && !observe {
 					time.Sleep(time.Duration(n) * time.Second / time.Duration(throttleKBps*1024))
 				}
 				if _, werr := c.Write(buf[:n]); werr != nil {
@@ -265,9 +275,6 @@ func handle(c net.Conn, upstream string) {
 		}
 	}()
 
-	// An address already caught is out of service: nothing it sends is looked
-	// at. Killed directly rather than through punishf, or every retry would
-	// push the ban further out and it would never lapse.
 	if clientIsBanned(c) {
 		log.Printf("DROP  %s ip is out of service", c.RemoteAddr())
 		if tc, ok := c.(*net.TCPConn); ok {
@@ -276,64 +283,105 @@ func handle(c net.Conn, upstream string) {
 		return
 	}
 
-	// Judge the first data packet, then count how many more arrive before the
-	// server answers: a split hello shows up here.
 	tmp := make([]byte, 32<<10)
 	c.SetReadDeadline(time.Now().Add(20 * time.Second))
 	n, rerr := c.Read(tmp)
+	reads := 1
 	if n > 0 {
+		if hs != nil {
+			hs.feedUp(tmp[:n])
+		}
+		if rtt != nil {
+			rtt.feedUp(time.Now())
+		}
 		first := tmp[:n]
+		forward, judged := first, first
+		if reassemble {
+			var whole []byte
+			forward, whole, reads = reassembleHello(c, first)
+			if whole != nil {
+				judged = whole
+			}
+			if active(m, modePackets) && reads >= leadingPacketLimit {
+				if punishf(c, "hello split across %d packets before any reply — fragmented handshake", reads) {
+					return
+				}
+			}
+		}
 		reason := exemptReason(first)
 		if reason == "" {
-			punishf(c, "first packet %d bytes, bits/byte %.2f, printable %.0f%% — no exemption",
-				n, avgBitsSet(first), fracPrintable(first)*100)
-			return
+			if punishf(c, "first packet %d bytes, bits/byte %.2f, printable %.0f%% — no exemption",
+				n, avgBitsSet(first), fracPrintable(first)*100) {
+				return
+			}
 		}
 		if active(m, modeSNI) && len(blockSNI) > 0 && bytes.Contains(first, blockSNI) {
-			punishf(c, "server name %q sits whole in the first packet", blockSNI)
-			return
-		}
-		// Only a whole hello gives up its fingerprint. A split one gets past
-		// this and is caught by the packet count instead, which is the trade
-		// the controller has to find.
-		if active(m, modeFingerprint) && helloWhole(first) {
-			if b := browserOf(first); b != "" && blockedFP[b] {
-				punishf(c, "hello fingerprint %q is on the list", b)
+			if punishf(c, "server name %q sits whole in the first packet", blockSNI) {
 				return
 			}
 		}
-		if active(m, modeJA3) && helloWhole(first) {
-			if h, ok := ja3(first); ok && blockedJA3[h] {
-				punishf(c, "ja3 %s is on the list", h)
-				return
+		if active(m, modeFingerprint) && helloWhole(judged) {
+			if b := browserOf(judged); b != "" && blockedFP[b] {
+				if punishf(c, "hello fingerprint %q is on the list", b) {
+					return
+				}
 			}
 		}
-		if active(m, modeJA4) && helloWhole(first) {
-			if h, ok := ja4(first); ok && blockedJA4[h] {
-				punishf(c, "ja4 %s is on the list", h)
-				return
+		if active(m, modeJA3) && helloWhole(judged) {
+			if h, ok := ja3(judged); ok && blockedJA3[h] {
+				if punishf(c, "ja3 %s is on the list", h) {
+					return
+				}
+			}
+		}
+		if active(m, modeJA4) && helloWhole(judged) {
+			if h, ok := ja4(judged); ok {
+				if blockedJA4[h] {
+					if punishf(c, "ja4 %s is on the list", h) {
+						return
+					}
+				}
+				if blockedJA4B[ja4Ciphers(h)] {
+					if punishf(c, "ja4 cipher hash %s is on the list", ja4Ciphers(h)) {
+						return
+					}
+				}
 			}
 		}
 		if active(m, modeBigHello) {
-			if size := helloRecordLen(first); size > maxHello {
-				punishf(c, "hello record %d bytes, over %d", size, maxHello)
-				return
+			if size := helloRecordLen(judged); size > maxHello {
+				if punishf(c, "hello record %d bytes, over %d", size, maxHello) {
+					return
+				}
 			}
 		}
 		fp, j3, j4 := "split", "-", "-"
-		if helloWhole(first) {
-			if fp = browserOf(first); fp == "" {
+		if helloWhole(judged) {
+			if fp = browserOf(judged); fp == "" {
 				fp = "unparsed"
 			}
-			if h, ok := ja3(first); ok {
+			if h, ok := ja3(judged); ok {
 				j3 = h
 			}
-			if h, ok := ja4(first); ok {
+			if h, ok := ja4(judged); ok {
 				j4 = h
 			}
 		}
+		if sampled {
+			tells := []string{"fp:" + fp}
+			if j4 != "-" {
+				tells = append(tells, "ja4:"+j4)
+			}
+			if reads >= leadingPacketLimit {
+				tells = append(tells, "hellofrag")
+			}
+			if size := helloRecordLen(judged); size > maxHello {
+				tells = append(tells, "bighello")
+			}
+			verdictJudge.note(c, tells)
+		}
 		log.Printf("PASS  %s trust first packet %d bytes via %s, hello %s, ja3 %s, ja4 %s", c.RemoteAddr(), n, reason, fp, j3, j4)
-		if _, werr := up.Write(first); werr != nil {
+		if _, werr := up.Write(forward); werr != nil {
 			return
 		}
 	}
@@ -342,16 +390,23 @@ func handle(c net.Conn, upstream string) {
 	}
 	c.SetReadDeadline(time.Time{})
 
-	leading := 1
+	leading := reads
 	var sizes []int
 	for {
 		n, rerr := c.Read(tmp)
 		if n > 0 {
+			if hs != nil {
+				hs.feedUp(tmp[:n])
+			}
+			if rtt != nil {
+				rtt.feedUp(time.Now())
+			}
 			if active(m, modePackets) && !serverSpoke.Load() {
 				leading++
 				if leading >= leadingPacketLimit {
-					punishf(c, "hello split across %d packets before any reply — fragmented handshake", leading)
-					return
+					if punishf(c, "hello split across %d packets before any reply — fragmented handshake", leading) {
+						return
+					}
 				}
 			}
 			if active(m, modeShape) && serverSpoke.Load() && len(sizes) < shapeSamples {
@@ -367,8 +422,9 @@ func handle(c net.Conn, upstream string) {
 						}
 					}
 					if hi-lo < shapeSpread {
-						punishf(c, "first %d records span %d bytes — the datapath has one shape", shapeSamples, hi-lo)
-						return
+						if punishf(c, "first %d records span %d bytes — the datapath has one shape", shapeSamples, hi-lo) {
+							return
+						}
 					}
 					log.Printf("PASS  datapath records span %d bytes", hi-lo)
 				}
@@ -387,10 +443,6 @@ func handle(c net.Conn, upstream string) {
 	wg.Wait()
 }
 
-// punishf ends a connection the way the censor has been told to. A reset is the
-// loud way; "silent" is what the Russian TSPU does instead — nothing comes
-// back and the client sits there until its own timeout fires, which is a
-// different signal to the controller than a reset (net4people/bbs#490).
 func clientIP(c net.Conn) string {
 	host, _, err := net.SplitHostPort(c.RemoteAddr().String())
 	if err != nil {
@@ -399,15 +451,12 @@ func clientIP(c net.Conn) string {
 	return host
 }
 
-// banClient puts the address out of service. Not extended on later attempts:
-// the ban runs from the detection, as the reported GFW behavior does. A
-// negative banFor never lapses, which is how an IP or AS filter behaves.
 func banClient(c net.Conn) {
 	if banFor == 0 {
 		return
 	}
 	ip := clientIP(c)
-	var until time.Time // zero means it never lapses
+	var until time.Time
 	if banFor > 0 {
 		until = time.Now().Add(banFor)
 	}
@@ -441,15 +490,73 @@ func clientIsBanned(c net.Conn) bool {
 	return true
 }
 
-func punishf(c net.Conn, format string, args ...any) {
+func punishf(c net.Conn, format string, args ...any) bool {
+	if observe {
+		log.Printf("WOULDBLOCK %s "+format, append([]any{c.RemoteAddr()}, args...)...)
+		return false
+	}
 	banClient(c)
 	log.Printf("DROP  %s untrusted "+format, append([]any{c.RemoteAddr()}, args...)...)
 	if punishMode == "silent" {
 		time.Sleep(silentHold)
-		return
+		return true
 	}
 	if tc, ok := c.(*net.TCPConn); ok {
 		tc.SetLinger(0)
+	}
+	return true
+}
+
+type verdictState struct {
+	mu        sync.Mutex
+	on        bool
+	rate      float64
+	window    time.Duration
+	thresh    int
+	hits      map[string][]time.Time
+	firstSeen map[string]time.Time
+	banned    map[string]bool
+}
+
+var verdictJudge = &verdictState{
+	hits:      map[string][]time.Time{},
+	firstSeen: map[string]time.Time{},
+	banned:    map[string]bool{},
+}
+
+func (v *verdictState) sampled() bool { return v.on && mrand.Float64() < v.rate }
+
+func (v *verdictState) note(c net.Conn, tells []string) {
+	if !v.on || len(tells) == 0 {
+		return
+	}
+	ip := clientIP(c)
+	now := time.Now()
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.banned[ip] {
+		return
+	}
+	if _, ok := v.firstSeen[ip]; !ok {
+		v.firstSeen[ip] = now
+	}
+	cut := now.Add(-v.window)
+	for _, t := range tells {
+		key := ip + "|" + t
+		ts := v.hits[key]
+		i := 0
+		for i < len(ts) && ts[i].Before(cut) {
+			i++
+		}
+		ts = append(ts[i:], now)
+		v.hits[key] = ts
+		if len(ts) >= v.thresh {
+			v.banned[ip] = true
+			banClient(c)
+			log.Printf("BANIP %s tell=%s hits=%d in %ds, after %.1fs of sampling",
+				ip, t, len(ts), int(v.window.Seconds()), now.Sub(v.firstSeen[ip]).Seconds())
+			return
+		}
 	}
 }
 
@@ -461,7 +568,6 @@ const (
 
 func isGREASE(v uint16) bool { return byte(v>>8) == byte(v) && v&0x0f0f == 0x0a0a }
 
-// helloRecordLen is the length the hello record claims, 0 if this is not one.
 func helloRecordLen(first []byte) int {
 	if len(first) < 5 || first[0] != 0x16 {
 		return 0
@@ -469,15 +575,76 @@ func helloRecordLen(first []byte) int {
 	return int(first[3])<<8 | int(first[4])
 }
 
-// helloWhole reports whether the record arrived in one piece.
 func helloWhole(first []byte) bool {
 	size := helloRecordLen(first)
 	return size > 0 && 5+size <= len(first)
 }
 
-// helloExtensions lists the extension types the hello carries. Written out here
-// rather than imported from the client: a censor sharing code with what it
-// judges would measure agreement, not detection.
+const reassembleMax = 64 << 10
+
+var reassembleWait = 3 * time.Second
+
+const (
+	helloIncomplete = iota
+	helloComplete
+	helloMalformed
+)
+
+func joinHelloRecords(raw []byte) ([]byte, int) {
+	var payload []byte
+	for pos := 0; pos+5 <= len(raw); {
+		if raw[pos] != 0x16 {
+			return nil, helloMalformed
+		}
+		size := int(raw[pos+3])<<8 | int(raw[pos+4])
+		if pos+5+size > len(raw) {
+			break
+		}
+		payload = append(payload, raw[pos+5:pos+5+size]...)
+		pos += 5 + size
+	}
+	if len(payload) < 4 {
+		return nil, helloIncomplete
+	}
+	need := 4 + (int(payload[1])<<16 | int(payload[2])<<8 | int(payload[3]))
+	if need > reassembleMax {
+		return nil, helloMalformed
+	}
+	if len(payload) < need {
+		return nil, helloIncomplete
+	}
+	hello := make([]byte, 0, 5+need)
+	hello = append(hello, 0x16, 0x03, 0x01, byte(need>>8), byte(need))
+	return append(hello, payload[:need]...), helloComplete
+}
+
+func reassembleHello(c net.Conn, first []byte) (raw, whole []byte, reads int) {
+	raw = append([]byte(nil), first...)
+	reads = 1
+	if len(raw) < 6 || raw[0] != 0x16 || raw[5] != 0x01 {
+		return raw, nil, reads
+	}
+	buf := make([]byte, 16<<10)
+	for {
+		hello, state := joinHelloRecords(raw)
+		if state == helloComplete {
+			return raw, hello, reads
+		}
+		if state == helloMalformed || len(raw) >= reassembleMax {
+			return raw, nil, reads
+		}
+		c.SetReadDeadline(time.Now().Add(reassembleWait))
+		n, err := c.Read(buf)
+		if n > 0 {
+			raw = append(raw, buf[:n]...)
+			reads++
+		}
+		if err != nil {
+			return raw, nil, reads
+		}
+	}
+}
+
 func helloExtensions(rec []byte) ([]uint16, bool) {
 	b := rec
 	if len(b) >= 5 && b[0] == 0x16 {
@@ -524,12 +691,6 @@ func helloExtensions(rec []byte) ([]uint16, bool) {
 	return out, len(out) > 0
 }
 
-// ja3 is the exact JA3 hash of a whole ClientHello, the way real DPI keys on a
-// fingerprint: version,ciphers,extensions,curves,pointformats joined and
-// MD5'd, with GREASE values dropped. A hash, not a class, so a rule can ban one
-// tool's fingerprint without taking every browser that shares its family — and
-// so a preset that truly replicates a browser lands on that browser's hash,
-// where banning it is collateral the censor has to eat.
 func ja3(rec []byte) (string, bool) {
 	b := rec
 	if len(b) >= 5 && b[0] == 0x16 {
@@ -547,7 +708,7 @@ func ja3(rec []byte) (string, bool) {
 	if len(b) < 1 || len(b) < 1+int(b[0]) {
 		return "", false
 	}
-	b = b[1+int(b[0]):] // session id
+	b = b[1+int(b[0]):]
 
 	if len(b) < 2 {
 		return "", false
@@ -568,7 +729,7 @@ func ja3(rec []byte) (string, bool) {
 	if len(b) < 1 || len(b) < 1+int(b[0]) {
 		return "", false
 	}
-	b = b[1+int(b[0]):] // compression methods
+	b = b[1+int(b[0]):]
 
 	if len(b) < 2 {
 		return "", false
@@ -586,7 +747,7 @@ func ja3(rec []byte) (string, bool) {
 			exts = append(exts, int(t))
 		}
 		switch t {
-		case 0x0a: // supported_groups
+		case 0x0a:
 			if len(body) >= 2 {
 				n := int(body[0])<<8 | int(body[1])
 				for i := 2; i+1 < 2+n && i+1 < len(body); i += 2 {
@@ -596,7 +757,7 @@ func ja3(rec []byte) (string, bool) {
 					}
 				}
 			}
-		case 0x0b: // ec_point_formats
+		case 0x0b:
 			if len(body) >= 1 {
 				n := int(body[0])
 				for i := 1; i < 1+n && i < len(body); i++ {
@@ -621,10 +782,6 @@ func joinInts(v []int) string {
 	return strings.Join(parts, "-")
 }
 
-// ja4 is the FoxIO JA4 fingerprint of a ClientHello. Unlike JA3 it SORTS the
-// cipher and extension lists, so the extension shuffling that Chrome does per
-// connection — which makes JA3 a fresh hash every time — does not move it. That
-// is why real DPI moved to JA4, and why a shuffle is no defense against it.
 func ja4(rec []byte) (string, bool) {
 	b := rec
 	if len(b) >= 5 && b[0] == 0x16 {
@@ -642,7 +799,7 @@ func ja4(rec []byte) (string, bool) {
 	if len(b) < 1 || len(b) < 1+int(b[0]) {
 		return "", false
 	}
-	b = b[1+int(b[0]):] // session id
+	b = b[1+int(b[0]):]
 
 	if len(b) < 2 {
 		return "", false
@@ -663,15 +820,15 @@ func ja4(rec []byte) (string, bool) {
 	if len(b) < 1 || len(b) < 1+int(b[0]) {
 		return "", false
 	}
-	b = b[1+int(b[0]):] // compression
+	b = b[1+int(b[0]):]
 
 	if len(b) < 2 {
 		return "", false
 	}
 	b = b[2:]
 
-	var exts []int // for the sorted hash, excluding SNI and ALPN
-	extCount := 0  // all non-GREASE extensions, for the count field
+	var exts []int
+	extCount := 0
 	version := legacy
 	hasSNI := false
 	alpn := "00"
@@ -686,9 +843,9 @@ func ja4(rec []byte) (string, bool) {
 		if !isGREASE(t) {
 			extCount++
 			switch t {
-			case 0x0000: // SNI, counted but not in the sorted hash
+			case 0x0000:
 				hasSNI = true
-			case 0x0010: // ALPN, counted but not in the sorted hash
+			case 0x0010:
 				if len(body) >= 2 {
 					n := int(body[0])<<8 | int(body[1])
 					if n >= 1 && 2 < len(body) {
@@ -699,14 +856,14 @@ func ja4(rec []byte) (string, bool) {
 						}
 					}
 				}
-			case 0x002b: // supported_versions: the real negotiated max
+			case 0x002b:
 				for i := 1; i+1 < len(body); i += 2 {
 					v := uint16(body[i])<<8 | uint16(body[i+1])
 					if !isGREASE(v) && int(v) > version {
 						version = int(v)
 					}
 				}
-			case 0x000d: // signature_algorithms, kept in order
+			case 0x000d:
 				if len(body) >= 2 {
 					n := int(body[0])<<8 | int(body[1])
 					for i := 2; i+1 < 2+n && i+1 < len(body); i += 2 {
@@ -745,6 +902,14 @@ func ja4(rec []byte) (string, bool) {
 	return a + "_" + b12 + "_" + c12, true
 }
 
+func ja4Ciphers(h string) string {
+	first := strings.IndexByte(h, '_')
+	if first < 0 || first+13 > len(h) {
+		return ""
+	}
+	return h[first+1 : first+13]
+}
+
 func cap2(n int) string {
 	if n > 99 {
 		n = 99
@@ -765,8 +930,6 @@ func sha12(s string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-// browserOf names the client the way JA3-style fingerprinting does: by the
-// extensions it carries, not by anything it claims.
 func browserOf(rec []byte) string {
 	exts, ok := helloExtensions(rec)
 	if !ok {
@@ -804,6 +967,31 @@ func main() {
 		}
 	}
 	resetOnRotate = os.Getenv("CENSOR_RESET_ON_ROTATE") == "1"
+	reassemble = os.Getenv("CENSOR_REASSEMBLE") == "1"
+	observe = os.Getenv("CENSOR_OBSERVE") == "1"
+	verdictJudge.on = os.Getenv("CENSOR_VERDICT") == "1"
+	verdictJudge.rate = 0.2
+	if v := os.Getenv("CENSOR_SAMPLE"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f <= 1 {
+			verdictJudge.rate = f
+		}
+	}
+	verdictJudge.window = 30 * time.Second
+	if v := os.Getenv("CENSOR_VERDICT_WINDOW"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			verdictJudge.window = time.Duration(n) * time.Second
+		}
+	}
+	verdictJudge.thresh = 5
+	if v := os.Getenv("CENSOR_VERDICT_THRESHOLD"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			verdictJudge.thresh = n
+		}
+	}
+	if verdictJudge.on {
+		log.Printf("VERDICT sampling %.0f%%, ban IP at %d hits of one tell in %s",
+			verdictJudge.rate*100, verdictJudge.thresh, verdictJudge.window)
+	}
 	mode.Store(modes[0])
 	log.Printf("MODE %s", modes[0])
 	blockedFP = map[string]bool{}
@@ -827,7 +1015,13 @@ func main() {
 			blockedJA4[h] = true
 		}
 	}
-	maxHello = 1400
+	blockedJA4B = map[string]bool{}
+	for _, h := range strings.Split(os.Getenv("CENSOR_BLOCK_JA4B"), ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			blockedJA4B[h] = true
+		}
+	}
+	maxHello = 2048
 	if v := os.Getenv("CENSOR_MAX_HELLO"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			maxHello = n
@@ -838,14 +1032,12 @@ func main() {
 			leadingPacketLimit = n
 		}
 	}
-	// Positive: seconds out of service. Negative: never lapses. Empty or 0: off.
 	if v := os.Getenv("CENSOR_BAN_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n != 0 {
 			banFor = time.Duration(n) * time.Second
 		}
 	}
 	punishMode = strings.TrimSpace(os.Getenv("CENSOR_PUNISH"))
-	// 16 KB is where the reported Russian limit sits.
 	freezeBytes = 16 << 10
 	if v := os.Getenv("CENSOR_FREEZE_BYTES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

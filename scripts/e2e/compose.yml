@@ -45,6 +45,7 @@ services:
       # than a whole browser family, the way real DPI keys on a tool's JA3.
       CENSOR_BLOCK_JA3: "${CENSOR_BLOCK_JA3:-}"
       CENSOR_BLOCK_JA4: "${CENSOR_BLOCK_JA4:-}"
+      CENSOR_BLOCK_JA4B: "${CENSOR_BLOCK_JA4B:-}"
       CENSOR_MAX_HELLO: "${CENSOR_MAX_HELLO:-}"
       # "silent" holds a killed connection open instead of resetting it, the
       # way the reported Russian block behaves. Empty sends a reset.
@@ -59,6 +60,16 @@ services:
       CENSOR_FREEZE_BYTES: "${CENSOR_FREEZE_BYTES:-}"
       CENSOR_THROTTLE_KBPS: "${CENSOR_THROTTLE_KBPS:-}"
       CENSOR_RESET_ON_ROTATE: "${CENSOR_RESET_ON_ROTATE:-}"
+      CENSOR_REASSEMBLE: "${CENSOR_REASSEMBLE:-}"
+      CENSOR_OBSERVE: "${CENSOR_OBSERVE:-}"
+      # Time-survival model: sample a fraction of flows, accumulate tells per IP
+      # over a window, ban the IP once one tell crosses the threshold.
+      CENSOR_VERDICT: "${CENSOR_VERDICT:-}"
+      # Passive cross-layer RTT sketch (NDSS'25): handshake RTT vs data round-trip.
+      CENSOR_RTTDIFF: "${CENSOR_RTTDIFF:-}"
+      CENSOR_SAMPLE: "${CENSOR_SAMPLE:-}"
+      CENSOR_VERDICT_WINDOW: "${CENSOR_VERDICT_WINDOW:-}"
+      CENSOR_VERDICT_THRESHOLD: "${CENSOR_VERDICT_THRESHOLD:-}"
       CENSOR_ROTATE: "${CENSOR_ROTATE:-20s}"
     command:
       - /bin/sh
@@ -89,18 +100,24 @@ services:
       WHISPERA_KEEPALIVE: "${WHISPERA_KEEPALIVE:-}"
       WHISPERA_DIAL_TRACE: "${WHISPERA_DIAL_TRACE:-}"
       WHISPERA_DIAL_TRACE_MB: "${WHISPERA_DIAL_TRACE_MB:-}"
-      # "1" hands the fragment budget to the trained model instead of
-      # the bandit. Off by default; the bandit stays the shipped path.
+      # The trained model picks the budget; the bandit is the fallback.
+      # On by default in the build; "0" forces the bandit.
       WHISPERA_POLICY: "${WHISPERA_POLICY:-}"
-      # "1" picks the preset and the hello budget as one arm instead of one
-      # bandit each. Off by default.
+      # One controller picks preset and budget together, not a bandit each.
+      # On by default; "0" splits them back onto per-axis bandits.
       WHISPERA_JOINT_ARM: "${WHISPERA_JOINT_ARM:-}"
+      WHISPERA_OPENING_RESHAPE: "${WHISPERA_OPENING_RESHAPE:-}"
+      WHISPERA_POISON: "${WHISPERA_POISON:-}"
+      WHISPERA_POISON_GAP: "${WHISPERA_POISON_GAP:-}"
+      WHISPERA_OPENING_CAP: "${WHISPERA_OPENING_CAP:-}"
+      WHISPERA_GENEPOOL: "${WHISPERA_GENEPOOL:-}"
+      WHISPERA_GENE: "${WHISPERA_GENE:-}"
       # Force one uTLS preset (calibration), and whether PQ key shares are cut.
-      # DROP_PQ is on by default in code, which itself moves JA3 off real Chrome.
+      # DROP_PQ is OFF by default now (keep MLKEM, match real browsers); "1" cuts it.
       WHISP_FP: "${WHISP_FP:-}"
       WHISPERA_DROP_PQ: "${WHISPERA_DROP_PQ:-}"
-      # "1" lets the model keep learning from its own dials, with a fallback to
-      # the frozen weights if survival collapses. Off by default.
+      # The model keeps learning from its own dials, falling back to the frozen
+      # weights if survival collapses. On by default; "0" turns learning off.
       WHISPERA_POLICY_ONLINE: "${WHISPERA_POLICY_ONLINE:-}"
       # "1" rotates the datapath padding arm by arm; the epoch is how long
       # each one is held. Both off by default.
@@ -146,6 +163,9 @@ services:
       LEGIT_SNI: "${LEGIT_SNI:-www.google.com}"
       LEGIT_FP: "${LEGIT_FP:-}"
       LEGIT_USERS: "${LEGIT_USERS:-1}"
+      # Concurrent neighbours inside one container. With LEGIT_FP=mix each one
+      # picks a different browser, so a single container is a street of them.
+      LEGIT_CONC: "${LEGIT_CONC:-}"
       LEGIT_EVERY: "${LEGIT_EVERY:-1}"
       RUN_SECONDS: "${RUN_SECONDS:-120}"
     volumes:
