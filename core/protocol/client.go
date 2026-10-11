@@ -19,6 +19,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +37,8 @@ import (
 const dialTimeout = 10 * time.Second
 
 const handshakeTimeout = 3 * time.Second
+
+const FastRotateHandshakeTimeout = time.Second
 
 type helloSplitConn struct {
 	net.Conn
@@ -64,7 +68,6 @@ type livenessConn struct {
 	onOK    func()
 	onEnd   func(time.Duration, int64, bool)
 
-	// Atomic: Read/Write are the hot path and must not take the mutex.
 	moved atomic.Int64
 
 	mu            sync.Mutex
@@ -75,7 +78,6 @@ type livenessConn struct {
 	ended         bool
 }
 
-// reportEnd fires once per established connection, however it ended.
 func (c *livenessConn) reportEnd(reset bool) {
 	c.mu.Lock()
 	if c.ended || !c.established || c.onEnd == nil {
@@ -222,10 +224,29 @@ func (r HandshakeResult) Reward() float64 {
 
 var splitOffsets = []int{0, 8, 24, 64}
 
-// fragmentBudgets is how many records the ClientHello may become. One matches a
-// browser; larger values only help where the censor reads records and blocks on
-// the name inside them. The controller picks per network.
-var fragmentBudgets = []int{1, 2, 4, 8}
+var fragmentBudgets = growRepertoire([]int{1, 2, 4, 8})
+
+func growRepertoire(base []int) []int {
+	extra := os.Getenv("WHISPERA_ARM_BUDGETS")
+	if extra == "" {
+		return base
+	}
+	seen := map[int]bool{}
+	for _, b := range base {
+		seen[b] = true
+	}
+	out := append([]int(nil), base...)
+	for _, part := range strings.Split(extra, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || n < 1 || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	sort.Ints(out)
+	return out
+}
 
 type HandshakeStrategy struct {
 	mu       sync.Mutex
@@ -250,24 +271,10 @@ func NewHandshakeStrategy() *HandshakeStrategy {
 	return h
 }
 
-// survSwitchThreshold is how low the survival signal of the arm in use has to
-// fall before the controller abandons it. Above it the arm is held: switching a
-// tactic that still works only makes the client louder.
 const survSwitchThreshold = 0.3
 
-// exploreEpsilon is how often a real dial tries a not-current arm instead of the
-// held one, to keep the signal fed across the whole repertoire without a
-// separate prober that would put bare handshakes on the wire. A dial that
-// explores a worse arm just reconnects — per-flow retries — so the cost is a
-// stray reconnect, not a broken session. A var, not a const, so tests can pin it
-// to zero and get deterministic hold/switch behavior.
 var exploreEpsilon = 0.15
 
-// Select returns the arm (a tactic index into a repertoire of the given size)
-// to use for this context. It holds the current arm while its survival signal
-// is healthy and switches to the best arm on record only once survival drops —
-// adapt when found, not on every dial — but occasionally explores a less-tried
-// arm so every tactic keeps getting measured on real traffic.
 func (h *HandshakeStrategy) Select(ctx string, arms int) int {
 	if arms <= 0 {
 		return 0
@@ -295,8 +302,6 @@ func (h *HandshakeStrategy) Select(ctx string, arms int) int {
 	return cur
 }
 
-// leastTried is the arm with the fewest observations, so exploration spends its
-// budget where the signal is thinnest.
 func (h *HandshakeStrategy) leastTried(ctx string, arms int) int {
 	cnt := h.cnt[ctx]
 	best, fewest := 0, int64(math.MaxInt64)
@@ -312,7 +317,6 @@ func (h *HandshakeStrategy) leastTried(ctx string, arms int) int {
 	return best
 }
 
-// bestArm prefers an unexplored arm, then the one with the highest mean reward.
 func (h *HandshakeStrategy) bestArm(ctx string, arms int) int {
 	sum, cnt := h.sum[ctx], h.cnt[ctx]
 	best, bestScore := 0, math.Inf(-1)
@@ -421,15 +425,10 @@ func (h *HandshakeStrategy) SelectSplit(ctx string) (offset, arm int) {
 	return h.selectFromRepertoire(ctx, splitOffsets, anyArm)
 }
 
-// SelectFragments picks how many records this connection's hello may become.
 func (h *HandshakeStrategy) SelectFragments(ctx string) (budget, arm int) {
 	return h.selectFromRepertoire(ctx, fragmentBudgets, anyArm)
 }
 
-// A joint arm is a (preset, budget) pair. Kept apart on two bandit contexts,
-// neither can represent a rule where the safe budget depends on the
-// fingerprint, and that is what the stand measures: a whole hello gives up its
-// preset, a longer split trips the packet count, so what survives is the pair.
 func JointArmCount(presets int) int {
 	if presets < 1 {
 		presets = 1
@@ -437,7 +436,6 @@ func JointArmCount(presets int) int {
 	return presets * len(fragmentBudgets)
 }
 
-// JointArmParts splits an arm back into the preset index and the hello budget.
 func JointArmParts(arm, presets int) (preset, budget int) {
 	if presets < 1 {
 		presets = 1
@@ -457,7 +455,6 @@ func jointArmFits(fragmented bool) func(int) bool {
 	}
 }
 
-// SelectJoint plays UCB1 over the pairs, on the same formula as one axis.
 func (h *HandshakeStrategy) SelectJoint(ctx string, presets int, fragmented bool) int {
 	seq := make([]int, JointArmCount(presets))
 	for i := range seq {
@@ -705,7 +702,11 @@ func (d *clientDialer) tlsHandshake(ctx context.Context, rawConn net.Conn, useSp
 }
 
 func (d *clientDialer) handshakeWithin(ctx context.Context, rawConn net.Conn, useSpec bool) (*utls.UConn, error) {
-	hsCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
+	timeout := handshakeTimeout
+	if d.cfg.HandshakeTimeout > 0 {
+		timeout = d.cfg.HandshakeTimeout
+	}
+	hsCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return d.tlsHandshake(hsCtx, rawConn, useSpec)
 }
@@ -755,9 +756,6 @@ func dialPerflow(ctx context.Context, d *clientDialer, sessionID []byte, token s
 	pre = append(pre, sessionID...)
 	pre = binary.BigEndian.AppendUint16(pre, uint16(len(token)))
 	pre = append(pre, token...)
-	// One Write is one TLS record, so a whole-preamble write is a fixed 62-byte
-	// record on every connection. The server reads a stream, so splitting it
-	// removes the constant at no cost.
 	for off := 0; off < len(pre); {
 		n := len(pre) - off
 		if n > 16 {

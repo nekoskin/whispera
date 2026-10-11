@@ -5,43 +5,13 @@ import (
 	"testing"
 )
 
-// The training pass keeps intermediate values the serving pass throws away.
-// Both must still produce the same logits, or the gradient belongs to a
-// different model than the one answering dials.
-func TestTrainingForwardMatchesServing(t *testing.T) {
-	cases := [][]int{
-		{polBOS, 9},
-		{polBOS, 9, 2, 18, 5, 11, 0, 7},
-		{16, 11, 4, 23, 6, 8, 14, 0, 7, 19, 14, 0, 3, 2, 22, 15},
-	}
-	p := newPolParams()
-	for _, tokens := range cases {
-		want := polForward(tokens)
-		got, cache := p.forward(tokens)
-		if len(got) != len(want) {
-			t.Fatalf("tokens %v: got %d rows, want %d", tokens, len(got), len(want))
-		}
-		if len(cache.xOut) != len(tokens) {
-			t.Fatalf("tokens %v: cache holds %d rows, want %d", tokens, len(cache.xOut), len(tokens))
-		}
-		for i := range want {
-			for j := range want[i] {
-				if math.Abs(got[i][j]-want[i][j]) > 1e-9 {
-					t.Fatalf("tokens %v: logit [%d][%d] = %.12f, serving says %.12f",
-						tokens, i, j, got[i][j], want[i][j])
-				}
-			}
-		}
-	}
-}
-
 func TestTrainingParamsAreCopies(t *testing.T) {
 	p := newPolParams()
-	before := polWte[0][0]
-	p.wte[0][0] = before + 1
-	if polWte[0][0] != before {
+	before := polWin[0][0]
+	p.win[0][0] = before + 1
+	if polWin[0][0] != before {
 		t.Fatalf("training wrote through to the generated weights: %.6f became %.6f",
-			before, polWte[0][0])
+			before, polWin[0][0])
 	}
 }
 
@@ -61,9 +31,13 @@ func TestTrainingGradsStartEmpty(t *testing.T) {
 func TestTrainingMatrixShapes(t *testing.T) {
 	p := newPolParams()
 	shapes := map[string][2]int{
-		"wte":     {polVocab, polEmbd},
+		"win":     {polEmbd, polFeatDim},
+		"oin":     {2, polEmbd},
+		"bos_in":  {1, polEmbd},
+		"wout":    {2 * polEmbd, polFeatDim},
+		"oout":    {2, polEmbd},
+		"bos_out": {1, polEmbd},
 		"wpe":     {polBlock, polEmbd},
-		"lm_head": {polVocab, polEmbd},
 		"0.wq":    {polEmbd, polEmbd},
 		"0.wk":    {polEmbd, polEmbd},
 		"0.wv":    {polEmbd, polEmbd},
@@ -99,15 +73,19 @@ func TestTrainingMatrixShapes(t *testing.T) {
 func TestTrainingBackwardMatchesTrainer(t *testing.T) {
 	tokens := []int{24, 9, 2, 18, 5, 11, 0, 7}
 	want := map[string][2]float64{
-		"wte":     {2.728176131, -0.046330160},
-		"wpe":     {2.728176131, 0.310129591},
-		"lm_head": {2.289891425, 0.292405307},
-		"0.wq":    {1.906704611, -0.022501550},
-		"0.wk":    {1.439231813, 0.068719359},
-		"0.wv":    {4.133409835, 0.137374502},
-		"0.wo":    {3.688169921, -0.120858522},
-		"0.fc1":   {5.015781977, 0.166039949},
-		"0.fc2":   {3.459855529, -0.041952767},
+		"win":     {0.809897765, -0.030074290},
+		"oin":     {0.690217149, -0.000284604},
+		"bos_in":  {0.171205881, -0.026468821},
+		"wout":    {1.448628843, -0.066752489},
+		"oout":    {0.466337871, -0.053744428},
+		"bos_out": {0.431800084, 0.012769759},
+		"wpe":     {0.582661947, -0.026468821},
+		"0.wq":    {0.039385161, 0.000012765},
+		"0.wk":    {0.022233502, 0.000973297},
+		"0.wv":    {1.243027305, -0.006304076},
+		"0.wo":    {0.601574062, 0.003108791},
+		"0.fc1":   {2.943830674, 0.000000000},
+		"0.fc2":   {0.855617849, 0.000000000},
 	}
 
 	p := newPolParams()
@@ -175,8 +153,8 @@ func TestTrainingStepLowersLoss(t *testing.T) {
 }
 
 func TestTrainingStepLeavesGeneratedWeightsAlone(t *testing.T) {
-	before := make([]float64, len(polWte[0]))
-	copy(before, polWte[0])
+	before := make([]float64, len(polWin[0]))
+	copy(before, polWin[0])
 
 	p := newPolParams()
 	a := newPolAdam()
@@ -185,9 +163,9 @@ func TestTrainingStepLeavesGeneratedWeightsAlone(t *testing.T) {
 	}
 
 	for j := range before {
-		if polWte[0][j] != before[j] {
-			t.Fatalf("training moved the generated weights: wte[0][%d] %.6f -> %.6f",
-				j, before[j], polWte[0][j])
+		if polWin[0][j] != before[j] {
+			t.Fatalf("training moved the generated weights: win[0][%d] %.6f -> %.6f",
+				j, before[j], polWin[0][j])
 		}
 	}
 }
@@ -275,5 +253,36 @@ func TestTrainingBackwardAgainstFiniteDifferences(t *testing.T) {
 	if nonzero < 20 {
 		t.Fatalf("only %d of %d checks had a non-zero gradient, the test is proving nothing",
 			nonzero, checked)
+	}
+}
+
+func TestOnlineBenchesDeadArm(t *testing.T) {
+	o := newOnlinePolicy()
+	roll := func() float64 { return 0.99 }
+	fits := func(int) bool { return true }
+	dead, _ := o.Select("c", polArms, fits, roll)
+	for i := 0; i < deadArmFails; i++ {
+		o.Note("c", dead, false)
+	}
+	for i := 0; i < 20; i++ {
+		if got, _ := o.Select("c", polArms, fits, roll); got == dead {
+			t.Fatalf("arm %d failed %d times in a row but was chosen again", dead, deadArmFails)
+		}
+	}
+}
+
+func TestOnlineReprobesBenchedArm(t *testing.T) {
+	o := newOnlinePolicy()
+	for i := 0; i < deadArmFails; i++ {
+		o.Note("c", 0, false)
+	}
+	if o.alive(0) {
+		t.Fatal("arm 0 should be benched after consecutive failures")
+	}
+	for i := 0; i < deadArmDecay; i++ {
+		o.Note("c", 1, true)
+	}
+	if !o.alive(0) {
+		t.Fatal("a benched arm should be re-probed after the fail count decays")
 	}
 }

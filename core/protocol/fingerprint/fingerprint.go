@@ -47,7 +47,7 @@ func isPQCurve(g utls.CurveID) bool {
 	return g == utls.X25519MLKEM768 || g == utls.X25519Kyber768Draft00
 }
 
-func DropPQEnabled() bool { return os.Getenv("WHISPERA_DROP_PQ") != "0" }
+func DropPQEnabled() bool { return os.Getenv("WHISPERA_DROP_PQ") == "1" }
 
 func DropECH(spec *utls.ClientHelloSpec) {
 	kept := spec.Extensions[:0]
@@ -282,8 +282,6 @@ func pick() (id utls.ClientHelloID, raw []byte, uaID utls.ClientHelloID) {
 
 	collectOnce.Do(initCollect)
 
-	// A generated hello if asked for: the harvested pool is finite and can be
-	// collected, a recombination of it cannot.
 	if raw, k, ok := DeviceHello(); ok {
 		return utls.HelloCustom, raw, repIDForKind(k)
 	}
@@ -300,10 +298,6 @@ func pick() (id utls.ClientHelloID, raw []byte, uaID utls.ClientHelloID) {
 	return utls.HelloChrome_Auto, nil, utls.HelloChrome_Auto
 }
 
-// presets is the controller's repertoire: real, uTLS-maintained browser
-// fingerprints. Unlike a frozen harvested capture, uTLS keeps these current with
-// the browser, and each one sets its own SNI correctly. The controller picks
-// among them by index under the live signal.
 var presets = []utls.ClientHelloID{
 	utls.HelloChrome_Auto,
 	utls.HelloFirefox_Auto,
@@ -319,8 +313,6 @@ func PresetAt(i int) utls.ClientHelloID {
 	return presets[i]
 }
 
-// PoolSize is how many real (seed + harvested) fingerprints the controller can
-// choose between. These are captured whole from real clients, not recombined.
 func PoolSize() int {
 	collectOnce.Do(initCollect)
 	collectMu.RLock()
@@ -328,8 +320,6 @@ func PoolSize() int {
 	return len(collectRaw)
 }
 
-// RawAt returns the i-th real fingerprint from the pool, for a controller that
-// picks by index instead of at random. Out of range falls back to Chrome.
 func RawAt(i int) (utls.ClientHelloID, []byte, utls.ClientHelloID) {
 	collectOnce.Do(initCollect)
 	collectMu.RLock()

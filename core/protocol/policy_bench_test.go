@@ -12,7 +12,7 @@ func BenchmarkPolicyArmScores(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		policyArmScores(history)
+		policyArmScores(history, polArms)
 	}
 }
 
@@ -22,6 +22,6 @@ func BenchmarkPolicyArmScoresShort(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		policyArmScores(history)
+		policyArmScores(history, polArms)
 	}
 }

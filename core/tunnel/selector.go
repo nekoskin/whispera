@@ -5,8 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	mrand "math/rand"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 
 	"time"
@@ -20,6 +23,52 @@ import (
 )
 
 func helloSplitEnabled() bool { return os.Getenv("WHISPERA_HELLO_SPLIT") == "1" }
+
+func poisonEnabled() bool { return os.Getenv("WHISPERA_POISON") == "1" }
+
+type poisonState struct {
+	mu        sync.Mutex
+	rng       *mrand.Rand
+	countdown int
+}
+
+var poison = &poisonState{rng: mrand.New(mrand.NewSource(time.Now().UnixNano())), countdown: -1}
+
+func (p *poisonState) drawGap() int {
+	lo, hi := 15, 120
+	if v := os.Getenv("WHISPERA_POISON_GAP"); v != "" {
+		if i := strings.IndexByte(v, ','); i > 0 {
+			if a, err := strconv.Atoi(v[:i]); err == nil {
+				if b, err := strconv.Atoi(v[i+1:]); err == nil && a >= 1 && b >= a {
+					lo, hi = a, b
+				}
+			}
+		}
+	}
+	return lo + p.rng.Intn(hi-lo+1)
+}
+
+func poisonPreset(current, presets int) (int, bool) {
+	if !poisonEnabled() || presets < 2 {
+		return 0, false
+	}
+	poison.mu.Lock()
+	defer poison.mu.Unlock()
+	if poison.countdown < 0 {
+		poison.countdown = poison.drawGap()
+		return 0, false
+	}
+	if poison.countdown > 0 {
+		poison.countdown--
+		return 0, false
+	}
+	poison.countdown = poison.drawGap()
+	alt := poison.rng.Intn(presets - 1)
+	if alt >= current {
+		alt++
+	}
+	return alt, true
+}
 
 var (
 	shapeSearchOnce sync.Once
@@ -122,7 +171,6 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 	splitCtx := sni + "|split"
 	fragCtx := sni + "|frag"
 	jointCtx := sni + "|joint"
-	// A pinned count is the operator's word and outranks the controller.
 	fragDialer := m.asnBypassDialer
 	if m.config.TLSFragmentCount > 0 {
 		fragDialer = nil
@@ -141,11 +189,10 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 
 		if protocol.JointArmEnabled() {
 			a, ok := 0, false
-			// A model that keeps learning outranks the frozen one, and both
-			// outrank the bandit. Each falls through when its weights were
-			// built for a different repertoire.
+			onlineChose := false
 			if protocol.PolicyOnlineEnabled() {
 				a, _, ok = strategy.SelectJointOnline(jointCtx, presets, fragmented)
+				onlineChose = ok
 			}
 			if !ok && protocol.PolicyEnabled() {
 				a, ok = strategy.SelectJointPolicy(jointCtx, presets, fragmented)
@@ -155,10 +202,18 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 			}
 			jointArm = a
 			preset, budget := protocol.JointArmParts(a, presets)
-			c.HelloID = fingerprint.PresetAt(preset)
-			if fragmented {
-				c.TCPDialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return fragDialer.DialTCPWithFragments(ctx, network, addr, budget)
+			if alt, ok := poisonPreset(preset, presets); ok {
+				budget, jointArm = 1, -1
+				c.HelloID = fingerprint.PresetAt(alt)
+			} else {
+				c.HelloID = fingerprint.PresetAt(preset)
+				if onlineChose && strategy.JointAliveArms(presets, fragmented) > 1 {
+					c.HandshakeTimeout = protocol.FastRotateHandshakeTimeout
+				}
+				if fragmented {
+					c.TCPDialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+						return fragDialer.DialTCPWithFragments(ctx, network, addr, budget)
+					}
 				}
 			}
 		} else {
@@ -196,13 +251,16 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 			c.HelloSplitOffset, splitArm = strategy.SelectSplit(splitCtx)
 		}
 
+		gene, geneUsed := applyGene(&c, fragDialer)
+
 		observe := func(result protocol.HandshakeResult, stage string) {
+			if geneUsed && stage == dialStageHandshake {
+				observeGene(gene, result == protocol.HandshakeOK)
+			}
 			strategy.Record(sni, result)
 			if shapeUsed && stage == dialStageHandshake {
 				shapeSearch().Observe(chosenShape, result == protocol.HandshakeOK)
 			}
-			// One arm carried both axes, so one context judges it and the
-			// per-axis contexts stay out of it entirely.
 			if jointArm >= 0 {
 				if stage == dialStageHandshake {
 					alive := result == protocol.HandshakeOK
@@ -221,8 +279,6 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 			if splitArm >= 0 {
 				strategy.Observe(splitCtx, splitArm, result)
 			}
-			// Only the handshake judges the budget; a later reset blames the
-			// datapath, not the arm that got through the gate.
 			if fragArm >= 0 && stage == dialStageHandshake {
 				strategy.Observe(fragCtx, fragArm, result)
 				strategy.NoteDial(fragCtx, fragArm, result == protocol.HandshakeOK)
@@ -230,8 +286,6 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 			}
 		}
 
-		// Report the success here too, not through OnLiveOK, or the budget's
-		// counter only grows on failures and the controller never converges.
 		c.OnHandshake = func(result protocol.HandshakeResult, _ time.Duration) {
 			observe(result, dialStageHandshake)
 		}

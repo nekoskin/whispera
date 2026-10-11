@@ -12,13 +12,13 @@ func TestPolicyMatchesTrainer(t *testing.T) {
 		tokens []int
 		want   []float64
 	}{
-		{tokens: []int{24, 9}, want: []float64{0.817401, 0.290083, 0.956346, 0.947210, 0.000889, 0.931203, 0.991269, 0.933911, 0.524351, 0.253002, 0.876744, 0.995951}},
-		{tokens: []int{24, 2, 0, 18, 9, 13}, want: []float64{0.951831, 0.833513, 0.000017, 0.012597, 0.996053, 0.999934, 0.029479, 0.197325, 0.945797, 0.989856, 0.000959, 0.000937}},
-		{tokens: []int{16, 11, 4, 23, 6, 8, 14, 0, 7, 19, 14, 0, 3, 2, 22, 15}, want: []float64{0.999909, 0.984795, 0.000337, 0.230680, 0.393161, 0.999637, 0.072835, 0.011664, 0.951527, 0.762727, 0.028471, 0.011935}},
-		{tokens: []int{23, 11, 18, 11, 18, 9, 21, 10, 18, 2, 15, 5, 22, 15, 18, 14}, want: []float64{0.770246, 0.420158, 0.326131, 0.734026, 0.214942, 0.992998, 0.892920, 0.996214, 0.809996, 0.705447, 0.479480, 0.562922}},
+		{tokens: []int{24, 9}, want: []float64{0.328701, 0.125146, 0.040114, 0.012062, 0.827521, 0.583620, 0.290520, 0.106846, 0.785625, 0.517054, 0.238256, 0.083725}},
+		{tokens: []int{24, 2, 0, 18, 9, 13}, want: []float64{0.503433, 0.235941, 0.085971, 0.027851, 0.844591, 0.623398, 0.335191, 0.133126, 0.732601, 0.454889, 0.202663, 0.071856}},
+		{tokens: []int{16, 11, 4, 23, 6, 8, 14, 0, 7, 19, 14, 0, 3, 2, 22, 15}, want: []float64{0.644277, 0.364535, 0.153756, 0.054416, 0.865497, 0.670843, 0.392287, 0.169747, 0.678302, 0.400416, 0.174589, 0.062787}},
+		{tokens: []int{23, 11, 18, 11, 18, 9, 21, 10, 18, 2, 15, 5, 22, 15, 18, 14}, want: []float64{0.849176, 0.705338, 0.504386, 0.302006, 0.872440, 0.744102, 0.552826, 0.344522, 0.336080, 0.177101, 0.083829, 0.037445}},
 	}
 	for i, c := range cases {
-		got := policyArmScores(c.tokens)
+		got := policyArmScores(c.tokens, polArms)
 		if len(got) != len(c.want) {
 			t.Fatalf("case %d: %d scores, want %d", i, len(got), len(c.want))
 		}
@@ -30,12 +30,30 @@ func TestPolicyMatchesTrainer(t *testing.T) {
 	}
 }
 
+func TestOnlineForwardMatchesFrozen(t *testing.T) {
+	p := newPolParams()
+	histories := [][]int{
+		{polBOS, 9},
+		{polBOS, 2, 0, 18, 9, 13},
+		{16, 11, 4, 23, 6, 8, 14, 0, 7, 19, 14, 0, 3, 2, 22, 15},
+	}
+	for i, h := range histories {
+		frozen := policyArmScores(h, polArms)
+		online := p.armScores(h, polArms)
+		for a := range frozen {
+			if math.Abs(frozen[a]-online[a]) > 1e-9 {
+				t.Errorf("case %d arm %d: online %.9f, frozen %.9f", i, a, online[a], frozen[a])
+			}
+		}
+	}
+}
+
 func TestPolicyWindowIsBounded(t *testing.T) {
 	long := make([]int, polBlock*3)
 	for i := range long {
 		long[i] = i % (polArms * 2)
 	}
-	scores := policyArmScores(long)
+	scores := policyArmScores(long, polArms)
 	if len(scores) != polArms {
 		t.Fatalf("got %d scores, want %d", len(scores), polArms)
 	}

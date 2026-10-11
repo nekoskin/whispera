@@ -6,9 +6,6 @@ import (
 	"sync"
 )
 
-// Forward pass ported from neural/fast.py, run once per dial to pick a hello
-// budget. policy_test.go pins it to the trainer's own outputs.
-
 func polRMSNorm(x []float64) []float64 {
 	sum := 0.0
 	for _, v := range x {
@@ -54,13 +51,35 @@ func polApply(x []float64, w [][]float64) []float64 {
 	return out
 }
 
+const polBOS = polArms * 2
+
+func polPresets() int { return polFeatDim - armDeliveryDims }
+
+func polTokenEmbed(tok int) []float64 {
+	row := make([]float64, polEmbd)
+	if tok == polBOS {
+		copy(row, polBosIn[0])
+		return row
+	}
+	arm, out := tok/2, tok%2
+	feat := JointArmFeatures(arm, polPresets())
+	for j := 0; j < polEmbd; j++ {
+		s := polOin[out][j]
+		for f := 0; f < polFeatDim; f++ {
+			s += feat[f] * polWin[j][f]
+		}
+		row[j] = s
+	}
+	return row
+}
+
 func polForward(tokens []int) [][]float64 {
 	t := len(tokens)
 	x := make([][]float64, t)
 	for i, tok := range tokens {
-		row := make([]float64, polEmbd)
+		row := polTokenEmbed(tok)
 		for j := 0; j < polEmbd; j++ {
-			row[j] = polWte[tok][j] + polWpe[i][j]
+			row[j] += polWpe[i][j]
 		}
 		x[i] = polRMSNorm(row)
 	}
@@ -123,11 +142,7 @@ func polForward(tokens []int) [][]float64 {
 		}
 	}
 
-	logits := make([][]float64, t)
-	for i := 0; i < t; i++ {
-		logits[i] = polApply(x[i], polLmHead)
-	}
-	return logits
+	return x
 }
 
 func polDial(arm int, alive bool) int {
@@ -137,49 +152,55 @@ func polDial(arm int, alive bool) int {
 	return arm*2 + 1
 }
 
-const polBOS = polVocab - 1
+func polArmSurvival(xLast []float64, arm int) float64 {
+	feat := JointArmFeatures(arm, polPresets())
+	sOK, sDead := 0.0, 0.0
+	for j := 0; j < polEmbd; j++ {
+		projOK, projDead := polOout[0][j], polOout[1][j]
+		for f := 0; f < polFeatDim; f++ {
+			projOK += feat[f] * polWout[j][f]
+			projDead += feat[f] * polWout[polEmbd+j][f]
+		}
+		sOK += xLast[j] * projOK
+		sDead += xLast[j] * projDead
+	}
+	return 1.0 / (1.0 + math.Exp(-(sOK - sDead)))
+}
 
-func policyArmScores(history []int) []float64 {
+func policyArmScores(history []int, arms int) []float64 {
 	if len(history) == 0 {
 		history = []int{polBOS}
 	}
 	if len(history) > polBlock {
 		history = history[len(history)-polBlock:]
 	}
-	logits := polForward(history)
-	p := polSoftmax(logits[len(logits)-1])
-	out := make([]float64, polArms)
-	for a := 0; a < polArms; a++ {
-		ok, reset := p[a*2], p[a*2+1]
-		out[a] = ok / (ok + reset + 1e-12)
+	x := polForward(history)
+	xLast := x[len(x)-1]
+	out := make([]float64, arms)
+	for a := 0; a < arms; a++ {
+		out[a] = polArmSurvival(xLast, a)
 	}
 	return out
 }
 
-// On by default in this build: it exists to try the model in the field, and a
-// GUI client cannot set environment variables. "0" still turns either off.
 func PolicyEnabled() bool { return os.Getenv("WHISPERA_POLICY") != "0" }
 
-// JointArmEnabled hands the preset and the budget to one controller instead of
-// a bandit each.
 func JointArmEnabled() bool { return os.Getenv("WHISPERA_JOINT_ARM") != "0" }
 
-// policyJointUsable guards the joint path the way policyUsable guards the
-// single axis: weights trained for another arm count must not be used at all.
 func policyJointUsable(presets int) bool { return JointArmCount(presets) == polArms }
 
-// SelectJointPolicy asks the model which (preset, budget) pair to play.
-func (h *HandshakeStrategy) SelectJointPolicy(ctx string, presets int, fragmented bool) (arm int, ok bool) {
-	if !policyJointUsable(presets) {
-		return 0, false
-	}
-	return h.policyArm(ctx, jointArmFits(fragmented)), true
+func frozenJointUsable(presets int) bool {
+	return presets == polPresets() && JointArmCount(presets) >= polArms
 }
 
-// policyArm returns the model's pick for a context. A whole reconnect burst
-// shares the same history until a dial reports back, so the forward pass is run
-// once per history and reused for the rest.
-func (h *HandshakeStrategy) policyArm(ctx string, fits func(int) bool) int {
+func (h *HandshakeStrategy) SelectJointPolicy(ctx string, presets int, fragmented bool) (arm int, ok bool) {
+	if !frozenJointUsable(presets) {
+		return 0, false
+	}
+	return h.policyArm(ctx, jointArmFits(fragmented), JointArmCount(presets)), true
+}
+
+func (h *HandshakeStrategy) policyArm(ctx string, fits func(int) bool, arms int) int {
 	policyHist.mu.Lock()
 	rev := policyHist.rev[ctx]
 	policyHist.mu.Unlock()
@@ -198,7 +219,7 @@ func (h *HandshakeStrategy) policyArm(ctx string, fits func(int) bool) int {
 	seq = append(seq, policyHist.m[ctx]...)
 	policyHist.mu.Unlock()
 
-	best := bestFittingArm(policyArmScores(seq), fits)
+	best := bestFittingArm(policyArmScores(seq, arms), fits)
 
 	policyArmCache.mu.Lock()
 	if policyArmCache.m == nil {
@@ -211,7 +232,6 @@ func (h *HandshakeStrategy) policyArm(ctx string, fits func(int) bool) int {
 	return best
 }
 
-// policyUsable falls back to the bandit if the repertoire outgrew the weights.
 func policyUsable() bool { return len(fragmentBudgets) == polArms }
 
 var policyHist struct {
@@ -249,7 +269,7 @@ func (h *HandshakeStrategy) SelectFragmentsPolicy(ctx string) (budget, arm int, 
 	if !policyUsable() {
 		return 0, 0, false
 	}
-	arm = h.policyArm(ctx, anyArm)
+	arm = h.policyArm(ctx, anyArm, len(fragmentBudgets))
 	return fragmentBudgets[arm], arm, true
 }
 

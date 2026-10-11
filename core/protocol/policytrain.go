@@ -7,17 +7,12 @@ import (
 	"sync"
 )
 
-// Training for the dial policy on the client. The serving pass in policy.go
-// answers one dial and keeps nothing; a gradient needs the intermediate values,
-// so training carries its own pass that saves them.
-//
-// One layer only. The model in the datapath is small because the forward pass
-// is paid per dial, and polLayer is 1; more layers would need the loop back.
-
 type polParams struct {
-	wte, wpe, lmHead [][]float64
-	wq, wk, wv, wo   [][]float64
-	fc1, fc2         [][]float64
+	win, oin, bosIn    [][]float64
+	wout, oout, bosOut [][]float64
+	wpe                [][]float64
+	wq, wk, wv, wo     [][]float64
+	fc1, fc2           [][]float64
 }
 
 type polCache struct {
@@ -38,6 +33,7 @@ type polCache struct {
 	f      [][]float64
 	fr     [][]float64
 	xOut   [][]float64
+	head   [][]float64
 }
 
 func polCloneMat(m [][]float64) [][]float64 {
@@ -56,13 +52,15 @@ func polZeroLike(m [][]float64) [][]float64 {
 	return out
 }
 
-// newPolParams copies the generated weights into buffers that can be trained.
-// The generated ones stay untouched, so serving can always fall back to them.
 func newPolParams() *polParams {
 	return &polParams{
-		wte:    polCloneMat(polWte),
+		win:    polCloneMat(polWin),
+		oin:    polCloneMat(polOin),
+		bosIn:  polCloneMat(polBosIn),
+		wout:   polCloneMat(polWout),
+		oout:   polCloneMat(polOout),
+		bosOut: polCloneMat(polBosOut),
 		wpe:    polCloneMat(polWpe),
-		lmHead: polCloneMat(polLmHead),
 		wq:     polCloneMat(polWq[0]),
 		wk:     polCloneMat(polWk[0]),
 		wv:     polCloneMat(polWv[0]),
@@ -74,9 +72,13 @@ func newPolParams() *polParams {
 
 func newPolGrads() *polParams {
 	return &polParams{
-		wte:    polZeroLike(polWte),
+		win:    polZeroLike(polWin),
+		oin:    polZeroLike(polOin),
+		bosIn:  polZeroLike(polBosIn),
+		wout:   polZeroLike(polWout),
+		oout:   polZeroLike(polOout),
+		bosOut: polZeroLike(polBosOut),
 		wpe:    polZeroLike(polWpe),
-		lmHead: polZeroLike(polLmHead),
 		wq:     polZeroLike(polWq[0]),
 		wk:     polZeroLike(polWk[0]),
 		wv:     polZeroLike(polWv[0]),
@@ -87,13 +89,15 @@ func newPolGrads() *polParams {
 }
 
 var polMatNames = []string{
-	"wte", "wpe", "lm_head", "0.wq", "0.wk", "0.wv", "0.wo", "0.fc1", "0.fc2",
+	"win", "oin", "bos_in", "wout", "oout", "bos_out",
+	"wpe", "0.wq", "0.wk", "0.wv", "0.wo", "0.fc1", "0.fc2",
 }
 
-// all is the one place the matrices are listed, so the optimiser walks weights,
-// gradients and moments in step with each other.
 func (p *polParams) all() [][][]float64 {
-	return [][][]float64{p.wte, p.wpe, p.lmHead, p.wq, p.wk, p.wv, p.wo, p.fc1, p.fc2}
+	return [][][]float64{
+		p.win, p.oin, p.bosIn, p.wout, p.oout, p.bosOut,
+		p.wpe, p.wq, p.wk, p.wv, p.wo, p.fc1, p.fc2,
+	}
 }
 
 func (p *polParams) each(f func(name string, m [][]float64)) {
@@ -102,8 +106,6 @@ func (p *polParams) each(f func(name string, m [][]float64)) {
 	}
 }
 
-// polNorm is RMSNorm, returning the scale it divided by: the backward pass
-// needs it, and recomputing would drift.
 func polNorm(x []float64) ([]float64, float64) {
 	sum := 0.0
 	for _, v := range x {
@@ -115,6 +117,44 @@ func polNorm(x []float64) ([]float64, float64) {
 		out[i] = v / r
 	}
 	return out, r
+}
+
+func (p *polParams) tokenEmbed(tok int) []float64 {
+	row := make([]float64, polEmbd)
+	if tok == polBOS {
+		copy(row, p.bosIn[0])
+		return row
+	}
+	arm, out := tok/2, tok%2
+	feat := JointArmFeatures(arm, polPresets())
+	for j := 0; j < polEmbd; j++ {
+		s := p.oin[out][j]
+		for f := 0; f < polFeatDim; f++ {
+			s += feat[f] * p.win[j][f]
+		}
+		row[j] = s
+	}
+	return row
+}
+
+func (p *polParams) candHead() [][]float64 {
+	head := make([][]float64, polArms*2+1)
+	for c := 0; c < polArms*2; c++ {
+		arm, out := c/2, c%2
+		feat := JointArmFeatures(arm, polPresets())
+		row := make([]float64, polEmbd)
+		woutBase := out * polEmbd
+		for j := 0; j < polEmbd; j++ {
+			s := p.oout[out][j]
+			for f := 0; f < polFeatDim; f++ {
+				s += feat[f] * p.wout[woutBase+j][f]
+			}
+			row[j] = s
+		}
+		head[c] = row
+	}
+	head[polBOS] = append([]float64(nil), p.bosOut[0]...)
+	return head
 }
 
 func (p *polParams) forward(tokens []int) ([][]float64, *polCache) {
@@ -141,9 +181,9 @@ func (p *polParams) forward(tokens []int) ([][]float64, *polCache) {
 	}
 
 	for i, tok := range tokens {
-		row := make([]float64, polEmbd)
+		row := p.tokenEmbed(tok)
 		for j := 0; j < polEmbd; j++ {
-			row[j] = p.wte[tok][j] + p.wpe[i][j]
+			row[j] += p.wpe[i][j]
 		}
 		c.x0[i] = row
 		c.xIn[i], c.r1[i] = polNorm(row)
@@ -207,15 +247,14 @@ func (p *polParams) forward(tokens []int) ([][]float64, *polCache) {
 		c.xOut[i] = out
 	}
 
+	c.head = p.candHead()
 	logits := make([][]float64, t)
 	for i := 0; i < t; i++ {
-		logits[i] = polApply(c.xOut[i], p.lmHead)
+		logits[i] = polApply(c.xOut[i], c.head)
 	}
 	return logits, c
 }
 
-// armScores is the serving read of a trained copy: P(survive) per arm for this
-// history, the same quantity policyArmScores gives for the generated weights.
 func (p *polParams) armScores(history []int, arms int) []float64 {
 	if len(history) == 0 {
 		history = []int{polBOS}
@@ -233,17 +272,6 @@ func (p *polParams) armScores(history []int, arms int) []float64 {
 	return out
 }
 
-// Learning while dialing. Three numbers decide the behavior and each is a
-// trade the operator should be able to see:
-//
-//   - stepEvery: dials between optimiser steps. Cheap to raise, and the cost
-//     is paid once per dial, not per record.
-//   - floor: survival under the trained copy below which it is abandoned. The
-//     frozen base is a model that was measured, so falling back is safe; the
-//     trained copy has no such guarantee.
-//   - explore: how often to play something other than the best arm, and only
-//     while survival is already down. Exploring when nothing is wrong costs
-//     the user connections for no signal.
 const (
 	polOnlineStepEvery = 8
 	polOnlineWindow    = 32
@@ -255,18 +283,53 @@ const (
 func PolicyOnlineEnabled() bool { return os.Getenv("WHISPERA_POLICY_ONLINE") != "0" }
 
 type onlinePolicy struct {
-	mu       sync.Mutex
-	live     *polParams
-	adam     *polAdam
-	hist     map[string][]int
-	outcomes []bool
-	pending  int
-	steps    int
-	reverts  int
+	mu         sync.Mutex
+	live       *polParams
+	adam       *polAdam
+	hist       map[string][]int
+	outcomes   []bool
+	pending    int
+	steps      int
+	reverts    int
+	fails      map[int]int
+	sinceDecay int
 }
 
 func newOnlinePolicy() *onlinePolicy {
-	return &onlinePolicy{live: newPolParams(), adam: newPolAdam(), hist: map[string][]int{}}
+	return &onlinePolicy{live: newPolParams(), adam: newPolAdam(), hist: map[string][]int{}, fails: map[int]int{}}
+}
+
+const (
+	deadArmFails = 1
+	deadArmDecay = 16
+)
+
+func (o *onlinePolicy) alive(a int) bool { return o.fails[a] < deadArmFails }
+
+func (o *onlinePolicy) aliveArms(arms int, fits func(int) bool) int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	n := 0
+	for a := 0; a < arms; a++ {
+		if fits(a) && o.alive(a) {
+			n++
+		}
+	}
+	return n
+}
+
+func (o *onlinePolicy) fitAlive(fits func(int) bool, arms int) func(int) bool {
+	any := false
+	for a := 0; a < arms; a++ {
+		if fits(a) && o.alive(a) {
+			any = true
+			break
+		}
+	}
+	if !any {
+		return fits
+	}
+	return func(a int) bool { return fits(a) && o.alive(a) }
 }
 
 func (o *onlinePolicy) survival() float64 {
@@ -282,15 +345,14 @@ func (o *onlinePolicy) survival() float64 {
 	return float64(alive) / float64(len(o.outcomes))
 }
 
-// Select answers a dial. The second result says the arm was a deliberate
-// probe rather than the model's choice, so the caller can tell exploration
-// from preference when reading a trace.
 func (o *onlinePolicy) Select(ctx string, arms int, fits func(int) bool, roll func() float64) (int, bool) {
 	if arms < 1 {
 		return 0, false
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+
+	fits = o.fitAlive(fits, arms)
 
 	if o.survival() < polOnlineHealthy && roll() < polOnlineExplore {
 		fitting := make([]int, 0, arms)
@@ -312,11 +374,27 @@ func (o *onlinePolicy) Select(ctx string, arms int, fits func(int) bool, roll fu
 	return bestFittingArm(o.live.armScores(seq, arms), fits), false
 }
 
-// Note records how a dial ended, trains on the history every so often, and
-// abandons the trained copy if survival has fallen through the floor.
 func (o *onlinePolicy) Note(ctx string, arm int, alive bool) {
+	if arm < 0 || arm >= polArms {
+		return
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+
+	if alive {
+		o.fails[arm] = 0
+	} else {
+		o.fails[arm]++
+	}
+	o.sinceDecay++
+	if o.sinceDecay >= deadArmDecay {
+		o.sinceDecay = 0
+		for a, n := range o.fails {
+			if n > 0 {
+				o.fails[a] = n - 1
+			}
+		}
+	}
 
 	seq := append(o.hist[ctx], polDial(arm, alive))
 	if len(seq) > polBlock {
@@ -344,17 +422,12 @@ func (o *onlinePolicy) Note(ctx string, arm int, alive bool) {
 	}
 }
 
-// revert throws the trained copy away and starts again from the weights that
-// were measured offline. Training in the field can walk into a bad region and
-// there is nothing in the field to tell it so.
 func (o *onlinePolicy) revert() {
 	o.live = newPolParams()
 	o.adam = newPolAdam()
 	o.outcomes = nil
 	o.pending = 0
 	o.reverts++
-	// Logged because a run where the copy was abandoned repeatedly looks, from
-	// the outside, exactly like a run where it learned something.
 	traceLog.Infow("online policy reverted", "reverts", o.reverts, "steps", o.steps)
 }
 
@@ -368,9 +441,6 @@ func sharedOnlinePolicy() *onlinePolicy {
 	return onlinePolicyOnce.p
 }
 
-// SelectJointOnline picks a (preset, budget) pair from a model that keeps
-// learning from its own dials. Falls back to false when the weights were built
-// for a different repertoire, exactly as the offline path does.
 func (h *HandshakeStrategy) SelectJointOnline(ctx string, presets int, fragmented bool) (arm int, explored, ok bool) {
 	if !policyJointUsable(presets) {
 		return 0, false, false
@@ -379,12 +449,17 @@ func (h *HandshakeStrategy) SelectJointOnline(ctx string, presets int, fragmente
 	return a, probe, true
 }
 
-// NoteJointOnline feeds the outcome back so the next dial is chosen on it.
 func (h *HandshakeStrategy) NoteJointOnline(ctx string, arm int, alive bool) {
 	sharedOnlinePolicy().Note(ctx, arm, alive)
 }
 
-// PolicyOnlineState reports what the online controller has done, for the trace.
+func (h *HandshakeStrategy) JointAliveArms(presets int, fragmented bool) int {
+	if !policyJointUsable(presets) {
+		return 0
+	}
+	return sharedOnlinePolicy().aliveArms(JointArmCount(presets), jointArmFits(fragmented))
+}
+
 func PolicyOnlineState() (steps, reverts int, survival float64) {
 	o := sharedOnlinePolicy()
 	o.mu.Lock()
@@ -392,9 +467,6 @@ func PolicyOnlineState() (steps, reverts int, survival float64) {
 	return o.steps, o.reverts, o.survival()
 }
 
-// polApplyT multiplies by the same matrix the other way round. polApply reads a
-// row per output; going backwards needs a row per input, and mixing the two up
-// yields gradients that look plausible and are wrong.
 func polApplyT(x []float64, w [][]float64) []float64 {
 	out := make([]float64, len(w[0]))
 	for j, row := range w {
@@ -408,8 +480,6 @@ func polApplyT(x []float64, w [][]float64) []float64 {
 	return out
 }
 
-// polDNorm is the gradient through RMSNorm. The scale depends on x itself, so
-// there is a second term pulling along x.
 func polDNorm(dy, x []float64, r float64) []float64 {
 	d := float64(len(x))
 	dot := 0.0
@@ -435,10 +505,6 @@ func polOuter(dst [][]float64, left, right []float64) {
 	}
 }
 
-// Adam, with the trainer's constants. The trainer decays the rate over a known
-// number of steps; a client has no such number, so the rate here is flat. That
-// is the one place this can drift away from a good model on its own, which is
-// why the caller keeps a frozen copy to fall back to.
 const (
 	polLearnRate = 0.01
 	polBeta1     = 0.85
@@ -472,10 +538,6 @@ func (a *polAdam) step(p, g *polParams) {
 	}
 }
 
-// polTrainStep takes one optimiser step over a window of dial history and
-// returns the loss it saw. Only outcome symbols are scored: in the joint
-// encoding every symbol but the start marker is a dial that already happened,
-// and scoring the start marker would spend the gradient on noise.
 func polTrainStep(p *polParams, a *polAdam, seq []int) float64 {
 	if len(seq) > polBlock+1 {
 		seq = seq[len(seq)-polBlock-1:]
@@ -491,7 +553,7 @@ func polTrainStep(p *polParams, a *polAdam, seq []int) float64 {
 	for i := range logits {
 		probs := polSoftmax(logits[i])
 		if targets[i] == polBOS {
-			dlogits[i] = make([]float64, polVocab)
+			dlogits[i] = make([]float64, polArms*2+1)
 			continue
 		}
 		probs[targets[i]] -= 1
@@ -516,10 +578,18 @@ func (p *polParams) backward(c *polCache, dlogits [][]float64) *polParams {
 	headDim := polEmbd / polHead
 	g := newPolGrads()
 
+	nCand := polArms*2 + 1
+	gHead := make([][]float64, nCand)
+	gWte := make([][]float64, nCand)
+	for c := 0; c < nCand; c++ {
+		gHead[c] = make([]float64, polEmbd)
+		gWte[c] = make([]float64, polEmbd)
+	}
+
 	dx := make([][]float64, t)
 	for i := 0; i < t; i++ {
-		polOuter(g.lmHead, dlogits[i], c.xOut[i])
-		dx[i] = polApplyT(dlogits[i], p.lmHead)
+		polOuter(gHead, dlogits[i], c.xOut[i])
+		dx[i] = polApplyT(dlogits[i], c.head)
 	}
 
 	dx2 := make([][]float64, t)
@@ -610,9 +680,28 @@ func (p *polParams) backward(c *polCache, dlogits [][]float64) *polParams {
 		dx0 := polDNorm(row, c.x0[i], c.r1[i])
 		tok := c.tokens[i]
 		for j := 0; j < polEmbd; j++ {
-			g.wte[tok][j] += dx0[j]
+			gWte[tok][j] += dx0[j]
 			g.wpe[i][j] += dx0[j]
 		}
+	}
+
+	presets := polPresets()
+	for cand := 0; cand < polArms*2; cand++ {
+		arm, out := cand/2, cand%2
+		feat := JointArmFeatures(arm, presets)
+		woutBase := out * polEmbd
+		for j := 0; j < polEmbd; j++ {
+			g.oin[out][j] += gWte[cand][j]
+			g.oout[out][j] += gHead[cand][j]
+			for f := 0; f < polFeatDim; f++ {
+				g.win[j][f] += gWte[cand][j] * feat[f]
+				g.wout[woutBase+j][f] += gHead[cand][j] * feat[f]
+			}
+		}
+	}
+	for j := 0; j < polEmbd; j++ {
+		g.bosIn[0][j] += gWte[polBOS][j]
+		g.bosOut[0][j] += gHead[polBOS][j]
 	}
 	return g
 }

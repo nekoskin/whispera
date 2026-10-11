@@ -33,13 +33,12 @@ type ClientConfig struct {
 	HelloSplitOffset int
 	HelloID          utls.ClientHelloID
 	HelloRaw         []byte
+	HandshakeTimeout time.Duration
 	OnHandshake      func(result HandshakeResult, latency time.Duration)
 	OnServerSelPub   func(selPub string)
 	OnLiveReset      func()
 	OnLiveOK         func()
 
-	// OnLiveEnd reports a finished connection's lifetime, bytes and whether it
-	// ended in a censor-looking reset. OnLiveReset/OnLiveOK cover only its start.
 	OnLiveEnd func(dur time.Duration, bytes int64, reset bool)
 }
 
