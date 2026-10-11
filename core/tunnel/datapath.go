@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	mrand "math/rand"
 	"net"
+	"os"
 	"time"
 
 	singlog "github.com/sagernet/sing/common/logger"
@@ -52,7 +54,29 @@ type decoyLeaveConn struct {
 	net.Conn
 	denyChecked bool
 	upLeft      int
+	recCap      int
+	replicate   bool
 	pad         *protocol.ShapeBudget
+}
+
+var openingProfile = []int{31, 40, 53, 64, 71, 96, 110, 118, 130}
+
+func drawOpeningSize() int {
+	return openingProfile[mrand.Intn(len(openingProfile))]
+}
+
+const openingSizeMax = 130
+
+func openingShape() (writes, recCap int, replicate bool) {
+	if os.Getenv("WHISPERA_OPENING_RESHAPE") == "0" {
+		return 3, 480, false
+	}
+	return upstreamShapedWrites, openingSizeMax, true
+}
+
+func newDecoyLeaveConn(conn net.Conn) *decoyLeaveConn {
+	writes, recCap, replicate := openingShape()
+	return &decoyLeaveConn{Conn: conn, upLeft: writes, recCap: recCap, replicate: replicate, pad: protocol.NewShapeBudget()}
 }
 
 func (d *decoyLeaveConn) NetConn() net.Conn {
@@ -64,7 +88,7 @@ func (d *decoyLeaveConn) NetConn() net.Conn {
 
 func (d *decoyLeaveConn) Read(b []byte) (int, error) {
 	n, err := d.Conn.Read(b)
-	if !d.denyChecked {
+	if !d.denyChecked && n > 0 {
 		d.denyChecked = true
 		if msg, ok := protocol.ParseDenial(b[:n]); ok {
 			d.Conn.Close()
@@ -78,17 +102,20 @@ func (d *decoyLeaveConn) Write(b []byte) (int, error) {
 	return d.writeShaped(b)
 }
 
-// writeShaped cuts the opening writes down to the size of an ordinary request.
-// The budget is spent only on writes that were actually cut: the stream header
-// is thirty bytes and passes through untouched, and it used to consume a share
-// meant for the application's own first bytes.
 func (d *decoyLeaveConn) writeShaped(b []byte) (int, error) {
 	written := 0
 	for len(b) > 0 {
 		n := len(b)
-		cut := d.upLeft > 0 && n > upstreamMaxPayload
+		cut := d.upLeft > 0 && n > d.recCap
 		if cut {
-			n = upstreamMaxPayload
+			if d.replicate {
+				n = drawOpeningSize()
+			} else {
+				n = d.recCap
+			}
+			if n > len(b) {
+				n = len(b)
+			}
 		}
 		c, err := d.Conn.Write(b[:n])
 		written += c
@@ -112,7 +139,7 @@ func (m *Manager) connectPerFlow(ctx context.Context) error {
 		m.setError(err)
 		return err
 	}
-	probe, err := dial(ctx)
+	probe, err := dialWithRetry(ctx, dial)
 	if err != nil {
 		m.setError(err)
 		return err
@@ -138,6 +165,7 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	if dial == nil {
 		return nil, fmt.Errorf("direct: no camo dialer")
 	}
+	limitedDial := func(ctx context.Context) (net.Conn, error) { return m.dialLimit(ctx, dial) }
 	wantSplice := proto&protocol.SpliceProtoBit != 0
 	proto &^= protocol.SpliceProtoBit
 
@@ -151,11 +179,8 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 		}
 	}
 	if conn == nil {
-		c, err := dial(ctx)
+		c, err := dialWithRetry(ctx, limitedDial)
 		if err != nil {
-			if ctx.Err() == nil {
-				m.setError(err)
-			}
 			return nil, fmt.Errorf("direct dial: %w", err)
 		}
 		conn = c
@@ -180,21 +205,14 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	binary.BigEndian.PutUint16(header[3+len(addrBytes):], port)
 	if _, err := conn.Write(header); err != nil {
 		conn.Close()
-		// A pooled connection can be gone by the time we write to it — the server
-		// or something between them closed it while it waited, and the header is
-		// where we find out. Losing the request over that is needless: dial once
-		// and send it again.
 		if !reused {
 			return nil, fmt.Errorf("direct connect header: %w", err)
 		}
-		fresh, derr := dial(ctx)
+		fresh, derr := dialWithRetry(ctx, limitedDial)
 		if derr != nil {
-			if ctx.Err() == nil {
-				m.setError(derr)
-			}
 			return nil, fmt.Errorf("direct dial: %w", derr)
 		}
-		conn, reused = fresh, false
+		conn = fresh
 		raw = protocol.NetConnOf(conn)
 		splice = wantSplice && protocol.SpliceEnabled() && raw != nil && !protocol.FullFrameEnabled()
 		if _, err := conn.Write(header); err != nil {
@@ -204,15 +222,9 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	}
 
 	if !keepAlive {
-		return &decoyLeaveConn{Conn: conn, upLeft: upstreamShapedWrites, pad: protocol.NewShapeBudget()}, nil
+		return newDecoyLeaveConn(conn), nil
 	}
-	base := conn
-	if !reused {
-		base = &decoyLeaveConn{Conn: conn, upLeft: upstreamShapedWrites, pad: protocol.NewShapeBudget()}
-	}
-	// The shaping budget belongs to the connection, not to the stream: a reused
-	// one has already spent it, and starting over would redraw the same opening
-	// pattern on every request.
+	base := newDecoyLeaveConn(conn)
 	pad := shapeBudgetOf(base)
 	up := protocol.NewFramedConn(base, pad)
 	down := up
@@ -224,10 +236,48 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	return stream, nil
 }
 
-const (
-	upstreamMaxPayload   = 480
-	upstreamShapedWrites = 3
-)
+const flowDialAttempts = 3
+
+func dialWithRetry(ctx context.Context, dial func(context.Context) (net.Conn, error)) (net.Conn, error) {
+	var err error
+	for attempt := 0; attempt < flowDialAttempts; attempt++ {
+		var conn net.Conn
+		if conn, err = dial(ctx); err == nil {
+			return conn, nil
+		}
+		if ctx.Err() != nil {
+			return nil, err
+		}
+	}
+	return nil, err
+}
+
+func (m *Manager) dialLimit(ctx context.Context, dial func(context.Context) (net.Conn, error)) (net.Conn, error) {
+	if !m.flowCB.Allow() {
+		return nil, errors.New("circuit breaker open")
+	}
+	select {
+	case m.dialSem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	c, err := dial(ctx)
+	<-m.dialSem
+	switch {
+	case err == nil:
+		m.flowCB.Success()
+	case isConnectError(err):
+		m.flowCB.Fail()
+	}
+	return c, err
+}
+
+func isConnectError(err error) bool {
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial"
+}
+
+const upstreamShapedWrites = 24
 
 func (m *Manager) connectStreamMux(ctx context.Context) error {
 	if _, err := m.getStreamMuxClient(); err != nil {
@@ -240,7 +290,7 @@ func (m *Manager) connectStreamMux(ctx context.Context) error {
 		m.setError(err)
 		return err
 	}
-	probe, err := dial(ctx)
+	probe, err := dialWithRetry(ctx, dial)
 	if err != nil {
 		m.setError(err)
 		return err
@@ -271,7 +321,7 @@ func (m *Manager) openStreamMux(ctx context.Context, proto byte, addr string, po
 		conn.Close()
 		return nil, fmt.Errorf("stream-mux proto write: %w", err)
 	}
-	return &decoyLeaveConn{Conn: conn, upLeft: upstreamShapedWrites, pad: protocol.NewShapeBudget()}, nil
+	return newDecoyLeaveConn(conn), nil
 }
 
 func shapeBudgetOf(c net.Conn) *protocol.ShapeBudget {

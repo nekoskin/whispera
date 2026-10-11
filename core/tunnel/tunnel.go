@@ -47,6 +47,8 @@ const (
 	FrameTypeClose   = 0x05
 )
 
+const maxInflightDials = 6
+
 type Manager struct {
 	*base.Module
 	config *Config
@@ -54,10 +56,13 @@ type Manager struct {
 	sm *tunnelStateMachine
 	cb *circuitBreaker
 
+	flowCB *circuitBreaker
+
 	smClient *xmux.Client
 	smMu     sync.Mutex
 
-	idle idleSet
+	idle    idleSet
+	dialSem chan struct{}
 
 	connMu    sync.RWMutex
 	sessionID uint32
@@ -94,8 +99,6 @@ type Manager struct {
 	missedKAs      int32
 }
 
-// The pause between hello fragments keeps its old value unless the caller
-// asks otherwise, so nobody's obfuscation weakens by accident.
 const (
 	defaultFragmentDelayMinMs = 1
 	defaultFragmentDelayMaxMs = 4
@@ -145,6 +148,7 @@ func New(cfg *Config) (*Manager, error) {
 		Module:        base.NewModule(ModuleName, ModuleVersion, []string{"handshake.handler"}),
 		config:        cfg,
 		reconnectDone: make(chan struct{}),
+		dialSem:       make(chan struct{}, maxInflightDials),
 	}
 	var forceObfs int32
 	if cfg.ForceObfuscation {
@@ -152,7 +156,8 @@ func New(cfg *Config) (*Manager, error) {
 	}
 	m.connCfg.forceObfuscation.Store(forceObfs)
 	m.selector = newSelector(m)
-	m.cb = newCircuitBreaker()
+	m.cb = newCircuitBreaker(cbThreshold, cbResetTime)
+	m.flowCB = newCircuitBreaker(flowCBThreshold, flowCBResetTime)
 	m.sm = newTunnelStateMachine(m.onStateTransition)
 	close(m.reconnectDone)
 

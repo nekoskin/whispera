@@ -722,13 +722,8 @@ func helloRetryWorthwhile(ctx context.Context, err error) bool {
 }
 
 func (d *clientDialer) dialTLS(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-	start := time.Now()
 	rawConn, err := d.dialRaw(ctx, network, addr)
 	if err != nil {
-		if d.cfg.OnHandshake != nil {
-			latency := time.Since(start)
-			d.cfg.OnHandshake(classifyHandshake(err, latency), latency)
-		}
 		return nil, err
 	}
 	uConn, err := d.handshakeWithin(ctx, rawConn, true)

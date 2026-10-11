@@ -299,18 +299,27 @@ func armKillSwitch(ks *killswitch.KillSwitch, serverAddress string) {
 }
 
 func (r *clientRuntime) connectPrimary(primary *TransportEntry, ks *killswitch.KillSwitch) {
+	primary.mu.Lock()
+	mgr := primary.mgr
+	primary.mu.Unlock()
+
 	setStatus := func(status connStatus, err error) {
 		primary.mu.Lock()
+		defer primary.mu.Unlock()
+
+		if primary.mgr != mgr {
+			return
+		}
+
 		primary.Status = status
 		if err != nil {
 			primary.Error = err.Error()
 		} else {
 			primary.ConnectedAt = time.Now()
 		}
-		primary.mu.Unlock()
 	}
 
-	if err := primary.mgr.Connect(r.ctx); err != nil {
+	if err := mgr.Connect(r.ctx); err != nil {
 		stdlog.Printf("WARNING: Failed to connect to proxy server: %v", err)
 		setStatus(connStatusFailed, err)
 		if !pool.AnyConnected() {

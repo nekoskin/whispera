@@ -8,6 +8,9 @@ import (
 const (
 	cbThreshold = 5
 	cbResetTime = 30 * time.Second
+
+	flowCBThreshold = 3
+	flowCBResetTime = 3 * time.Second
 )
 
 type cbState string
@@ -23,10 +26,12 @@ type circuitBreaker struct {
 	failures    int
 	lastFailure time.Time
 	state       cbState
+	threshold   int
+	resetTime   time.Duration
 }
 
-func newCircuitBreaker() *circuitBreaker {
-	return &circuitBreaker{state: cbClosed}
+func newCircuitBreaker(threshold int, resetTime time.Duration) *circuitBreaker {
+	return &circuitBreaker{state: cbClosed, threshold: threshold, resetTime: resetTime}
 }
 
 func (cb *circuitBreaker) Allow() bool {
@@ -34,7 +39,7 @@ func (cb *circuitBreaker) Allow() bool {
 	defer cb.mu.Unlock()
 	switch cb.state {
 	case cbOpen:
-		if time.Since(cb.lastFailure) > cbResetTime {
+		if time.Since(cb.lastFailure) > cb.resetTime {
 			cb.state = cbHalfOpen
 			return true
 		}
@@ -49,7 +54,7 @@ func (cb *circuitBreaker) Fail() {
 	defer cb.mu.Unlock()
 	cb.failures++
 	cb.lastFailure = time.Now()
-	if cb.state == cbHalfOpen || cb.failures >= cbThreshold {
+	if cb.state == cbHalfOpen || cb.failures >= cb.threshold {
 		cb.state = cbOpen
 	}
 }

@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	drainWait   = 250 * time.Millisecond
-	reclaimWait = 100 * time.Millisecond
-	idleMax     = 8
-	drainLimit  = 64 << 10
+	drainWait       = 250 * time.Millisecond
+	reclaimWait     = 100 * time.Millisecond
+	fillerWriteWait = 500 * time.Millisecond
+	idleMax         = 8
+	drainLimit      = 64 << 10
 )
 
 type idleSet struct {
@@ -53,9 +54,9 @@ func (s *idleSet) fillLoop() {
 			if !ok {
 				break
 			}
-			if err := protocol.WriteFillerRecord(c, pad); err != nil {
-				continue
-			}
+			_ = c.SetWriteDeadline(time.Now().Add(fillerWriteWait))
+			_ = protocol.WriteFillerRecord(c, pad)
+			_ = c.SetWriteDeadline(time.Time{})
 		}
 		s.mu.Unlock()
 	}
@@ -86,10 +87,12 @@ func (c *parkedConn) reclaim() bool {
 	if err := c.SetReadDeadline(time.Now()); err != nil {
 		return false
 	}
+	t := time.NewTimer(reclaimWait)
+	defer t.Stop()
 	select {
 	case alive := <-c.alive:
 		return alive && c.SetReadDeadline(time.Time{}) == nil
-	case <-time.After(reclaimWait):
+	case <-t.C:
 		return false
 	}
 }
