@@ -20,7 +20,6 @@ import (
 	"github.com/nekoskin/whispera/core/keylimits"
 	"github.com/nekoskin/whispera/core/protocol/fingerprint"
 	"github.com/nekoskin/whispera/core/transport/grpc"
-	"github.com/nekoskin/whispera/core/transport/yadisk"
 )
 
 func registeredWhisperaUsers() []protocol.UserEntry {
@@ -234,24 +233,5 @@ func initGRPC(ctx context.Context, m *lifecycle.Manager, sc *config.ServerConfig
 		return err
 	}
 	go acceptLoop(ctx, "grpc", t.Accept, handleAltTransportConn)
-	return nil
-}
-
-func initYaDisk(ctx context.Context, m *lifecycle.Manager, sc *config.ServerConfig) error {
-	if !sc.YaDisk.Enabled || sc.YaDisk.OAuthToken == "" {
-		return nil
-	}
-	t, err := yadisk.New(&yadisk.Config{
-		OAuthToken: sc.YaDisk.OAuthToken,
-		SessionID:  sc.YaDisk.SessionID,
-		ServerMode: true,
-	})
-	if err != nil {
-		return err
-	}
-	if err := m.Register(t); err != nil {
-		return err
-	}
-	go acceptLoop(ctx, "yadisk", t.Accept, handleAltTransportConn)
 	return nil
 }

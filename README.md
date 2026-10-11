@@ -71,10 +71,10 @@ Available options
 -sni <domain> real domain whose TLS certificate is cloned and presented for this key
               (required unless whispera.domain is set in the config)
 
--fingerprint auto|chrome|chrome_120|chrome_115|firefox|firefox_120|safari|ios|android|edge|random
+-fingerprint auto|chrome|firefox|safari|ios|android|edge|random
              default is auto: it embeds the freshest collected chrome fingerprint
 
--transport whispera|grpc|yadisk (default: whispera)
+-transport whispera|grpc|quic (default: whispera)
 
 -dropech disable Encrypted Client Hello
 
@@ -87,12 +87,6 @@ Available options
 -own-domain enable/disable the key targets a Caddy front on a real domain
 
 -domain <domain> real domain for -own-domain mode
-
--yadisk-token <token> Yandex.Disk OAuth token (YADISK transport only)
-
--yadisk-session <id> Yandex.Disk session/folder ID (automatically generated if empty)
-
--config <path> path to config.yaml
 ```
 
 ## Build from source

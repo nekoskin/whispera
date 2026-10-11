@@ -15,7 +15,6 @@ import (
 	"github.com/nekoskin/whispera/core/protocol/fingerprint"
 	"github.com/nekoskin/whispera/core/protocol/quic"
 	"github.com/nekoskin/whispera/core/transport/grpc"
-	"github.com/nekoskin/whispera/core/transport/yadisk"
 
 	quicgo "github.com/quic-go/quic-go"
 )
@@ -336,42 +335,11 @@ func (s *selector) grpcDial() (func(context.Context) (net.Conn, error), bool) {
 	}, true
 }
 
-func (s *selector) yadiskDial() (func(context.Context) (net.Conn, error), bool) {
-	m := s.m
-	if !m.config.EnableYaDisk || m.config.YaDiskOAuthToken == "" {
-		return nil, false
-	}
-	t, err := yadisk.New(&yadisk.Config{
-		OAuthToken: m.config.YaDiskOAuthToken,
-		SessionID:  m.config.YaDiskSessionID,
-	})
-	if err != nil {
-		return nil, false
-	}
-	if err := t.Start(); err != nil {
-		return nil, false
-	}
-	psk := m.config.PSK
-	return func(ctx context.Context) (net.Conn, error) {
-		conn, err := t.Dial(ctx, "")
-		if err != nil {
-			return nil, err
-		}
-		if err := sendAltTransportAuth(conn, psk); err != nil {
-			return nil, err
-		}
-		return conn, nil
-	}, true
-}
-
 func (s *selector) dial() func(context.Context) (net.Conn, error) {
 	if d, ok := s.whisperaDial(); ok {
 		return d
 	}
 	if d, ok := s.grpcDial(); ok {
-		return d
-	}
-	if d, ok := s.yadiskDial(); ok {
 		return d
 	}
 	return nil

@@ -171,10 +171,6 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 		return err
 	}
 
-	if err := initYaDisk(ctx, m, sc); err != nil {
-		return err
-	}
-
 	if sc.Update.Enabled && sc.Update.ManifestURL != "" {
 		initUpdater(m, sc)
 	}
