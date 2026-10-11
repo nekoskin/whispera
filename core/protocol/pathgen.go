@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+var serverNow = time.Now
+
+const authTimeless int64 = 0
+
+const helloReplayMemory = 2 * time.Hour
+
 const authWindowSeconds = 30
 
 const authWindowTolerance = 1
@@ -35,14 +41,23 @@ func VerifyAuthToken(authKey []byte, token string, sessionID []byte) bool {
 	return VerifyAuthTokenRaw(authKey, raw, sessionID)
 }
 
-// VerifyAuthTokenRaw takes the token already decoded. Resolving a secret walks
-// every user, and decoding the same base64 string once per user was an
-// allocation and a decode repeated as many times as there are keys.
+func verifySessionToken(authKey []byte, token string, sessionID []byte) bool {
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		return false
+	}
+	return verifySessionTokenRaw(authKey, raw, sessionID)
+}
+
+func verifySessionTokenRaw(authKey, raw, sessionID []byte) bool {
+	return macMatches(authKey, authTimeless, sessionID, raw) || VerifyAuthTokenRaw(authKey, raw, sessionID)
+}
+
 func VerifyAuthTokenRaw(authKey, raw, sessionID []byte) bool {
 	if len(raw) != 32 {
 		return false
 	}
-	w := time.Now().Unix() / authWindowSeconds
+	w := serverNow().Unix() / authWindowSeconds
 	for candidate := w - authWindowTolerance; candidate <= w+authWindowTolerance; candidate++ {
 		if macMatches(authKey, candidate, sessionID, raw) {
 			return true
@@ -65,7 +80,7 @@ func ProbeClockDrift(authKey []byte, token string, sessionID []byte) (driftWindo
 	if err != nil || len(raw) != 32 {
 		return 0, false
 	}
-	w := time.Now().Unix() / authWindowSeconds
+	w := serverNow().Unix() / authWindowSeconds
 	for offset := int64(authWindowTolerance + 1); offset <= clockDriftProbeWindows; offset++ {
 		if macMatches(authKey, w+offset, sessionID, raw) {
 			return offset, true

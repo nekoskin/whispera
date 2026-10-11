@@ -10,6 +10,8 @@ import (
 
 	quicgo "github.com/quic-go/quic-go"
 	utls "github.com/refraction-networking/utls"
+
+	"github.com/nekoskin/whispera/core/protocol/camo"
 )
 
 type ClientConfig struct {
@@ -78,16 +80,15 @@ type sessionRegistry struct {
 	seenTokens tokenSeenSet
 	selectors  selectorIndex
 
+	helloGuardOnce sync.Once
+	helloGuard     *camo.ReplayGuard
+
 	userOnce sync.Once
 	users    *lru.Cache[string, knownUser]
 
 	altSvcHeader string
 }
 
-// Resolving a secret walks every key on the server, three HMACs apiece. The
-// TCP handshake already learns whose session this is, so the datagram lane,
-// which has no camouflage layer to ask, gets the answer from here and verifies
-// it with one HMAC instead of a thousand.
 func (r *sessionRegistry) userCache() *lru.Cache[string, knownUser] {
 	r.userOnce.Do(func() {
 		r.users, _ = lru.New[string, knownUser](4096)
@@ -117,4 +118,15 @@ const replayWindowSeconds = (2*authWindowTolerance + 1) * authWindowSeconds
 
 func (r *sessionRegistry) consumeToken(token string) bool {
 	return r.seenTokens.consume(token, time.Now().Unix())
+}
+
+func (r *sessionRegistry) hellos() *camo.ReplayGuard {
+	r.helloGuardOnce.Do(func() {
+		r.helloGuard = camo.NewReplayGuard(int64(helloReplayMemory.Seconds()))
+	})
+	return r.helloGuard
+}
+
+func (r *sessionRegistry) firstHelloSighting(random []byte, sender string) bool {
+	return r.hellos().FirstSighting(random, sender, serverNow().Unix())
 }

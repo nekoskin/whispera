@@ -42,7 +42,7 @@ func currentIdentify(users []benchUser, random, keyShare []byte, token string, s
 	for _, u := range users {
 		keys = append(keys, camo.DeriveKey(u.psk))
 	}
-	if !camo.MarkerMatches(keys, random, keyShare) {
+	if !camo.MarkerMatches(keys, random, keyShare, 0) {
 		return ""
 	}
 	for _, u := range users {
@@ -160,7 +160,7 @@ func BenchmarkIdentify(b *testing.B) {
 		keyShare := make([]byte, 32)
 		rand.Read(keyShare)
 		token := AuthToken(last.authKey, w, sessionID)
-		marker := camo.BuildMarker(last.camoKey, keyShare)
+		marker := camo.BuildStamp(last.camoKey, keyShare, time.Now().Unix())
 
 		b.Run(fmt.Sprintf("сейчас/линейно/users=%d", n), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {

@@ -52,12 +52,12 @@ func TestQUICCamoProbeRoundTrip(t *testing.T) {
 		t.Fatal("keyShare empty")
 	}
 
-	if !camo.MarkerMatches([][]byte{camoKey}, parsed.random, parsed.keyShare) {
+	if !camo.MarkerMatches([][]byte{camoKey}, parsed.random, parsed.keyShare, 0) {
 		t.Fatal("camoMarkerMatches: expected match with correct key")
 	}
 
 	wrongKey := camo.DeriveKey(bytes.Repeat([]byte{0x99}, 32))
-	if camo.MarkerMatches([][]byte{wrongKey}, parsed.random, parsed.keyShare) {
+	if camo.MarkerMatches([][]byte{wrongKey}, parsed.random, parsed.keyShare, 0) {
 		t.Fatal("camoMarkerMatches: unexpected match with wrong key")
 	}
 }

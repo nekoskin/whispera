@@ -130,3 +130,50 @@ func TestMarkerToleratesWindowDrift(t *testing.T) {
 		t.Fatal("маркер не должен приниматься далеко за окном")
 	}
 }
+
+func randomBytes(t *testing.T, n int) []byte {
+	t.Helper()
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatalf("random: %v", err)
+	}
+	return b
+}
+
+const unixEpochWindow int64 = 0
+
+func TestMarkerWithoutTimeIsRefused(t *testing.T) {
+	key, keyShare := randomBytes(t, 32), randomBytes(t, 32)
+	random := make([]byte, 32)
+	var sel [SelectorSize]byte
+	if !WriteRandom(random, sel, key, unixEpochWindow, keyShare) {
+		t.Fatal("write random failed")
+	}
+	_, marker, _ := SplitRandom(random)
+	if MarkerMatchesKey(key, marker, keyShare, time.Now().Unix()) {
+		t.Fatal("a marker carrying no time was accepted, so a recorded hello replays forever")
+	}
+}
+
+func TestWindowedMarkerStillBoundToClock(t *testing.T) {
+	key, keyShare := randomBytes(t, 32), randomBytes(t, 32)
+	random := make([]byte, 32)
+	var sel [SelectorSize]byte
+	now := time.Now()
+	WriteRandom(random, sel, key, now.Unix()/WindowSeconds, keyShare)
+	_, marker, _ := SplitRandom(random)
+	if !MarkerMatchesKey(key, marker, keyShare, now.Unix()) {
+		t.Fatal("windowed marker rejected with an agreeing clock")
+	}
+	if MarkerMatchesKey(key, marker, keyShare, now.Add(6*time.Minute).Unix()) {
+		t.Fatal("windowed marker accepted six minutes off")
+	}
+}
+
+func TestFullMarkerWithoutTimeIsRefused(t *testing.T) {
+	key, keyShare := randomBytes(t, 32), randomBytes(t, 32)
+	marker := markerForWindow(key, unixEpochWindow, keyShare)
+	if MarkerMatches([][]byte{key}, marker[:], keyShare, time.Now().Unix()) {
+		t.Fatal("a full marker carrying no time was accepted")
+	}
+}

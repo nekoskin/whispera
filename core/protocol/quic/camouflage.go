@@ -79,10 +79,11 @@ func (s *decoySession) Close() {
 
 type camoConn struct {
 	net.PacketConn
-	keysFn     func() [][]byte
-	bySelector func(random, keyShare []byte) bool
-	rateAllow  func(remote string) bool
-	decoyAddr  func(sni string) string
+	keysFn        func() [][]byte
+	bySelector    func(random, keyShare []byte) bool
+	rateAllow     func(remote string) bool
+	decoyAddr     func(sni string) string
+	firstSighting func(random []byte, sender string) bool
 
 	mu            sync.Mutex
 	realPeers     map[string]time.Time
@@ -90,20 +91,20 @@ type camoConn struct {
 	lastClean     time.Time
 }
 
-func (c *camoConn) authenticate(parsed *parsedQUICInitial) bool {
-	if c.bySelector != nil && c.bySelector(parsed.random, parsed.keyShare) {
-		return true
-	}
-	return camo.MarkerMatches(c.keysFn(), parsed.random, parsed.keyShare)
+func (c *camoConn) authenticate(parsed *parsedQUICInitial, sender string) bool {
+	ours := (c.bySelector != nil && c.bySelector(parsed.random, parsed.keyShare)) ||
+		camo.MarkerMatches(c.keysFn(), parsed.random, parsed.keyShare, time.Now().Unix())
+	return ours && c.firstSighting(parsed.random, sender)
 }
 
-func NewCamoConn(inner net.PacketConn, keysFn func() [][]byte, bySelector func(random, keyShare []byte) bool, decoyAddr func(string) string, rateAllow func(string) bool) *camoConn {
+func NewCamoConn(inner net.PacketConn, keysFn func() [][]byte, bySelector func(random, keyShare []byte) bool, decoyAddr func(string) string, rateAllow func(string) bool, firstSighting func(random []byte, sender string) bool) *camoConn {
 	return &camoConn{
 		PacketConn:    inner,
 		keysFn:        keysFn,
 		bySelector:    bySelector,
 		rateAllow:     rateAllow,
 		decoyAddr:     decoyAddr,
+		firstSighting: firstSighting,
 		realPeers:     make(map[string]time.Time),
 		decoySessions: make(map[string]*decoySession),
 		lastClean:     time.Now(),
@@ -147,7 +148,7 @@ func (c *camoConn) ReadFrom(p []byte) (int, net.Addr, error) {
 		}
 
 		parsed, perr := parseInitialSafely(p[:n])
-		if perr == nil && c.authenticate(parsed) {
+		if perr == nil && c.authenticate(parsed, key) {
 			c.mu.Lock()
 			c.realPeers[key] = time.Now().Add(quicCamoTrustWindow)
 			c.mu.Unlock()

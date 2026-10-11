@@ -45,15 +45,25 @@ func markerForWindow(key []byte, window int64, keyShare []byte) [32]byte {
 	return out
 }
 
-func BuildMarker(key []byte, keyShare []byte) [32]byte {
-	return markerForWindow(key, time.Now().Unix()/WindowSeconds, keyShare)
+func BuildStamp(key, keyShare []byte, unix int64) [32]byte {
+	var out [32]byte
+	stampInto(out[:], key, keyShare, unix)
+	return out
 }
 
-func MarkerMatches(keys [][]byte, random []byte, keyShare []byte) bool {
+func MarkerMatches(keys [][]byte, random, keyShare []byte, now int64) bool {
 	if len(random) != 32 || len(keys) == 0 || len(keyShare) == 0 {
 		return false
 	}
-	w := time.Now().Unix() / WindowSeconds
+	for _, key := range keys {
+		if len(key) == 0 {
+			continue
+		}
+		if _, ok := openStamp(key, keyShare, random); ok {
+			return true
+		}
+	}
+	w := now / WindowSeconds
 	for _, key := range keys {
 		if len(key) == 0 {
 			continue

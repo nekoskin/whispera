@@ -230,7 +230,7 @@ func startQUICServers(ctx context.Context, cfg *ServerConfig, mux *http.ServeMux
 				return
 			}
 			traceLog.Infow("QUIC listening", "addr", addr)
-			camoConn := quicpkg.NewCamoConn(pconn, camoKeys, quicSelector(cfg), camoAddr, decoyIPRateAllow)
+			camoConn := quicpkg.NewCamoConn(pconn, camoKeys, quicSelector(cfg), camoAddr, decoyIPRateAllow, cfg.firstHelloSighting)
 			if err := srv.Serve(camoConn); err != nil && ctx.Err() == nil {
 				traceLog.Errorw("QUIC serve stopped", "addr", addr, "err", err.Error())
 			}
@@ -295,6 +295,7 @@ func sweepSeenTokens(ctx context.Context, cfg *ServerConfig) {
 			return
 		case <-ticker.C:
 			cfg.seenTokens.sweep(time.Now().Unix())
+			cfg.hellos().Sweep(serverNow().Unix())
 		}
 	}
 }
@@ -322,7 +323,8 @@ func camoTLSListener(base net.Listener, cfg *ServerConfig, tlsCfg *tls.Config, c
 		entry, reason := resolveBySelector(cfg, random, keyShare)
 		return entry.userID, entry.psk, reason
 	}
-	ln := tls.NewListener(newCamouflageListener(base, camoKeys, bySelector, camoAddr), tlsCfg)
+	firstSighting := func(random []byte) bool { return cfg.firstHelloSighting(random, "") }
+	ln := tls.NewListener(newCamouflageListener(base, camoKeys, bySelector, camoAddr, firstSighting), tlsCfg)
 	if perflowEnabled() {
 		return newPerflowMux(ln, cfg)
 	}
@@ -446,10 +448,6 @@ func (m *perflowMux) classify(c net.Conn) {
 		}
 	}()
 
-	// The camouflage layer already decided this one is not ours, so there is no
-	// preamble to look for. Handing it over untouched matters: the HTTP server
-	// enables HTTP/2 only for a bare *tls.Conn, and wrapping it to give back a
-	// sniffed byte left ALPN promising h2 that the server then could not speak.
 	if isDecoyConn(c) {
 		select {
 		case m.httpCh <- c:
@@ -603,7 +601,7 @@ func resolveSecret(cfg *ServerConfig, token string, sessionID []byte) ([]byte, s
 	}
 	if len(cfg.SharedSecret) == 32 {
 		k := DeriveKeys(cfg.SharedSecret)
-		if VerifyAuthTokenRaw(k.Auth, raw, sessionID) {
+		if verifySessionTokenRaw(k.Auth, raw, sessionID) {
 			return cfg.SharedSecret, "default"
 		}
 	}
@@ -615,7 +613,7 @@ func resolveSecret(cfg *ServerConfig, token string, sessionID []byte) ([]byte, s
 			continue
 		}
 		k := DeriveKeys(u.PSK)
-		if VerifyAuthTokenRaw(k.Auth, raw, sessionID) {
+		if verifySessionTokenRaw(k.Auth, raw, sessionID) {
 			return u.PSK, u.UserID
 		}
 	}

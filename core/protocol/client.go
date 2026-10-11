@@ -525,10 +525,8 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	if _, err := crand.Read(sessionID); err != nil {
 		return nil, fmt.Errorf("whispera: session id: %w", err)
 	}
-	anchor := time.Now().UTC().Truncate(time.Second)
-
 	keys := DeriveKeys(cfg.SharedSecret)
-	token := AuthToken(keys.Auth, anchor.Unix()/authWindowSeconds, sessionID)
+	token := AuthToken(keys.Auth, authTimeless, sessionID)
 
 	sni := sessionSNI(cfg)
 	var helloID utls.ClientHelloID
@@ -686,9 +684,9 @@ func (d *clientDialer) tlsHandshake(ctx context.Context, rawConn net.Conn, useSp
 		if hello := uConn.HandshakeState.Hello; hello != nil && len(hello.Random) == 32 {
 			if keyShare := camo.ExtractX25519KeyShare(hello.KeyShares); len(keyShare) > 0 {
 				if sel, ok := d.selectorFor(uConn, keyShare); ok {
-					camo.WriteRandom(hello.Random, sel, d.camoKey, time.Now().Unix()/camo.WindowSeconds, keyShare)
+					camo.WriteRandomStamp(hello.Random, sel, d.camoKey, keyShare, time.Now().Unix())
 				} else {
-					marker := camo.BuildMarker(d.camoKey, keyShare)
+					marker := camo.BuildStamp(d.camoKey, keyShare, time.Now().Unix())
 					copy(hello.Random, marker[:])
 				}
 			}
@@ -790,9 +788,8 @@ func DialRTDatagrams(ctx context.Context, cfg *ClientConfig) error {
 	if _, err := crand.Read(sessionID); err != nil {
 		return fmt.Errorf("whispera: session id: %w", err)
 	}
-	anchor := time.Now().UTC().Truncate(time.Second)
 	keys := DeriveKeys(cfg.SharedSecret)
-	token := AuthToken(keys.Auth, anchor.Unix()/authWindowSeconds, sessionID)
+	token := AuthToken(keys.Auth, authTimeless, sessionID)
 
 	sni := sessionSNI(cfg)
 	tr := newQUICTransport(cfg, sni)

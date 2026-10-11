@@ -88,8 +88,6 @@ func (s *selectorIndex) snapshot(cfg *ServerConfig) map[[camo.SelectorSize]byte]
 	return built
 }
 
-// The reason a hello was not recognized. Every one of these ends in the same
-// decoy, and without saying which, a support case comes down to guessing.
 const (
 	selReasonOK          = "ok"
 	selReasonShortFields = "hello fields are not 32 bytes"
@@ -99,6 +97,7 @@ const (
 	selReasonOpenFailed  = "selector did not open with our key"
 	selReasonUnknownTag  = "key is not on this server"
 	selReasonStaleMarker = "marker did not match, clocks may differ"
+	selReasonReplayed    = "hello was already seen"
 )
 
 func resolveBySelector(cfg *ServerConfig, random, keyShare []byte) (selectorEntry, string) {
@@ -126,7 +125,7 @@ func resolveBySelector(cfg *ServerConfig, random, keyShare []byte) (selectorEntr
 	if !found {
 		return none, selReasonUnknownTag
 	}
-	if !camo.MarkerMatchesKey(entry.camoKey, marker, keyShare, time.Now().Unix()) {
+	if !camo.MarkerMatchesKey(entry.camoKey, marker, keyShare, serverNow().Unix()) {
 		return none, selReasonStaleMarker
 	}
 	return entry, selReasonOK
@@ -159,7 +158,7 @@ func isDecoyConn(c net.Conn) bool {
 
 func resolveSecretFor(cfg *ServerConfig, known knownUser, token string, sessionID []byte) ([]byte, string) {
 	if len(known.psk) == 32 {
-		if VerifyAuthToken(DeriveKeys(known.psk).Auth, token, sessionID) {
+		if verifySessionToken(DeriveKeys(known.psk).Auth, token, sessionID) {
 			return known.psk, known.id
 		}
 	}

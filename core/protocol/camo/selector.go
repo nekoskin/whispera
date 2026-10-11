@@ -80,6 +80,67 @@ func markerFor(key []byte, window int64, keyShare []byte) [MarkerSize]byte {
 	return out
 }
 
+const stampTimeBytes = 4
+
+func stampMask(key, keyShare []byte) [stampTimeBytes]byte {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("whispera-stamp-mask-v1"))
+	mac.Write(keyShare)
+	var out [stampTimeBytes]byte
+	copy(out[:], mac.Sum(nil))
+	return out
+}
+
+func stampInto(dst, key, keyShare []byte, unix int64) {
+	binary.BigEndian.PutUint32(dst[:stampTimeBytes], uint32(unix))
+	mask := stampMask(key, keyShare)
+	for i := 0; i < stampTimeBytes; i++ {
+		dst[i] ^= mask[i]
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("whispera-stamp-mac-v1"))
+	mac.Write(dst[:stampTimeBytes])
+	mac.Write(keyShare)
+	copy(dst[stampTimeBytes:], mac.Sum(nil))
+}
+
+func sealStamp(key, keyShare []byte, unix int64) [MarkerSize]byte {
+	var out [MarkerSize]byte
+	stampInto(out[:], key, keyShare, unix)
+	return out
+}
+
+func openStamp(key, keyShare, marker []byte) (int64, bool) {
+	macLen := len(marker) - stampTimeBytes
+	if macLen <= 0 || macLen > sha256.Size {
+		return 0, false
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("whispera-stamp-mac-v1"))
+	mac.Write(marker[:stampTimeBytes])
+	mac.Write(keyShare)
+	if !hmac.Equal(marker[stampTimeBytes:], mac.Sum(nil)[:macLen]) {
+		return 0, false
+	}
+	mask := stampMask(key, keyShare)
+	var t [stampTimeBytes]byte
+	copy(t[:], marker[:stampTimeBytes])
+	for i := 0; i < stampTimeBytes; i++ {
+		t[i] ^= mask[i]
+	}
+	return int64(binary.BigEndian.Uint32(t[:])), true
+}
+
+func WriteRandomStamp(random []byte, sel [SelectorSize]byte, key, keyShare []byte, unix int64) bool {
+	if len(random) != 32 {
+		return false
+	}
+	marker := sealStamp(key, keyShare, unix)
+	copy(random[:SelectorSize], sel[:])
+	copy(random[SelectorSize:], marker[:])
+	return true
+}
+
 func SplitRandom(random []byte) (sel [SelectorSize]byte, marker []byte, ok bool) {
 	if len(random) != 32 {
 		return sel, nil, false
@@ -102,6 +163,11 @@ func MarkerMatchesKey(key, marker, keyShare []byte, now int64) bool {
 	if len(marker) != MarkerSize || len(key) == 0 || len(keyShare) == 0 {
 		return false
 	}
+
+	if _, ok := openStamp(key, keyShare, marker); ok {
+		return true
+	}
+
 	w := now / WindowSeconds
 	for cand := w - WindowTol; cand <= w+WindowTol; cand++ {
 		m := markerFor(key, cand, keyShare)

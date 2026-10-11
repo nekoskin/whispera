@@ -2,7 +2,9 @@ package protocol
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"testing"
+	"time"
 
 	"github.com/nekoskin/whispera/core/protocol/camo"
 )
@@ -105,5 +107,23 @@ func TestResolveSecretForUsesKnownUser(t *testing.T) {
 	}
 	if scanned == 0 {
 		t.Fatal("при несошедшемся токене должен быть откат на перебор")
+	}
+}
+
+func TestSessionTokenIgnoresClientClock(t *testing.T) {
+	authKey := psk32(t)
+	sessionID := psk32(t)[:16]
+	sixMinutesBehind := time.Now().Add(-6*time.Minute).Unix() / authWindowSeconds
+	timeless, _ := base64.RawURLEncoding.DecodeString(AuthToken(authKey, authTimeless, sessionID))
+	stale, _ := base64.RawURLEncoding.DecodeString(AuthToken(authKey, sixMinutesBehind, sessionID))
+
+	if !verifySessionTokenRaw(authKey, timeless, sessionID) {
+		t.Fatal("timeless session token rejected")
+	}
+	if verifySessionTokenRaw(authKey, stale, sessionID) {
+		t.Fatal("windowed token from a clock six minutes behind accepted")
+	}
+	if VerifyAuthTokenRaw(authKey, timeless, sessionID) {
+		t.Fatal("alt-transport check accepted a timeless token")
 	}
 }

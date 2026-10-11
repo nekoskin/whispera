@@ -194,25 +194,27 @@ func camoDecoyAddr(decoyOrigin string) func(sni string) string {
 
 type camouflageListener struct {
 	net.Listener
-	ready      chan net.Conn
-	closed     chan struct{}
-	closeOnce  sync.Once
-	keysFn     func() [][]byte
-	bySelector func(random, keyShare []byte) (string, []byte, string)
-	decoyAddr  func(sni string) string
+	ready         chan net.Conn
+	closed        chan struct{}
+	closeOnce     sync.Once
+	keysFn        func() [][]byte
+	bySelector    func(random, keyShare []byte) (string, []byte, string)
+	decoyAddr     func(sni string) string
+	firstSighting func(random []byte) bool
 
 	driftMu   sync.Mutex
 	driftLast time.Time
 }
 
-func newCamouflageListener(inner net.Listener, keysFn func() [][]byte, bySelector func(random, keyShare []byte) (string, []byte, string), decoyAddr func(string) string) *camouflageListener {
+func newCamouflageListener(inner net.Listener, keysFn func() [][]byte, bySelector func(random, keyShare []byte) (string, []byte, string), decoyAddr func(string) string, firstSighting func(random []byte) bool) *camouflageListener {
 	l := &camouflageListener{
-		Listener:   inner,
-		ready:      make(chan net.Conn),
-		closed:     make(chan struct{}),
-		keysFn:     keysFn,
-		bySelector: bySelector,
-		decoyAddr:  decoyAddr,
+		Listener:      inner,
+		ready:         make(chan net.Conn),
+		closed:        make(chan struct{}),
+		keysFn:        keysFn,
+		bySelector:    bySelector,
+		decoyAddr:     decoyAddr,
+		firstSighting: firstSighting,
 	}
 	go l.acceptLoop()
 	return l
@@ -301,6 +303,9 @@ func (l *camouflageListener) handle(conn net.Conn) {
 	selReason := ""
 	if err == nil && l.bySelector != nil {
 		userID, psk, reason := l.bySelector(ph.random, ph.keyShare)
+		if reason == selReasonOK && !l.firstSighting(ph.random) {
+			reason = selReasonReplayed
+		}
 		if reason == selReasonOK {
 			traceLog.Infow("client authenticated", "remote", remote, "sni", ph.sni, "via", "selector", "user", userID)
 			l.pass(conn, ph, userID, psk)
@@ -310,12 +315,15 @@ func (l *camouflageListener) handle(conn net.Conn) {
 	}
 
 	var keys [][]byte
-	if err == nil {
+	if err == nil && selReason != selReasonReplayed {
 		keys = l.keysFn()
-		if camo.MarkerMatches(keys, ph.random, ph.keyShare) {
-			traceLog.Infow("client authenticated", "remote", remote, "sni", ph.sni, "via", "scan")
-			l.pass(conn, ph, "", nil)
-			return
+		if camo.MarkerMatches(keys, ph.random, ph.keyShare, serverNow().Unix()) {
+			if l.firstSighting(ph.random) {
+				traceLog.Infow("client authenticated", "remote", remote, "sni", ph.sni, "via", "scan")
+				l.pass(conn, ph, "", nil)
+				return
+			}
+			selReason = selReasonReplayed
 		}
 	}
 	if len(ph.raw) == 0 {

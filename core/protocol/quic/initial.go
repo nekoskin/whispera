@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"time"
 
 	"github.com/nekoskin/whispera/core/protocol/camo"
 
@@ -159,7 +160,7 @@ func buildMarkedClientHello(camoKey []byte, sni string) (chBytes, keyShare, rand
 			break
 		}
 	}
-	marker := camo.BuildMarker(camoKey, ks)
+	marker := camo.BuildStamp(camoKey, ks, time.Now().Unix())
 	copy(hello.Random, marker[:])
 	hello.Raw = nil
 	raw, err := hello.Marshal()
