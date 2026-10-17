@@ -12,8 +12,6 @@ import (
 const (
 	freezeDistinctArms = 3
 	freezeWindow       = 5 * time.Second
-	maxConcurrentDials = 2
-	dialGap            = 150 * time.Millisecond
 )
 
 var freezeHold = 125 * time.Second
@@ -24,8 +22,6 @@ type freezeMark struct {
 }
 
 type freezeNet struct {
-	slots   chan struct{}
-	lastAt  time.Time
 	recent  []freezeMark
 	until   time.Time
 	noticed bool
@@ -46,23 +42,19 @@ var sharedFreeze = newFreezeGate()
 func (g *freezeGate) net(key string) *freezeNet {
 	n := g.nets[key]
 	if n == nil {
-		n = &freezeNet{slots: make(chan struct{}, maxConcurrentDials)}
+		n = &freezeNet{}
 		g.nets[key] = n
 	}
 	return n
 }
 
-func (g *freezeGate) admit(ctx context.Context, key string) (func(), error) {
-	g.mu.Lock()
-	n := g.net(key)
-	g.mu.Unlock()
-
+func (g *freezeGate) waitOutFreeze(ctx context.Context, key string) error {
 	for {
 		g.mu.Lock()
-		wait := n.until.Sub(g.now())
+		wait := g.net(key).until.Sub(g.now())
 		g.mu.Unlock()
 		if wait <= 0 {
-			break
+			return nil
 		}
 		if wait > freezeHold {
 			wait = freezeHold
@@ -71,35 +63,10 @@ func (g *freezeGate) admit(ctx context.Context, key string) (func(), error) {
 		select {
 		case <-ctx.Done():
 			t.Stop()
-			return nil, ctx.Err()
+			return ctx.Err()
 		case <-t.C:
 		}
 	}
-
-	select {
-	case n.slots <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-
-	g.mu.Lock()
-	gap := dialGap - g.now().Sub(n.lastAt)
-	if gap < 0 {
-		gap = 0
-	}
-	n.lastAt = g.now().Add(gap)
-	g.mu.Unlock()
-	if gap > 0 {
-		t := time.NewTimer(gap)
-		select {
-		case <-ctx.Done():
-			t.Stop()
-			<-n.slots
-			return nil, ctx.Err()
-		case <-t.C:
-		}
-	}
-	return func() { <-n.slots }, nil
 }
 
 func (g *freezeGate) silent(key string, arm int) bool {

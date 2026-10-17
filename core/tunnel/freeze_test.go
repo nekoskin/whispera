@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,7 +58,7 @@ func TestFreezeIsPerNetwork(t *testing.T) {
 	}
 }
 
-func TestAdmitHoldsUntilTheFreezeLifts(t *testing.T) {
+func TestDialWaitsOutTheFreeze(t *testing.T) {
 	defer withFreezeHold(300 * time.Millisecond)()
 	g := newFreezeGate()
 	for i := 0; i < freezeDistinctArms; i++ {
@@ -66,25 +67,19 @@ func TestAdmitHoldsUntilTheFreezeLifts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() {
-		release, err := g.admit(ctx, "net")
-		if release != nil {
-			release()
-		}
-		done <- err
-	}()
+	go func() { done <- g.waitOutFreeze(ctx, "net") }()
 	select {
 	case <-done:
-		t.Fatal("admit returned while the network was still frozen")
+		t.Fatal("a dial went ahead while the network was still frozen")
 	case <-time.After(freezeHold / 2):
 	}
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("admit should clear once the freeze lifts: %v", err)
+			t.Fatalf("a dial should go ahead once the freeze lifts: %v", err)
 		}
 	case <-time.After(2 * freezeHold):
-		t.Fatal("admit did not clear after the freeze lifted")
+		t.Fatal("a dial still waited after the freeze lifted")
 	}
 }
 
@@ -92,50 +87,6 @@ func withFreezeHold(d time.Duration) func() {
 	prev := freezeHold
 	freezeHold = d
 	return func() { freezeHold = prev }
-}
-
-func TestAdmitCapsConcurrentDials(t *testing.T) {
-	g := newFreezeGate()
-	releases := make([]func(), 0, maxConcurrentDials)
-	for i := 0; i < maxConcurrentDials; i++ {
-		release, err := g.admit(context.Background(), "net")
-		if err != nil {
-			t.Fatal(err)
-		}
-		releases = append(releases, release)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	defer cancel()
-	if _, err := g.admit(ctx, "net"); err == nil {
-		t.Fatal("a dial past the concurrency cap should wait for a slot")
-	}
-	releases[0]()
-	release, err := g.admit(context.Background(), "net")
-	if err != nil {
-		t.Fatalf("a freed slot should admit the next dial: %v", err)
-	}
-	release()
-	for _, r := range releases[1:] {
-		r()
-	}
-}
-
-func TestAdmitSpacesDialStarts(t *testing.T) {
-	g := newFreezeGate()
-	start := time.Now()
-	r1, err := g.admit(context.Background(), "net")
-	if err != nil {
-		t.Fatal(err)
-	}
-	r1()
-	r2, err := g.admit(context.Background(), "net")
-	if err != nil {
-		t.Fatal(err)
-	}
-	r2()
-	if elapsed := time.Since(start); elapsed < dialGap {
-		t.Fatalf("two dials started %s apart, want at least %s", elapsed, dialGap)
-	}
 }
 
 func TestFreezeSilentOnlyOnTimeouts(t *testing.T) {
@@ -149,5 +100,30 @@ func TestFreezeSilentOnlyOnTimeouts(t *testing.T) {
 		if freezeSilent(r) {
 			t.Fatalf("%v is not the silence of a freeze", r)
 		}
+	}
+}
+
+func TestBurstOfDialsIsNotThrottledOutsideAFreeze(t *testing.T) {
+	const burst = 200
+	g := newFreezeGate()
+	errs := make(chan error, burst)
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i := 0; i < burst; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- g.waitOutFreeze(context.Background(), "net")
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("%d dials on a healthy network took %s to get through", burst, elapsed)
 	}
 }

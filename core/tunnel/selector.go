@@ -190,11 +190,9 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 		fragCtx := armContext(sni, network, "frag")
 		jointCtx := armContext(sni, network, "joint")
 
-		release, err := sharedFreeze.admit(ctx, network)
-		if err != nil {
+		if err := sharedFreeze.waitOutFreeze(ctx, network); err != nil {
 			return nil, err
 		}
-		defer release()
 
 		if protocol.JointArmEnabled() {
 			a, ok := 0, false
