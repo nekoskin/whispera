@@ -308,6 +308,13 @@ func handle(c net.Conn, upstream string) {
 				}
 			}
 		}
+		if active(m, modeBurst) && looksTLS(first) {
+			if ok, why := bursts.admit(c, browserOf(judged), time.Now()); !ok {
+				log.Printf("FREEZE %s %s", c.RemoteAddr(), why)
+				time.Sleep(silentHold)
+				return
+			}
+		}
 		reason := exemptReason(first)
 		if reason == "" {
 			if punishf(c, "first packet %d bytes, bits/byte %.2f, printable %.0f%% — no exemption",
@@ -964,6 +971,12 @@ func main() {
 			if name = strings.TrimSpace(name); name != "" {
 				modes = append(modes, name)
 			}
+		}
+	}
+	for _, m := range modes {
+		if active(m, modeBurst) {
+			bursts.load()
+			break
 		}
 	}
 	resetOnRotate = os.Getenv("CENSOR_RESET_ON_ROTATE") == "1"
