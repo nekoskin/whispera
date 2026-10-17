@@ -168,9 +168,6 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 		TCPDialer:     tcpDialer,
 	}
 	strategy := s.strategy
-	splitCtx := sni + "|split"
-	fragCtx := sni + "|frag"
-	jointCtx := sni + "|joint"
 	fragDialer := m.asnBypassDialer
 	if m.config.TLSFragmentCount > 0 {
 		fragDialer = nil
@@ -186,6 +183,12 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 		}
 		presets := fingerprint.PresetCount()
 		arm, fragArm, jointArm := -1, -1, -1
+		var mutant protocol.Mutant
+		mutantUsed := false
+		network := networkKey(ctx, addr)
+		splitCtx := armContext(sni, network, "split")
+		fragCtx := armContext(sni, network, "frag")
+		jointCtx := armContext(sni, network, "joint")
 
 		if protocol.JointArmEnabled() {
 			a, ok := 0, false
@@ -207,7 +210,17 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 				c.HelloID = fingerprint.PresetAt(alt)
 			} else {
 				c.HelloID = fingerprint.PresetAt(preset)
-				if onlineChose && strategy.JointAliveArms(presets, fragmented) > 1 {
+				alive := 0
+				if onlineChose {
+					alive = strategy.JointAliveArms(jointCtx, presets, fragmented)
+				}
+				switch {
+				case onlineChose && (alive == 0 || strategy.MutantPreferred(jointCtx)):
+					if m, ok := strategy.ApplyMutant(jointCtx, fragmented, &c); ok {
+						mutant, mutantUsed = m, true
+						budget, jointArm = m.Records, -1
+					}
+				case alive > 1:
 					c.HandshakeTimeout = protocol.FastRotateHandshakeTimeout
 				}
 				if fragmented {
@@ -253,13 +266,21 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 
 		gene, geneUsed := applyGene(&c, fragDialer)
 
-		observe := func(result protocol.HandshakeResult, stage string) {
+		observe := func(result protocol.HandshakeResult, stage string, latency time.Duration) {
+			mutantCtx := armContext(sni, network, "mutant:"+mutant.String())
 			if geneUsed && stage == dialStageHandshake {
 				observeGene(gene, result == protocol.HandshakeOK)
 			}
 			strategy.Record(sni, result)
 			if shapeUsed && stage == dialStageHandshake {
 				shapeSearch().Observe(chosenShape, result == protocol.HandshakeOK)
+			}
+			if mutantUsed {
+				if stage == dialStageHandshake {
+					strategy.NoteMutant(jointCtx, mutant, result == protocol.HandshakeOK)
+					recordDial(mutantCtx, -1, result, stage, latency)
+				}
+				return
 			}
 			if jointArm >= 0 {
 				if stage == dialStageHandshake {
@@ -269,7 +290,7 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 					if protocol.PolicyOnlineEnabled() {
 						strategy.NoteJointOnline(jointCtx, jointArm, alive)
 					}
-					recordDial(jointCtx, jointArm, result, stage)
+					recordDial(jointCtx, jointArm, result, stage, latency)
 				}
 				return
 			}
@@ -282,15 +303,15 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 			if fragArm >= 0 && stage == dialStageHandshake {
 				strategy.Observe(fragCtx, fragArm, result)
 				strategy.NoteDial(fragCtx, fragArm, result == protocol.HandshakeOK)
-				recordDial(fragCtx, fragArm, result, stage)
+				recordDial(fragCtx, fragArm, result, stage, latency)
 			}
 		}
 
-		c.OnHandshake = func(result protocol.HandshakeResult, _ time.Duration) {
-			observe(result, dialStageHandshake)
+		c.OnHandshake = func(result protocol.HandshakeResult, latency time.Duration) {
+			observe(result, dialStageHandshake, latency)
 		}
-		c.OnLiveReset = func() { observe(protocol.HandshakeResetFast, dialStageLiveReset) }
-		c.OnLiveOK = func() { observe(protocol.HandshakeOK, dialStageLiveOK) }
+		c.OnLiveReset = func() { observe(protocol.HandshakeResetFast, dialStageLiveReset, 0) }
+		c.OnLiveOK = func() { observe(protocol.HandshakeOK, dialStageLiveOK, 0) }
 		c.OnLiveEnd = func(dur time.Duration, bytes int64, reset bool) {
 			s.shape.note(dur, bytes, reset)
 		}

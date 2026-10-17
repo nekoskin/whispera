@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nekoskin/whispera/core/protocol"
@@ -20,7 +21,7 @@ import (
 const (
 	dialTraceDefaultMB  = 4
 	dialTraceCheckEvery = 64 << 10
-	dialTraceHeader     = "ms,ctx,arm,result,alive,stage"
+	dialTraceHeader     = "ms,ctx,arm,result,alive,stage,latency_ms"
 )
 
 var dialTrace struct {
@@ -44,10 +45,17 @@ func dialTraceKeepBytes() int64 {
 	return int64(mb) << 20
 }
 
+var dialTraceFallback atomic.Pointer[string]
+
+func SetDialTracePath(path string) { dialTraceFallback.Store(&path) }
+
 // defaultDialTracePath puts the trace next to the client's own config, so a
 // GUI build with no console still collects it and the file can be handed over
 // as it is. "off" in the env turns the whole thing off.
 func defaultDialTracePath() string {
+	if path := dialTraceFallback.Load(); path != nil && *path != "" {
+		return *path
+	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return ""
@@ -94,7 +102,7 @@ const (
 	dialStageLiveReset = "live_reset"
 )
 
-func recordDial(ctx string, arm int, result protocol.HandshakeResult, stage string) {
+func recordDial(ctx string, arm int, result protocol.HandshakeResult, stage string, latency time.Duration) {
 	alive := 0
 	if result == protocol.HandshakeOK {
 		alive = 1
@@ -108,7 +116,7 @@ func recordDial(ctx string, arm int, result protocol.HandshakeResult, stage stri
 	if i := strings.IndexByte(ctx, '|'); i >= 0 {
 		target = ctx[:i] + " " + ctx[i+1:]
 	}
-	stdlog.Printf("[INFO] dial %s arm %d %s → %s", target, arm, stage, result)
+	stdlog.Printf("[INFO] dial %s arm %d %s → %s %dms", target, arm, stage, result, latency.Milliseconds())
 
 	f := dialTraceFile()
 	if f == nil {
@@ -116,7 +124,7 @@ func recordDial(ctx string, arm int, result protocol.HandshakeResult, stage stri
 	}
 	dialTrace.mu.Lock()
 	defer dialTrace.mu.Unlock()
-	n, err := fmt.Fprintf(f, "%d,%s,%d,%d,%d,%s\n", time.Now().UnixMilli(), ctx, arm, int(result), alive, stage)
+	n, err := fmt.Fprintf(f, "%d,%s,%d,%d,%d,%s,%d\n", time.Now().UnixMilli(), ctx, arm, int(result), alive, stage, latency.Milliseconds())
 	if err != nil {
 		log.Warn("dial trace write failed: %v", err)
 		return

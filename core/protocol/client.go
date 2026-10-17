@@ -658,7 +658,11 @@ func (d *clientDialer) tlsHandshake(ctx context.Context, rawConn net.Conn, useSp
 		}
 		spec = s
 	} else {
-		s, err := utls.UTLSIdToSpec(d.helloID)
+		id := d.helloID
+		if id == utls.HelloCustom {
+			id = fingerprint.PresetAt(0)
+		}
+		s, err := utls.UTLSIdToSpec(id)
 		if err != nil {
 			return nil, fmt.Errorf("whispera: fingerprint: %w", err)
 		}

@@ -18,7 +18,7 @@ func writeTrace(t *testing.T, rows int) string {
 	defer f.Close()
 	fmt.Fprintln(f, dialTraceHeader)
 	for i := 0; i < rows; i++ {
-		fmt.Fprintf(f, "%d,origin|frag,%d,0,1,%s\n", 1700000000000+i, i%4, dialStageHandshake)
+		fmt.Fprintf(f, "%d,origin|frag,%d,0,1,%s,%d\n", 1700000000000+i, i%4, dialStageHandshake, i%900)
 	}
 	return path
 }

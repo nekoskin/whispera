@@ -68,6 +68,11 @@ var (
 	verbose          = flag.Bool("verbose", false, "Log every connection. Off keeps only failures and lifecycle events, so a page opening many connections a second does not flood the log")
 )
 
+const (
+	onlinePolicyFile = "policy-online.json"
+	dialTraceFile    = "dials.csv"
+)
+
 func loadHandshakeSignal(ctx context.Context) (*protocol.HandshakeStrategy, func()) {
 	strategy := protocol.NewHandshakeStrategy()
 	path := handshakeSignalPath()
@@ -75,9 +80,13 @@ func loadHandshakeSignal(ctx context.Context) (*protocol.HandshakeStrategy, func
 		return strategy, func() {}
 	}
 
+	policyPath := filepath.Join(filepath.Dir(path), onlinePolicyFile)
 	save := func() {
 		if err := strategy.Save(path); err != nil {
 			stdlog.Printf("handshake signal save: %v", err)
+		}
+		if err := protocol.SaveOnlinePolicy(policyPath); err != nil {
+			stdlog.Printf("online policy save: %v", err)
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -85,6 +94,9 @@ func loadHandshakeSignal(ctx context.Context) (*protocol.HandshakeStrategy, func
 	}
 	if err := strategy.Load(path); err != nil && !os.IsNotExist(err) {
 		stdlog.Printf("handshake signal load: %v", err)
+	}
+	if err := protocol.LoadOnlinePolicy(policyPath); err != nil && !os.IsNotExist(err) {
+		stdlog.Printf("online policy load: %v", err)
 	}
 
 	go func() {
@@ -393,6 +405,9 @@ func RunMain() {
 	ctx := lc.Context()
 
 	logDeviceID()
+	if mobileMode {
+		tunnel.SetDialTracePath(statePath(dialTraceFile))
+	}
 	handshakeSignal, flushHandshakeSignal := loadHandshakeSignal(ctx)
 	defer flushHandshakeSignal()
 

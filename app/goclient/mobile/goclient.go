@@ -1,6 +1,9 @@
 package goclient
 
-import "github.com/nekoskin/whispera/app/client"
+import (
+	"github.com/nekoskin/whispera/app/client"
+	"github.com/nekoskin/whispera/core/tunnel"
+)
 
 // Start runs the Whispera go-client in-process (Android/iOS via gomobile) so it
 // is not a forked child that Android's phantom-process killer reaps. Non-blocking.
@@ -12,4 +15,8 @@ func Start(key, socks, logFile, fingerprint, dns, rules string, hwid bool) {
 // SOCKS listener and all modules).
 func Stop() {
 	client.Stop()
+}
+
+func SetNetwork(descriptor string) {
+	tunnel.SetNetwork(descriptor)
 }

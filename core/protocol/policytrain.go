@@ -291,45 +291,92 @@ type onlinePolicy struct {
 	pending    int
 	steps      int
 	reverts    int
-	fails      map[int]int
-	sinceDecay int
+	fails      map[string]map[int]int
+	sinceDecay map[string]int
+	strikes    map[string]map[int]int
+	mutants    map[string][]*mutantStat
+	tuned      bool
+	rev        int
+	saved      int
 }
 
 func newOnlinePolicy() *onlinePolicy {
-	return &onlinePolicy{live: newPolParams(), adam: newPolAdam(), hist: map[string][]int{}, fails: map[int]int{}}
+	return &onlinePolicy{
+		live:       newPolParams(),
+		adam:       newPolAdam(),
+		hist:       map[string][]int{},
+		fails:      map[string]map[int]int{},
+		sinceDecay: map[string]int{},
+		strikes:    map[string]map[int]int{},
+		mutants:    map[string][]*mutantStat{},
+	}
 }
 
 const (
-	deadArmFails = 1
-	deadArmDecay = 16
+	deadArmFails      = 1
+	deadArmDecay      = 16
+	deadArmBackoffMax = 4
 )
 
-func (o *onlinePolicy) alive(a int) bool { return o.fails[a] < deadArmFails }
+func (o *onlinePolicy) alive(ctx string, a int) bool { return o.fails[ctx][a] < deadArmFails }
 
-func (o *onlinePolicy) aliveArms(arms int, fits func(int) bool) int {
+func (o *onlinePolicy) aliveArms(ctx string, arms int, fits func(int) bool) int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	n := 0
 	for a := 0; a < arms; a++ {
-		if fits(a) && o.alive(a) {
+		if fits(a) && o.alive(ctx, a) {
 			n++
 		}
 	}
 	return n
 }
 
-func (o *onlinePolicy) fitAlive(fits func(int) bool, arms int) func(int) bool {
-	any := false
+func (o *onlinePolicy) fitAlive(ctx string, fits func(int) bool, arms int) func(int) bool {
+	alive := func(a int) bool { return fits(a) && o.alive(ctx, a) }
 	for a := 0; a < arms; a++ {
-		if fits(a) && o.alive(a) {
-			any = true
-			break
+		if alive(a) {
+			return alive
 		}
 	}
-	if !any {
-		return fits
+	return fits
+}
+
+func (o *onlinePolicy) noteFail(ctx string, arm int, alive bool) {
+	fails := o.fails[ctx]
+	if fails == nil {
+		fails = map[int]int{}
+		o.fails[ctx] = fails
 	}
-	return func(a int) bool { return fits(a) && o.alive(a) }
+	strikes := o.strikes[ctx]
+	if strikes == nil {
+		strikes = map[int]int{}
+		o.strikes[ctx] = strikes
+	}
+	if alive {
+		delete(fails, arm)
+		delete(strikes, arm)
+	} else {
+		strikes[arm]++
+		fails[arm] = deadArmFails << min(strikes[arm]-1, deadArmBackoffMax)
+	}
+	o.tickDecay(ctx)
+}
+
+func (o *onlinePolicy) tickDecay(ctx string) {
+	o.sinceDecay[ctx]++
+	if o.sinceDecay[ctx] < deadArmDecay {
+		return
+	}
+	o.sinceDecay[ctx] = 0
+	fails := o.fails[ctx]
+	for a, n := range fails {
+		if n > 1 {
+			fails[a] = n - 1
+		} else {
+			delete(fails, a)
+		}
+	}
 }
 
 func (o *onlinePolicy) survival() float64 {
@@ -352,7 +399,7 @@ func (o *onlinePolicy) Select(ctx string, arms int, fits func(int) bool, roll fu
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	fits = o.fitAlive(fits, arms)
+	fits = o.fitAlive(ctx, fits, arms)
 
 	if o.survival() < polOnlineHealthy && roll() < polOnlineExplore {
 		fitting := make([]int, 0, arms)
@@ -381,20 +428,8 @@ func (o *onlinePolicy) Note(ctx string, arm int, alive bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	if alive {
-		o.fails[arm] = 0
-	} else {
-		o.fails[arm]++
-	}
-	o.sinceDecay++
-	if o.sinceDecay >= deadArmDecay {
-		o.sinceDecay = 0
-		for a, n := range o.fails {
-			if n > 0 {
-				o.fails[a] = n - 1
-			}
-		}
-	}
+	o.rev++
+	o.noteFail(ctx, arm, alive)
 
 	seq := append(o.hist[ctx], polDial(arm, alive))
 	if len(seq) > polBlock {
@@ -411,6 +446,7 @@ func (o *onlinePolicy) Note(ctx string, arm int, alive bool) {
 	if o.pending >= polOnlineStepEvery {
 		o.pending = 0
 		o.steps++
+		o.tuned = true
 		window := make([]int, 0, len(seq)+1)
 		window = append(window, polBOS)
 		window = append(window, seq...)
@@ -425,6 +461,7 @@ func (o *onlinePolicy) Note(ctx string, arm int, alive bool) {
 func (o *onlinePolicy) revert() {
 	o.live = newPolParams()
 	o.adam = newPolAdam()
+	o.tuned = false
 	o.outcomes = nil
 	o.pending = 0
 	o.reverts++
@@ -453,11 +490,11 @@ func (h *HandshakeStrategy) NoteJointOnline(ctx string, arm int, alive bool) {
 	sharedOnlinePolicy().Note(ctx, arm, alive)
 }
 
-func (h *HandshakeStrategy) JointAliveArms(presets int, fragmented bool) int {
+func (h *HandshakeStrategy) JointAliveArms(ctx string, presets int, fragmented bool) int {
 	if !policyJointUsable(presets) {
 		return 0
 	}
-	return sharedOnlinePolicy().aliveArms(JointArmCount(presets), jointArmFits(fragmented))
+	return sharedOnlinePolicy().aliveArms(ctx, JointArmCount(presets), jointArmFits(fragmented))
 }
 
 func PolicyOnlineState() (steps, reverts int, survival float64) {

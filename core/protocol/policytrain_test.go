@@ -276,13 +276,61 @@ func TestOnlineReprobesBenchedArm(t *testing.T) {
 	for i := 0; i < deadArmFails; i++ {
 		o.Note("c", 0, false)
 	}
-	if o.alive(0) {
+	if o.alive("c", 0) {
 		t.Fatal("arm 0 should be benched after consecutive failures")
 	}
 	for i := 0; i < deadArmDecay; i++ {
 		o.Note("c", 1, true)
 	}
-	if !o.alive(0) {
+	if !o.alive("c", 0) {
 		t.Fatal("a benched arm should be re-probed after the fail count decays")
+	}
+}
+
+func TestOnlineBenchesArmOnlyOnItsNetwork(t *testing.T) {
+	o := newOnlinePolicy()
+	for i := 0; i < deadArmFails; i++ {
+		o.Note("sni|home|joint", 0, false)
+	}
+	if o.alive("sni|home|joint", 0) {
+		t.Fatal("arm 0 should be benched on the network it failed on")
+	}
+	if !o.alive("sni|cafe|joint", 0) {
+		t.Fatal("a failure on one network must not bench the arm on another")
+	}
+	for i := 0; i < deadArmDecay; i++ {
+		o.Note("sni|cafe|joint", 1, true)
+	}
+	if o.alive("sni|home|joint", 0) {
+		t.Fatal("dials on another network must not decay this network's bench")
+	}
+}
+
+func TestOnlineBenchesAnArmLongerEachTimeItDiesAgain(t *testing.T) {
+	o := newOnlinePolicy()
+	pass := func(n int) {
+		for i := 0; i < n; i++ {
+			o.Note("c", 1, true)
+		}
+	}
+	o.Note("c", 0, false)
+	pass(deadArmDecay)
+	if !o.alive("c", 0) {
+		t.Fatal("after the first death the arm should be re-probed within one decay period")
+	}
+	o.Note("c", 0, false)
+	pass(deadArmDecay)
+	if o.alive("c", 0) {
+		t.Fatal("an arm that died again on its re-probe should stay benched longer")
+	}
+	pass(deadArmDecay)
+	if !o.alive("c", 0) {
+		t.Fatal("the longer bench should still run out")
+	}
+	o.Note("c", 0, true)
+	o.Note("c", 0, false)
+	pass(deadArmDecay)
+	if !o.alive("c", 0) {
+		t.Fatal("a success should reset the bench to its shortest length")
 	}
 }
