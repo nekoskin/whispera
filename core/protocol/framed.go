@@ -29,8 +29,9 @@ const (
 	shapeChunkMin = 4096
 	shapeChunkMax = framedMaxData
 
-	framedSwitchMarker = 0xFFFF
-	framedFillerMarker = 0xFFFE
+	framedSwitchMarker  = 0xFFFF
+	framedFillerMarker  = 0xFFFE
+	framedMigrateMarker = 0xFFFD
 )
 
 type ShapeKnobs struct {
@@ -307,6 +308,8 @@ var errFramedBadRecord = errors.New("whispera: bad framed record")
 
 var ErrSwitchRaw = errors.New("whispera: framed switched to raw")
 
+var ErrMigrate = errors.New("whispera: framed stream migrating")
+
 type FramedConn struct {
 	net.Conn
 
@@ -324,10 +327,13 @@ type FramedConn struct {
 	pad      *ShapeBudget
 
 	lastWrite atomic.Int64
+	rxWire    atomic.Int64
 	stop      chan struct{}
 	stopOnce  sync.Once
 	filling   atomic.Bool
 }
+
+func (c *FramedConn) RxWire() int64 { return c.rxWire.Load() }
 
 func NewFramedConn(c net.Conn, pad *ShapeBudget) *FramedConn {
 	// The batch buffer is grown on the first write: half of these connections
@@ -520,6 +526,7 @@ func (c *FramedConn) readRecord() ([]byte, error) {
 	if _, err := io.ReadFull(c.Conn, hdr[:]); err != nil {
 		return nil, err
 	}
+	c.rxWire.Add(int64(len(hdr)))
 	if hdr[0] != 0x17 {
 		return nil, errFramedBadRecord
 	}
@@ -534,9 +541,13 @@ func (c *FramedConn) readRecord() ([]byte, error) {
 	if _, err := io.ReadFull(c.Conn, rec); err != nil {
 		return nil, err
 	}
+	c.rxWire.Add(int64(body))
 	dataLen := int(binary.BigEndian.Uint16(rec[0:2]))
 	if dataLen == framedSwitchMarker {
 		return nil, ErrSwitchRaw
+	}
+	if dataLen == framedMigrateMarker {
+		return nil, ErrMigrate
 	}
 	if dataLen == framedFillerMarker {
 		return c.readRecord()
@@ -555,6 +566,18 @@ func (c *FramedConn) SwitchRaw() error {
 	}
 	c.ended, c.switched = true, true
 	return c.writeMarker(framedSwitchMarker)
+}
+
+func (c *FramedConn) Migrate() error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	if c.ended {
+		return c.endErr
+	}
+	c.ended = true
+	c.endErr = c.writeMarker(framedMigrateMarker)
+	c.releaseBatchLocked()
+	return c.endErr
 }
 
 func (c *FramedConn) SwitchedRaw() bool {

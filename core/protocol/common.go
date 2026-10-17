@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bytes"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -74,6 +75,20 @@ func perflowEnabled() bool { return os.Getenv("WHISPERA_PERFLOW") != "0" }
 const SpliceProtoBit byte = 0x80
 
 const TorrentProtoBit byte = 0x40
+
+const MigrateProtoBit byte = 0x10
+
+const FlowTokenLen = 16
+
+func MigrateEnabled() bool { return os.Getenv("WHISPERA_MIGRATE") == "1" }
+
+func NewFlowToken() ([]byte, error) {
+	t := make([]byte, FlowTokenLen)
+	if _, err := io.ReadFull(crand.Reader, t); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
 
 func FullFrameEnabled() bool { return os.Getenv("WHISPERA_FULL_FRAME") == "1" }
 

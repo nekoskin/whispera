@@ -199,8 +199,9 @@ type Server struct {
 
 	outboundDial func(ctx context.Context, tag, network, addr string) (net.Conn, error)
 
-	log *logger.Logger
-	mu  sync.RWMutex
+	log   *logger.Logger
+	mu    sync.RWMutex
+	flows *flowTable
 }
 
 type copyResult struct {
@@ -221,6 +222,7 @@ func New(cfg *Config) (*Server, error) {
 		Module: base.NewModule(ModuleName, ModuleVersion, nil),
 		config: cfg,
 		log:    logger.Module("relay"),
+		flows:  newFlowTable(),
 	}
 
 	s.direct = cfg.TargetGuard.Dialer()
@@ -668,12 +670,15 @@ func (s *Server) relayTCP(stream, target net.Conn, resCh chan copyResult, downDo
 }
 
 type proxyStreamHeader struct {
-	proto     byte
-	splice    bool
-	keepAlive bool
-	torrent   bool
-	addr      string
-	port      uint16
+	proto      byte
+	splice     bool
+	keepAlive  bool
+	torrent    bool
+	migratable bool
+	resume     bool
+	token      []byte
+	addr       string
+	port       uint16
 }
 
 func (h proxyStreamHeader) target() string {
@@ -708,7 +713,22 @@ func readProxyStreamHeader(stream net.Conn, wait time.Duration) (proxyStreamHead
 			stream.SetReadDeadline(time.Now().Add(wait))
 		}
 	}
+	proto := hdr[0]
 	addrLen := binary.BigEndian.Uint16(hdr[1:3])
+
+	if proto&protocol.MigrateProtoBit != 0 && addrLen == 0 {
+		token := make([]byte, protocol.FlowTokenLen)
+		if _, err := io.ReadFull(stream, token); err != nil {
+			return proxyStreamHeader{}, false
+		}
+		return proxyStreamHeader{
+			proto:     proto &^ (protocol.SpliceProtoBit | protocol.KeepAliveProtoBit | protocol.TorrentProtoBit | protocol.MigrateProtoBit),
+			keepAlive: proto&protocol.KeepAliveProtoBit != 0,
+			resume:    true,
+			token:     token,
+		}, true
+	}
+
 	if addrLen == 0 || addrLen > 255 {
 		return proxyStreamHeader{}, false
 	}
@@ -717,16 +737,23 @@ func readProxyStreamHeader(stream net.Conn, wait time.Duration) (proxyStreamHead
 	if _, err := io.ReadFull(stream, rest); err != nil {
 		return proxyStreamHeader{}, false
 	}
-
-	proto := hdr[0]
-	return proxyStreamHeader{
-		proto:     proto &^ (protocol.SpliceProtoBit | protocol.KeepAliveProtoBit | protocol.TorrentProtoBit),
+	h := proxyStreamHeader{
+		proto:     proto &^ (protocol.SpliceProtoBit | protocol.KeepAliveProtoBit | protocol.TorrentProtoBit | protocol.MigrateProtoBit),
 		splice:    proto&protocol.SpliceProtoBit != 0 && protocol.SpliceEnabled(),
 		keepAlive: proto&protocol.KeepAliveProtoBit != 0,
 		torrent:   proto&protocol.TorrentProtoBit != 0,
 		addr:      string(rest[:addrLen]),
 		port:      binary.BigEndian.Uint16(rest[addrLen:]),
-	}, true
+	}
+	if proto&protocol.MigrateProtoBit != 0 {
+		token := make([]byte, protocol.FlowTokenLen)
+		if _, err := io.ReadFull(stream, token); err != nil {
+			return proxyStreamHeader{}, false
+		}
+		h.migratable = true
+		h.token = token
+	}
+	return h, true
 }
 
 func spliceWrap(stream net.Conn, framed *protocol.FramedConn, h proxyStreamHeader, tunnelID uint64, targetAddr string, pad *protocol.ShapeBudget) (net.Conn, *protocol.FramedConn) {
@@ -786,6 +813,12 @@ func (s *Server) handleProxyStream(tunnelID uint64, user, clientID string, strea
 	if h.torrent && onTorrent != nil {
 		onTorrent()
 	}
+	if h.resume {
+		framed := protocol.NewFramedConn(stream, pad)
+		ok := s.resume(user, h.token, framed)
+		logger.Trace().Infow("flow resume", "trace_id", tunnelID, "user", user, "accepted", ok)
+		return false
+	}
 	targetAddr := h.target()
 	network := h.network()
 
@@ -820,11 +853,26 @@ func (s *Server) handleProxyStream(tunnelID uint64, user, clientID string, strea
 		)
 		return false
 	}
-	defer target.Close()
+	ownTarget := true
+	defer func() {
+		if ownTarget {
+			target.Close()
+		}
+	}()
 
 	if tcpTarget, ok := target.(*net.TCPConn); ok {
 		tcpTarget.SetKeepAlive(true)
 		tcpTarget.SetKeepAlivePeriod(45 * time.Second)
+	}
+
+	if h.migratable && h.keepAlive && network == "tcp" {
+		logger.Trace().Infow("flow migratable start", "trace_id", tunnelID, "user", user, "target", targetAddr)
+		framed := protocol.NewFramedConn(stream, pad)
+		release := make(chan struct{})
+		s.serveMigratable(framed, target, user, h.token, release)
+		ownTarget = false
+		<-release
+		return false
 	}
 
 	var framed *protocol.FramedConn

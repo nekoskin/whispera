@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -165,27 +166,91 @@ type keepAliveStream struct {
 	base net.Conn
 	raw  net.Conn
 	once sync.Once
+
+	swapMu     sync.Mutex
+	pad        *protocol.ShapeBudget
+	token      []byte
+	ctx        context.Context
+	resumeDial func(context.Context) (net.Conn, error)
 }
 
-func (c *keepAliveStream) Write(b []byte) (int, error) { return c.up.Write(b) }
+func (c *keepAliveStream) Write(b []byte) (int, error) {
+	c.swapMu.Lock()
+	up := c.up
+	c.swapMu.Unlock()
+	return up.Write(b)
+}
 
-func (c *keepAliveStream) Read(b []byte) (int, error) { return c.down.Read(b) }
-
-func (c *keepAliveStream) SpliceTo(dst net.Conn) (int64, error) {
-	n, err := buf.Copy(buf.NewReader(c.down), buf.NewWriter(dst))
-	if !errors.Is(err, protocol.ErrSwitchRaw) {
+func (c *keepAliveStream) Read(b []byte) (int, error) {
+	for {
+		c.swapMu.Lock()
+		down := c.down
+		c.swapMu.Unlock()
+		n, err := down.Read(b)
+		if errors.Is(err, protocol.ErrMigrate) {
+			if merr := c.migrate(); merr != nil {
+				return 0, merr
+			}
+			continue
+		}
 		return n, err
 	}
-	src := c.raw
-	if src == nil {
-		src = c.base
+}
+
+func (c *keepAliveStream) migrate() error {
+	if c.resumeDial == nil || len(c.token) == 0 {
+		return errors.New("whispera: migrate without a resume dialer")
 	}
-	if d, s := buf.RawTCP(dst), buf.RawTCP(src); d != nil && s != nil {
-		m, rerr := d.ReadFrom(s)
-		return n + m, rerr
+	conn, err := c.resumeDial(c.ctx)
+	if err != nil {
+		return err
 	}
-	m, rerr := io.Copy(dst, src)
-	return n + m, rerr
+	hdr := make([]byte, 0, 3+len(c.token))
+	hdr = append(hdr, protocol.KeepAliveProtoBit|protocol.MigrateProtoBit, 0x00, 0x00)
+	hdr = append(hdr, c.token...)
+	if _, err := conn.Write(hdr); err != nil {
+		conn.Close()
+		return err
+	}
+	base := newDecoyLeaveConn(conn)
+	up := protocol.NewFramedConn(base, c.pad)
+
+	c.swapMu.Lock()
+	old := c.base
+	c.base, c.up, c.down = base, up, up
+	c.swapMu.Unlock()
+	old.Close()
+	return nil
+}
+
+func (c *keepAliveStream) SpliceTo(dst net.Conn) (int64, error) {
+	var total int64
+	for {
+		c.swapMu.Lock()
+		down := c.down
+		c.swapMu.Unlock()
+		n, err := buf.Copy(buf.NewReader(down), buf.NewWriter(dst))
+		total += n
+		if errors.Is(err, protocol.ErrMigrate) {
+			if merr := c.migrate(); merr != nil {
+				return total, merr
+			}
+			continue
+		}
+		if !errors.Is(err, protocol.ErrSwitchRaw) {
+			return total, err
+		}
+		src := c.raw
+		if src == nil {
+			src = c.base
+		}
+		if d, s := buf.RawTCP(dst), buf.RawTCP(src); d != nil && s != nil {
+			m, rerr := d.ReadFrom(s)
+			return total + m, rerr
+		}
+		m, rerr := io.Copy(dst, src)
+		return total + m, rerr
+	}
 }
 
 func drainToEnd(base net.Conn, down *protocol.FramedConn) bool {
@@ -219,8 +284,12 @@ func (c *keepAliveStream) Close() error {
 			return
 		}
 		base, down := c.base, c.down
+		hot := false
+		if d, ok := base.(*decoyLeaveConn); ok && d.acct != nil {
+			hot = d.acct.down.Add(down.RxWire()) >= downstreamCapBytes
+		}
 		go func() {
-			if drainToEnd(base, down) {
+			if !hot && drainToEnd(base, down) {
 				c.m.idle.put(base)
 				return
 			}

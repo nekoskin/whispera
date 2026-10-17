@@ -215,3 +215,26 @@ func TestFramedRecordsFillOneTLSRecord(t *testing.T) {
 		return m
 	}())
 }
+
+func TestFramedCountsWireBytesRead(t *testing.T) {
+	cl, srv, done := framedPair(t)
+	defer done()
+
+	payload := bytes.Repeat([]byte("y"), 3000)
+	go func() {
+		_, _ = cl.Write(payload)
+		_ = cl.EndStream()
+	}()
+
+	got, err := io.ReadAll(srv)
+	if err != nil {
+		t.Fatalf("чтение: %v", err)
+	}
+	wire := srv.RxWire()
+	if wire < int64(len(got)) {
+		t.Fatalf("учтено %d байт провода, меньше чем %d прочитанных данных", wire, len(got))
+	}
+	if wire > int64(len(got))+4096 {
+		t.Fatalf("учтено %d байт провода против %d данных — слишком много накладных", wire, len(got))
+	}
+}

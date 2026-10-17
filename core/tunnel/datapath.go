@@ -8,6 +8,8 @@ import (
 	mrand "math/rand"
 	"net"
 	"os"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	singlog "github.com/sagernet/sing/common/logger"
@@ -57,6 +59,22 @@ type decoyLeaveConn struct {
 	recCap      int
 	replicate   bool
 	pad         *protocol.ShapeBudget
+	acct        *downAcct
+}
+
+type downAcct struct{ down atomic.Int64 }
+
+const downstreamCapDefault = 7 << 10
+
+var downstreamCapBytes = downstreamCap()
+
+func downstreamCap() int64 {
+	if v := os.Getenv("WHISPERA_DOWNSTREAM_CAP"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return int64(n)
+		}
+	}
+	return downstreamCapDefault
 }
 
 var openingProfile = []int{31, 40, 53, 64, 71, 96, 110, 118, 130}
@@ -76,7 +94,11 @@ func openingShape() (writes, recCap int, replicate bool) {
 
 func newDecoyLeaveConn(conn net.Conn) *decoyLeaveConn {
 	writes, recCap, replicate := openingShape()
-	return &decoyLeaveConn{Conn: conn, upLeft: writes, recCap: recCap, replicate: replicate, pad: protocol.NewShapeBudget()}
+	acct := &downAcct{}
+	if inner, ok := conn.(*decoyLeaveConn); ok && inner.acct != nil {
+		acct = inner.acct
+	}
+	return &decoyLeaveConn{Conn: conn, upLeft: writes, recCap: recCap, replicate: replicate, pad: protocol.NewShapeBudget(), acct: acct}
 }
 
 func (d *decoyLeaveConn) NetConn() net.Conn {
@@ -197,12 +219,21 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 		hdrProto |= protocol.SpliceProtoBit
 	}
 
+	var flowToken []byte
+	if keepAlive && !splice && protocol.MigrateEnabled() {
+		if t, err := protocol.NewFlowToken(); err == nil {
+			flowToken = t
+			hdrProto |= protocol.MigrateProtoBit
+		}
+	}
+
 	addrBytes := []byte(addr)
-	header := make([]byte, 1+2+len(addrBytes)+2)
+	header := make([]byte, 1+2+len(addrBytes)+2+len(flowToken))
 	header[0] = hdrProto
 	binary.BigEndian.PutUint16(header[1:3], uint16(len(addrBytes)))
 	copy(header[3:], addrBytes)
 	binary.BigEndian.PutUint16(header[3+len(addrBytes):], port)
+	copy(header[3+len(addrBytes)+2:], flowToken)
 	if _, err := conn.Write(header); err != nil {
 		conn.Close()
 		if !reused {
@@ -232,6 +263,14 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	if splice {
 		stream.down = protocol.NewFramedConn(raw, pad)
 		stream.raw = raw
+	}
+	if len(flowToken) > 0 {
+		stream.pad = pad
+		stream.token = flowToken
+		stream.ctx = ctx
+		stream.resumeDial = func(ctx context.Context) (net.Conn, error) {
+			return dialWithRetry(ctx, limitedDial)
+		}
 	}
 	return stream, nil
 }
