@@ -38,7 +38,7 @@ const dialTimeout = 10 * time.Second
 
 const handshakeTimeout = 3 * time.Second
 
-const FastRotateHandshakeTimeout = time.Second
+const FastRotateHandshakeTimeout = 2500 * time.Millisecond
 
 type helloSplitConn struct {
 	net.Conn
@@ -167,6 +167,7 @@ const (
 	HandshakeIncomplete
 	HandshakeRejected
 	HandshakeError
+	HandshakeLocal
 )
 
 const handshakeResetBlockThreshold = 15 * time.Millisecond
@@ -177,6 +178,11 @@ func classifyHandshake(err error, latency time.Duration) HandshakeResult {
 	}
 	s := err.Error()
 	switch {
+	case strings.Contains(s, "context canceled"), strings.Contains(s, "abort"),
+		strings.Contains(s, "unreachable"), strings.Contains(s, "network is down"):
+		return HandshakeLocal
+	case strings.Contains(s, "served the decoy"):
+		return HandshakeLocal
 	case strings.Contains(s, "reset"):
 		if latency < handshakeResetBlockThreshold {
 			return HandshakeResetFast
@@ -202,9 +208,15 @@ func (r HandshakeResult) String() string {
 		return "incomplete"
 	case HandshakeRejected:
 		return "rejected"
+	case HandshakeLocal:
+		return "local"
 	default:
 		return "error"
 	}
+}
+
+func HandshakeBlocked(r HandshakeResult) bool {
+	return r == HandshakeResetFast || r == HandshakeRejected
 }
 
 func (r HandshakeResult) Reward() float64 {
@@ -217,6 +229,8 @@ func (r HandshakeResult) Reward() float64 {
 		return -0.9
 	case HandshakeIncomplete:
 		return -0.7
+	case HandshakeLocal:
+		return 0
 	default:
 		return -0.3
 	}

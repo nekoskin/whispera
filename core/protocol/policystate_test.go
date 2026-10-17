@@ -12,9 +12,9 @@ func trainedOnlinePolicy(t *testing.T) *onlinePolicy {
 	t.Helper()
 	o := newOnlinePolicy()
 	for i := 0; i < polOnlineStepEvery*3; i++ {
-		o.Note("sni|home|joint", i%3, i%3 != 0)
+		o.Note("sni|home|joint", i%3, i%3 != 0, true)
 	}
-	o.Note("sni|cafe|joint", 4, false)
+	o.Note("sni|cafe|joint", 4, false, true)
 	if !o.tuned {
 		t.Fatal("policy should have taken a training step")
 	}
@@ -107,7 +107,7 @@ func TestOnlinePolicySkipsUnchangedSave(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatal("nothing changed, so nothing should have been written")
 	}
-	o.Note("sni|home|joint", 1, true)
+	o.Note("sni|home|joint", 1, true, true)
 	if err := o.save(path); err != nil {
 		t.Fatal(err)
 	}

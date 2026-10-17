@@ -69,7 +69,7 @@ func TestMutantRecordsStayWholeWithoutFragmentation(t *testing.T) {
 
 func TestMutantDialsLetDeadArmsDecay(t *testing.T) {
 	o := newOnlinePolicy()
-	o.Note("c", 0, false)
+	o.Note("c", 0, false, true)
 	for i := 0; i < deadArmDecay; i++ {
 		o.noteMutant("c", Mutant{Hello: "a", Records: 1}, true)
 	}
@@ -119,14 +119,14 @@ func TestMutantPreferredOnlyWhileTheBaseArmsFail(t *testing.T) {
 	if o.mutantPreferred("c", steady(0.99)) {
 		t.Fatal("no base dial has failed, so the base arms should be used")
 	}
-	o.Note("c", 4, false)
+	o.Note("c", 4, false, true)
 	if !o.mutantPreferred("c", steady(0.99)) {
 		t.Fatal("the last base dial failed and a mutant survived, so the mutant should be used")
 	}
 	if o.mutantPreferred("c", steady(0)) {
 		t.Fatal("a share of dials should still re-probe the base arms")
 	}
-	o.Note("c", 9, true)
+	o.Note("c", 9, true, true)
 	if o.mutantPreferred("c", steady(0.99)) {
 		t.Fatal("a base arm came back, so the base arms should be used again")
 	}
@@ -135,7 +135,7 @@ func TestMutantPreferredOnlyWhileTheBaseArmsFail(t *testing.T) {
 func TestMutantNotPreferredWithoutASurvivor(t *testing.T) {
 	o := newOnlinePolicy()
 	o.noteMutant("c", Mutant{Hello: "a", Records: 1}, false)
-	o.Note("c", 4, false)
+	o.Note("c", 4, false, true)
 	if o.mutantPreferred("c", steady(0.99)) {
 		t.Fatal("no mutant has survived, so there is nothing to prefer")
 	}

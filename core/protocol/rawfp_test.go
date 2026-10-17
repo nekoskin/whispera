@@ -159,6 +159,10 @@ func TestClassifyHandshake(t *testing.T) {
 		{"deadline", errors.New("context deadline exceeded"), 4 * time.Second, HandshakeIncomplete},
 		{"io_timeout", errors.New("read tcp: i/o timeout"), 4 * time.Second, HandshakeIncomplete},
 		{"other", errors.New("some unknown failure"), 100 * time.Millisecond, HandshakeError},
+		{"aborted_windows", errors.New("read tcp4 10.0.0.2:5000->1.2.3.4:443: wsarecv: An established connection was aborted by the software in your host machine."), 900 * time.Millisecond, HandshakeLocal},
+		{"aborted_linux", errors.New("read tcp 10.0.0.2:5000->1.2.3.4:443: read: software caused connection abort"), 900 * time.Millisecond, HandshakeLocal},
+		{"unreachable", errors.New("write tcp 10.0.0.2:5000->1.2.3.4:443: write: network is unreachable"), 10 * time.Millisecond, HandshakeLocal},
+		{"canceled", errors.New("context canceled"), 300 * time.Millisecond, HandshakeLocal},
 	}
 	for _, c := range cases {
 		if got := classifyHandshake(c.err, c.latency); got != c.want {
@@ -174,7 +178,7 @@ func TestHandshakeResultReward(t *testing.T) {
 	if HandshakeResetFast.Reward() != -1.0 {
 		t.Fatalf("ResetFast reward = %v, want -1.0", HandshakeResetFast.Reward())
 	}
-	ordered := []HandshakeResult{HandshakeResetFast, HandshakeRejected, HandshakeIncomplete, HandshakeError, HandshakeOK}
+	ordered := []HandshakeResult{HandshakeResetFast, HandshakeRejected, HandshakeIncomplete, HandshakeError, HandshakeLocal, HandshakeOK}
 	for i := 1; i < len(ordered); i++ {
 		if ordered[i-1].Reward() >= ordered[i].Reward() {
 			t.Fatalf("reward not strictly increasing in severity: %v(%.2f) >= %v(%.2f)",
@@ -401,5 +405,15 @@ func TestFragmentBudgetLearnsRecordReadingCensor(t *testing.T) {
 	}
 	if budget, _ := strategy.SelectFragments(ctx); budget == 1 {
 		t.Fatal("controller stayed on the single-record hello the inspector drops")
+	}
+}
+
+func TestClassifyDecoyIsNotArmFault(t *testing.T) {
+	err := errors.New("whispera: utls handshake: whispera: the server served the decoy site instead of the tunnel — it did not recognize this key")
+	if got := classifyHandshake(err, 90*time.Millisecond); got != HandshakeLocal {
+		t.Fatalf("decoy classified as %v, want HandshakeLocal (not the arm's fault)", got)
+	}
+	if HandshakeBlocked(HandshakeLocal) {
+		t.Fatal("HandshakeLocal must not count as the censor blocking the arm")
 	}
 }

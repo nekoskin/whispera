@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"fmt"
 	"math"
 	"testing"
 )
@@ -262,7 +263,7 @@ func TestOnlineBenchesDeadArm(t *testing.T) {
 	fits := func(int) bool { return true }
 	dead, _ := o.Select("c", polArms, fits, roll)
 	for i := 0; i < deadArmFails; i++ {
-		o.Note("c", dead, false)
+		o.Note("c", dead, false, true)
 	}
 	for i := 0; i < 20; i++ {
 		if got, _ := o.Select("c", polArms, fits, roll); got == dead {
@@ -274,13 +275,13 @@ func TestOnlineBenchesDeadArm(t *testing.T) {
 func TestOnlineReprobesBenchedArm(t *testing.T) {
 	o := newOnlinePolicy()
 	for i := 0; i < deadArmFails; i++ {
-		o.Note("c", 0, false)
+		o.Note("c", 0, false, true)
 	}
 	if o.alive("c", 0) {
 		t.Fatal("arm 0 should be benched after consecutive failures")
 	}
 	for i := 0; i < deadArmDecay; i++ {
-		o.Note("c", 1, true)
+		o.Note("c", 1, true, true)
 	}
 	if !o.alive("c", 0) {
 		t.Fatal("a benched arm should be re-probed after the fail count decays")
@@ -290,7 +291,7 @@ func TestOnlineReprobesBenchedArm(t *testing.T) {
 func TestOnlineBenchesArmOnlyOnItsNetwork(t *testing.T) {
 	o := newOnlinePolicy()
 	for i := 0; i < deadArmFails; i++ {
-		o.Note("sni|home|joint", 0, false)
+		o.Note("sni|home|joint", 0, false, true)
 	}
 	if o.alive("sni|home|joint", 0) {
 		t.Fatal("arm 0 should be benched on the network it failed on")
@@ -299,10 +300,68 @@ func TestOnlineBenchesArmOnlyOnItsNetwork(t *testing.T) {
 		t.Fatal("a failure on one network must not bench the arm on another")
 	}
 	for i := 0; i < deadArmDecay; i++ {
-		o.Note("sni|cafe|joint", 1, true)
+		o.Note("sni|cafe|joint", 1, true, true)
 	}
 	if o.alive("sni|home|joint", 0) {
 		t.Fatal("dials on another network must not decay this network's bench")
+	}
+}
+
+func TestOnlineAvoidsBothPartsOfADeadArm(t *testing.T) {
+	o := newOnlinePolicy()
+	roll := func() float64 { return 0.99 }
+	fits := func(int) bool { return true }
+	deadPreset, deadBudget := JointArmParts(4, polPresets())
+	o.Note("c", 4, false, true)
+	for i := 0; i < deadArmDecay-1; i++ {
+		got, _ := o.Select("c", polArms, fits, roll)
+		preset, budget := JointArmParts(got, polPresets())
+		if preset == deadPreset || budget == deadBudget {
+			t.Fatalf("picked arm %d, which shares a part with the dead arm 4", got)
+		}
+		o.Note("c", got, true, true)
+	}
+}
+
+func TestOnlineFallsBackWhenEveryArmSharesAPart(t *testing.T) {
+	o := newOnlinePolicy()
+	roll := func() float64 { return 0.99 }
+	whole := jointArmFits(false)
+	o.Note("c", 4, false, true)
+	got, _ := o.Select("c", polArms, whole, roll)
+	if got == 4 || !whole(got) {
+		t.Fatalf("picked arm %d, want another unfragmented arm that is alive", got)
+	}
+}
+
+func TestOnlineNeedsOneFailureToLeaveABlockedPart(t *testing.T) {
+	presets := polPresets()
+	rules := map[string]func(arm int) bool{}
+	for p := 0; p < presets; p++ {
+		p := p
+		rules[fmt.Sprintf("preset %d", p)] = func(a int) bool { pr, _ := JointArmParts(a, presets); return pr != p }
+	}
+	for _, b := range fragmentBudgets {
+		b := b
+		rules[fmt.Sprintf("budget %d", b)] = func(a int) bool { _, bb := JointArmParts(a, presets); return bb != b }
+	}
+	every := func(int) bool { return true }
+	roll := func() float64 { return 0.99 }
+	for name, survives := range rules {
+		o := newOnlinePolicy()
+		failed := 0
+		for {
+			a, _ := o.Select("c", polArms, every, roll)
+			ok := survives(a)
+			o.Note("c", a, ok, true)
+			if ok {
+				break
+			}
+			failed++
+			if failed > 1 {
+				t.Fatalf("%s blocked: %d failures before a working arm", name, failed)
+			}
+		}
 	}
 }
 
@@ -310,15 +369,15 @@ func TestOnlineBenchesAnArmLongerEachTimeItDiesAgain(t *testing.T) {
 	o := newOnlinePolicy()
 	pass := func(n int) {
 		for i := 0; i < n; i++ {
-			o.Note("c", 1, true)
+			o.Note("c", 1, true, true)
 		}
 	}
-	o.Note("c", 0, false)
+	o.Note("c", 0, false, true)
 	pass(deadArmDecay)
 	if !o.alive("c", 0) {
 		t.Fatal("after the first death the arm should be re-probed within one decay period")
 	}
-	o.Note("c", 0, false)
+	o.Note("c", 0, false, true)
 	pass(deadArmDecay)
 	if o.alive("c", 0) {
 		t.Fatal("an arm that died again on its re-probe should stay benched longer")
@@ -327,10 +386,54 @@ func TestOnlineBenchesAnArmLongerEachTimeItDiesAgain(t *testing.T) {
 	if !o.alive("c", 0) {
 		t.Fatal("the longer bench should still run out")
 	}
-	o.Note("c", 0, true)
-	o.Note("c", 0, false)
+	o.Note("c", 0, true, true)
+	o.Note("c", 0, false, true)
 	pass(deadArmDecay)
 	if !o.alive("c", 0) {
 		t.Fatal("a success should reset the bench to its shortest length")
+	}
+}
+
+func TestOnlineKeepsArmAfterOneTimeout(t *testing.T) {
+	o := newOnlinePolicy()
+	o.Note("c", 0, false, false)
+	if !o.alive("c", 0) {
+		t.Fatal("one timeout is likely packet loss, not a block — the arm should stay in play")
+	}
+}
+
+func TestOnlineBenchesArmAfterRepeatedTimeouts(t *testing.T) {
+	o := newOnlinePolicy()
+	for i := 0; i < deadArmWeakFails-1; i++ {
+		o.Note("c", 0, false, false)
+		if !o.alive("c", 0) {
+			t.Fatalf("benched after %d timeouts, want %d", i+1, deadArmWeakFails)
+		}
+	}
+	o.Note("c", 0, false, false)
+	if o.alive("c", 0) {
+		t.Fatalf("an arm that timed out %d times running should be benched", deadArmWeakFails)
+	}
+}
+
+func TestOnlineTimeoutStreakResetsOnSuccess(t *testing.T) {
+	o := newOnlinePolicy()
+	for i := 0; i < deadArmWeakFails-1; i++ {
+		o.Note("c", 0, false, false)
+	}
+	o.Note("c", 0, true, false)
+	for i := 0; i < deadArmWeakFails-1; i++ {
+		o.Note("c", 0, false, false)
+	}
+	if !o.alive("c", 0) {
+		t.Fatal("timeouts broken up by a success must not add up to a bench")
+	}
+}
+
+func TestOnlineBenchesArmAtOnceOnReset(t *testing.T) {
+	o := newOnlinePolicy()
+	o.Note("c", 0, false, true)
+	if o.alive("c", 0) {
+		t.Fatal("an actively reset arm should be benched on the first failure")
 	}
 }

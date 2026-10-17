@@ -268,6 +268,17 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 
 		observe := func(result protocol.HandshakeResult, stage string, latency time.Duration) {
 			mutantCtx := armContext(sni, network, "mutant:"+mutant.String())
+			if result == protocol.HandshakeLocal {
+				switch {
+				case mutantUsed:
+					recordDial(mutantCtx, -1, result, stage, latency)
+				case jointArm >= 0:
+					recordDial(jointCtx, jointArm, result, stage, latency)
+				case fragArm >= 0:
+					recordDial(fragCtx, fragArm, result, stage, latency)
+				}
+				return
+			}
 			if geneUsed && stage == dialStageHandshake {
 				observeGene(gene, result == protocol.HandshakeOK)
 			}
@@ -288,7 +299,7 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 					strategy.Observe(jointCtx, jointArm, result)
 					strategy.NoteDial(jointCtx, jointArm, alive)
 					if protocol.PolicyOnlineEnabled() {
-						strategy.NoteJointOnline(jointCtx, jointArm, alive)
+						strategy.NoteJointOnline(jointCtx, jointArm, alive, protocol.HandshakeBlocked(result))
 					}
 					recordDial(jointCtx, jointArm, result, stage, latency)
 				}

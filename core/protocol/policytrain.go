@@ -316,6 +316,7 @@ const (
 	deadArmFails      = 1
 	deadArmDecay      = 16
 	deadArmBackoffMax = 4
+	deadArmWeakFails  = 3
 )
 
 func (o *onlinePolicy) alive(ctx string, a int) bool { return o.fails[ctx][a] < deadArmFails }
@@ -334,15 +335,32 @@ func (o *onlinePolicy) aliveArms(ctx string, arms int, fits func(int) bool) int 
 
 func (o *onlinePolicy) fitAlive(ctx string, fits func(int) bool, arms int) func(int) bool {
 	alive := func(a int) bool { return fits(a) && o.alive(ctx, a) }
-	for a := 0; a < arms; a++ {
-		if alive(a) {
-			return alive
+	unrelated := func(a int) bool { return alive(a) && !o.sharesPartWithDead(ctx, a) }
+	for _, tier := range []func(int) bool{unrelated, alive} {
+		for a := 0; a < arms; a++ {
+			if tier(a) {
+				return tier
+			}
 		}
 	}
 	return fits
 }
 
-func (o *onlinePolicy) noteFail(ctx string, arm int, alive bool) {
+func (o *onlinePolicy) sharesPartWithDead(ctx string, a int) bool {
+	preset, budget := JointArmParts(a, polPresets())
+	for dead, n := range o.fails[ctx] {
+		if n < deadArmFails {
+			continue
+		}
+		deadPreset, deadBudget := JointArmParts(dead, polPresets())
+		if deadPreset == preset || deadBudget == budget {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *onlinePolicy) noteFail(ctx string, arm int, alive, strong bool) {
 	fails := o.fails[ctx]
 	if fails == nil {
 		fails = map[int]int{}
@@ -358,7 +376,10 @@ func (o *onlinePolicy) noteFail(ctx string, arm int, alive bool) {
 		delete(strikes, arm)
 	} else {
 		strikes[arm]++
-		fails[arm] = deadArmFails << min(strikes[arm]-1, deadArmBackoffMax)
+
+		if strong || strikes[arm] >= deadArmWeakFails {
+			fails[arm] = deadArmFails << min(strikes[arm]-1, deadArmBackoffMax)
+		}
 	}
 	o.tickDecay(ctx)
 }
@@ -421,7 +442,7 @@ func (o *onlinePolicy) Select(ctx string, arms int, fits func(int) bool, roll fu
 	return bestFittingArm(o.live.armScores(seq, arms), fits), false
 }
 
-func (o *onlinePolicy) Note(ctx string, arm int, alive bool) {
+func (o *onlinePolicy) Note(ctx string, arm int, alive, strong bool) {
 	if arm < 0 || arm >= polArms {
 		return
 	}
@@ -429,7 +450,7 @@ func (o *onlinePolicy) Note(ctx string, arm int, alive bool) {
 	defer o.mu.Unlock()
 
 	o.rev++
-	o.noteFail(ctx, arm, alive)
+	o.noteFail(ctx, arm, alive, strong)
 
 	seq := append(o.hist[ctx], polDial(arm, alive))
 	if len(seq) > polBlock {
@@ -486,8 +507,8 @@ func (h *HandshakeStrategy) SelectJointOnline(ctx string, presets int, fragmente
 	return a, probe, true
 }
 
-func (h *HandshakeStrategy) NoteJointOnline(ctx string, arm int, alive bool) {
-	sharedOnlinePolicy().Note(ctx, arm, alive)
+func (h *HandshakeStrategy) NoteJointOnline(ctx string, arm int, alive, strong bool) {
+	sharedOnlinePolicy().Note(ctx, arm, alive, strong)
 }
 
 func (h *HandshakeStrategy) JointAliveArms(ctx string, presets int, fragmented bool) int {

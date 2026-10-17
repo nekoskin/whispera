@@ -109,7 +109,7 @@ func TestJointArmStaysWholeWithoutFragmentation(t *testing.T) {
 			}
 			h.Observe(ctx, arm, result)
 			h.NoteDial(ctx, arm, alive)
-			h.NoteJointOnline(ctx, arm, alive)
+			h.NoteJointOnline(ctx, arm, alive, true)
 		}
 	}
 }

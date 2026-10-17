@@ -16,7 +16,7 @@ func rolls(values ...float64) func() float64 {
 func TestOnlineHoldsStillWhileSurvivalIsGood(t *testing.T) {
 	o := newOnlinePolicy()
 	for i := 0; i < polOnlineWindow; i++ {
-		o.Note("ctx", 4, true)
+		o.Note("ctx", 4, true, true)
 	}
 	// A draw of 0 would explore if the gate were open; survival is 1.0, so it
 	// must not be.
@@ -33,7 +33,7 @@ func TestOnlineHoldsStillWhileSurvivalIsGood(t *testing.T) {
 func TestOnlineExploresOnlyWhenSurvivalDrops(t *testing.T) {
 	o := newOnlinePolicy()
 	for i := 0; i < polOnlineWindow; i++ {
-		o.Note("ctx", 4, i%2 == 0)
+		o.Note("ctx", 4, i%2 == 0, true)
 	}
 	if s := o.survival(); s >= polOnlineHealthy {
 		t.Fatalf("survival %.2f, wanted it below the healthy mark for this test", s)
@@ -50,7 +50,7 @@ func TestOnlineTrainsOnItsOwnDials(t *testing.T) {
 	o := newOnlinePolicy()
 	base := newPolParams()
 	for i := 0; i < polOnlineStepEvery*3; i++ {
-		o.Note("ctx", 5, true)
+		o.Note("ctx", 5, true, true)
 	}
 	if o.steps == 0 {
 		t.Fatal("no optimiser step after enough dials")
@@ -74,7 +74,7 @@ func TestOnlineTrainsOnItsOwnDials(t *testing.T) {
 func TestOnlineRevertsWhenSurvivalCollapses(t *testing.T) {
 	o := newOnlinePolicy()
 	for i := 0; i < polOnlineWindow; i++ {
-		o.Note("ctx", 7, false)
+		o.Note("ctx", 7, false, true)
 	}
 	if o.reverts == 0 {
 		t.Fatal("survival collapsed and the trained copy was kept")
@@ -98,7 +98,7 @@ func TestOnlineRevertsWhenSurvivalCollapses(t *testing.T) {
 func TestOnlineHistoryStaysWithinTheWindow(t *testing.T) {
 	o := newOnlinePolicy()
 	for i := 0; i < polBlock*3; i++ {
-		o.Note("ctx", i%12, true)
+		o.Note("ctx", i%12, true, true)
 	}
 	if got := len(o.hist["ctx"]); got > polBlock {
 		t.Fatalf("history grew to %d symbols, window is %d", got, polBlock)
