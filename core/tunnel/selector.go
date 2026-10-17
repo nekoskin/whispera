@@ -190,6 +190,12 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 		fragCtx := armContext(sni, network, "frag")
 		jointCtx := armContext(sni, network, "joint")
 
+		release, err := sharedFreeze.admit(ctx, network)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+
 		if protocol.JointArmEnabled() {
 			a, ok := 0, false
 			onlineChose := false
@@ -279,6 +285,14 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 				}
 				return
 			}
+			frozen := false
+			if stage == dialStageHandshake {
+				if result == protocol.HandshakeOK {
+					sharedFreeze.ok(network)
+				} else if freezeSilent(result) {
+					frozen = sharedFreeze.silent(network, jointArm)
+				}
+			}
 			if geneUsed && stage == dialStageHandshake {
 				observeGene(gene, result == protocol.HandshakeOK)
 			}
@@ -288,18 +302,22 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 			}
 			if mutantUsed {
 				if stage == dialStageHandshake {
-					strategy.NoteMutant(jointCtx, mutant, result == protocol.HandshakeOK)
+					if !frozen {
+						strategy.NoteMutant(jointCtx, mutant, result == protocol.HandshakeOK)
+					}
 					recordDial(mutantCtx, -1, result, stage, latency)
 				}
 				return
 			}
 			if jointArm >= 0 {
 				if stage == dialStageHandshake {
-					alive := result == protocol.HandshakeOK
-					strategy.Observe(jointCtx, jointArm, result)
-					strategy.NoteDial(jointCtx, jointArm, alive)
-					if protocol.PolicyOnlineEnabled() {
-						strategy.NoteJointOnline(jointCtx, jointArm, alive, protocol.HandshakeBlocked(result))
+					if !frozen {
+						alive := result == protocol.HandshakeOK
+						strategy.Observe(jointCtx, jointArm, result)
+						strategy.NoteDial(jointCtx, jointArm, alive)
+						if protocol.PolicyOnlineEnabled() {
+							strategy.NoteJointOnline(jointCtx, jointArm, alive, protocol.HandshakeBlocked(result))
+						}
 					}
 					recordDial(jointCtx, jointArm, result, stage, latency)
 				}
@@ -312,8 +330,10 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 				strategy.Observe(splitCtx, splitArm, result)
 			}
 			if fragArm >= 0 && stage == dialStageHandshake {
-				strategy.Observe(fragCtx, fragArm, result)
-				strategy.NoteDial(fragCtx, fragArm, result == protocol.HandshakeOK)
+				if !frozen {
+					strategy.Observe(fragCtx, fragArm, result)
+					strategy.NoteDial(fragCtx, fragArm, result == protocol.HandshakeOK)
+				}
 				recordDial(fragCtx, fragArm, result, stage, latency)
 			}
 		}
