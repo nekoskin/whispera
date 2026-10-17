@@ -37,7 +37,7 @@ const (
 	whisperaIdentityFile = config.IdentityFile
 )
 
-var Version = "0.6.8"
+var Version = "0.7.9"
 
 func buildCommit() string {
 	info, ok := rtdebug.ReadBuildInfo()
