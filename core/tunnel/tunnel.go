@@ -47,22 +47,16 @@ const (
 	FrameTypeClose   = 0x05
 )
 
-const maxInflightDials = 6
-
 type Manager struct {
 	*base.Module
 	config *Config
 
 	sm *tunnelStateMachine
-	cb *circuitBreaker
-
-	flowCB *circuitBreaker
 
 	smClient *xmux.Client
 	smMu     sync.Mutex
 
-	idle    idleSet
-	dialSem chan struct{}
+	idle idleSet
 
 	connMu    sync.RWMutex
 	sessionID uint32
@@ -148,7 +142,6 @@ func New(cfg *Config) (*Manager, error) {
 		Module:        base.NewModule(ModuleName, ModuleVersion, []string{"handshake.handler"}),
 		config:        cfg,
 		reconnectDone: make(chan struct{}),
-		dialSem:       make(chan struct{}, maxInflightDials),
 	}
 	var forceObfs int32
 	if cfg.ForceObfuscation {
@@ -156,8 +149,6 @@ func New(cfg *Config) (*Manager, error) {
 	}
 	m.connCfg.forceObfuscation.Store(forceObfs)
 	m.selector = newSelector(m)
-	m.cb = newCircuitBreaker(cbThreshold, cbResetTime)
-	m.flowCB = newCircuitBreaker(flowCBThreshold, flowCBResetTime)
 	m.sm = newTunnelStateMachine(m.onStateTransition)
 	close(m.reconnectDone)
 
@@ -339,9 +330,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		atomic.StoreInt32(&m.reconnecting, 0)
 	}()
 
-	if !m.circuitBreakerAllow() {
-		return fmt.Errorf("circuit breaker open")
-	}
 	m.setState(StateReconnecting)
 
 	for {
@@ -356,7 +344,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 
 		if m.config.MaxReconnectAttempts > 0 && st.attempts > m.config.MaxReconnectAttempts {
 			err := fmt.Errorf("max reconnect attempts exceeded")
-			m.circuitBreakerFail()
 			m.setError(err)
 			return err
 		}
@@ -372,12 +359,10 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		if err == nil {
 			atomic.StoreInt32(&m.boFailCount, 0)
 			atomic.StoreInt64(&m.boLastSuccessAt, time.Now().Unix())
-			m.circuitBreakerSuccess()
 			return nil
 		}
 
 		atomic.AddInt32(&m.boFailCount, 1)
-		m.circuitBreakerFail()
 
 		select {
 		case <-ctx.Done():
@@ -386,10 +371,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		}
 	}
 }
-
-func (m *Manager) circuitBreakerAllow() bool { return m.cb.Allow() }
-func (m *Manager) circuitBreakerFail()       { m.cb.Fail() }
-func (m *Manager) circuitBreakerSuccess()    { m.cb.Success() }
 
 func (m *Manager) LastError() error { return m.sm.LastError() }
 

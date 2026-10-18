@@ -187,7 +187,6 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	if dial == nil {
 		return nil, fmt.Errorf("direct: no camo dialer")
 	}
-	limitedDial := func(ctx context.Context) (net.Conn, error) { return m.dialLimit(ctx, dial) }
 	wantSplice := proto&protocol.SpliceProtoBit != 0
 	proto &^= protocol.SpliceProtoBit
 
@@ -201,7 +200,7 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 		}
 	}
 	if conn == nil {
-		c, err := dialWithRetry(ctx, limitedDial)
+		c, err := dialWithRetry(ctx, dial)
 		if err != nil {
 			return nil, fmt.Errorf("direct dial: %w", err)
 		}
@@ -239,7 +238,7 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 		if !reused {
 			return nil, fmt.Errorf("direct connect header: %w", err)
 		}
-		fresh, derr := dialWithRetry(ctx, limitedDial)
+		fresh, derr := dialWithRetry(ctx, dial)
 		if derr != nil {
 			return nil, fmt.Errorf("direct dial: %w", derr)
 		}
@@ -269,7 +268,7 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 		stream.token = flowToken
 		stream.ctx = ctx
 		stream.resumeDial = func(ctx context.Context) (net.Conn, error) {
-			return dialWithRetry(ctx, limitedDial)
+			return dialWithRetry(ctx, dial)
 		}
 	}
 	return stream, nil
@@ -289,31 +288,6 @@ func dialWithRetry(ctx context.Context, dial func(context.Context) (net.Conn, er
 		}
 	}
 	return nil, err
-}
-
-func (m *Manager) dialLimit(ctx context.Context, dial func(context.Context) (net.Conn, error)) (net.Conn, error) {
-	if !m.flowCB.Allow() {
-		return nil, errors.New("circuit breaker open")
-	}
-	select {
-	case m.dialSem <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	c, err := dial(ctx)
-	<-m.dialSem
-	switch {
-	case err == nil:
-		m.flowCB.Success()
-	case isConnectError(err):
-		m.flowCB.Fail()
-	}
-	return c, err
-}
-
-func isConnectError(err error) bool {
-	var opErr *net.OpError
-	return errors.As(err, &opErr) && opErr.Op == "dial"
 }
 
 const upstreamShapedWrites = 24
