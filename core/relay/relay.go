@@ -685,11 +685,24 @@ func (h proxyStreamHeader) target() string {
 	return net.JoinHostPort(h.addr, strconv.Itoa(int(h.port)))
 }
 
+const (
+	streamProtoUDP   byte = 0x11
+	streamHeaderBits      = protocol.SpliceProtoBit | protocol.KeepAliveProtoBit | protocol.TorrentProtoBit
+)
+
 func (h proxyStreamHeader) network() string {
-	if h.proto == 0x11 {
+	if h.proto == streamProtoUDP {
 		return "udp"
 	}
 	return "tcp"
+}
+
+func streamProto(raw byte) (proto byte, migrate bool) {
+	proto = raw &^ streamHeaderBits
+	if proto == streamProtoUDP {
+		return proto, false
+	}
+	return proto &^ protocol.MigrateProtoBit, proto&protocol.MigrateProtoBit != 0
 }
 
 func readProxyStreamHeader(stream net.Conn, wait time.Duration) (proxyStreamHeader, bool) {
@@ -713,17 +726,18 @@ func readProxyStreamHeader(stream net.Conn, wait time.Duration) (proxyStreamHead
 			stream.SetReadDeadline(time.Now().Add(wait))
 		}
 	}
-	proto := hdr[0]
+	raw := hdr[0]
 	addrLen := binary.BigEndian.Uint16(hdr[1:3])
+	proto, migrate := streamProto(raw)
 
-	if proto&protocol.MigrateProtoBit != 0 && addrLen == 0 {
+	if migrate && addrLen == 0 {
 		token := make([]byte, protocol.FlowTokenLen)
 		if _, err := io.ReadFull(stream, token); err != nil {
 			return proxyStreamHeader{}, false
 		}
 		return proxyStreamHeader{
-			proto:     proto &^ (protocol.SpliceProtoBit | protocol.KeepAliveProtoBit | protocol.TorrentProtoBit | protocol.MigrateProtoBit),
-			keepAlive: proto&protocol.KeepAliveProtoBit != 0,
+			proto:     proto,
+			keepAlive: raw&protocol.KeepAliveProtoBit != 0,
 			resume:    true,
 			token:     token,
 		}, true
@@ -738,14 +752,14 @@ func readProxyStreamHeader(stream net.Conn, wait time.Duration) (proxyStreamHead
 		return proxyStreamHeader{}, false
 	}
 	h := proxyStreamHeader{
-		proto:     proto &^ (protocol.SpliceProtoBit | protocol.KeepAliveProtoBit | protocol.TorrentProtoBit | protocol.MigrateProtoBit),
-		splice:    proto&protocol.SpliceProtoBit != 0 && protocol.SpliceEnabled(),
-		keepAlive: proto&protocol.KeepAliveProtoBit != 0,
-		torrent:   proto&protocol.TorrentProtoBit != 0,
+		proto:     proto,
+		splice:    raw&protocol.SpliceProtoBit != 0 && protocol.SpliceEnabled(),
+		keepAlive: raw&protocol.KeepAliveProtoBit != 0,
+		torrent:   raw&protocol.TorrentProtoBit != 0,
 		addr:      string(rest[:addrLen]),
 		port:      binary.BigEndian.Uint16(rest[addrLen:]),
 	}
-	if proto&protocol.MigrateProtoBit != 0 {
+	if migrate {
 		token := make([]byte, protocol.FlowTokenLen)
 		if _, err := io.ReadFull(stream, token); err != nil {
 			return proxyStreamHeader{}, false

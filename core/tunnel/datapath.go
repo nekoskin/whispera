@@ -220,7 +220,7 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	}
 
 	var flowToken []byte
-	if keepAlive && !splice && protocol.MigrateEnabled() {
+	if keepAlive && !splice && proto != protoUDP && protocol.MigrateEnabled() {
 		if t, err := protocol.NewFlowToken(); err == nil {
 			flowToken = t
 			hdrProto |= protocol.MigrateProtoBit

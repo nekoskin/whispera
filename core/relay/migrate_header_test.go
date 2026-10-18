@@ -3,6 +3,7 @@ package relay
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -46,6 +47,33 @@ func TestHeaderResumeHasTokenNoTarget(t *testing.T) {
 	}
 	if !bytes.Equal(h.token, token) {
 		t.Fatalf("resume token = %x, want %x", h.token, token)
+	}
+}
+
+func TestHeaderUDPIsNotAMigration(t *testing.T) {
+	payload := []byte{0x00, 0x08, 'p', 'i', 'n', 'g', '-', 'u', 'd', 'p'}
+	raw := append(connectHeader(protocol.KeepAliveProtoBit|streamProtoUDP, "udpecho", 7, nil), payload...)
+	a, b := net.Pipe()
+	go func() { a.Write(raw); a.Close() }()
+	defer b.Close()
+	h, ok := readProxyStreamHeader(b, time.Second)
+	if !ok || h.network() != "udp" || h.migratable || h.resume {
+		t.Fatalf("udp header misread: ok=%v network=%q mig=%v resume=%v", ok, h.network(), h.migratable, h.resume)
+	}
+	if h.addr != "udpecho" || h.port != 7 {
+		t.Fatalf("udp target = %s:%d, want udpecho:7", h.addr, h.port)
+	}
+	rest := make([]byte, len(payload))
+	if _, err := io.ReadFull(b, rest); err != nil || !bytes.Equal(rest, payload) {
+		t.Fatalf("first datagram after the header = %x (%v), want %x", rest, err, payload)
+	}
+}
+
+func TestHeaderTCPMigrationStillParses(t *testing.T) {
+	token := bytes.Repeat([]byte{0xCD}, protocol.FlowTokenLen)
+	h, ok := pipeHeader(t, connectHeader(protocol.KeepAliveProtoBit|protocol.MigrateProtoBit|0x06, "example.com", 443, token))
+	if !ok || !h.migratable || h.network() != "tcp" || !bytes.Equal(h.token, token) {
+		t.Fatalf("tcp migration header misread: ok=%v mig=%v network=%q token=%x", ok, h.migratable, h.network(), h.token)
 	}
 }
 
