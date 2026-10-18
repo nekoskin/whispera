@@ -274,20 +274,41 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	return stream, nil
 }
 
-const flowDialAttempts = 3
+const flowDialAttempts = 5
+
+var flowDialBackoff = 200 * time.Millisecond
 
 func dialWithRetry(ctx context.Context, dial func(context.Context) (net.Conn, error)) (net.Conn, error) {
 	var err error
 	for attempt := 0; attempt < flowDialAttempts; attempt++ {
+		started := time.Now()
 		var conn net.Conn
 		if conn, err = dial(ctx); err == nil {
 			return conn, nil
 		}
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || attempt == flowDialAttempts-1 {
+			return nil, err
+		}
+		if !sleepUntil(ctx, started.Add(time.Duration(attempt)*flowDialBackoff)) {
 			return nil, err
 		}
 	}
 	return nil, err
+}
+
+func sleepUntil(ctx context.Context, deadline time.Time) bool {
+	pause := time.Until(deadline)
+	if pause <= 0 {
+		return true
+	}
+	t := time.NewTimer(pause)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 const upstreamShapedWrites = 24

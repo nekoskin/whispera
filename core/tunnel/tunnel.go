@@ -307,9 +307,6 @@ func (m *Manager) nextBackoff(st *reconnectState) time.Duration {
 	if st.delay > m.config.ReconnectMaxDelay {
 		st.delay = m.config.ReconnectMaxDelay
 	}
-	if wait < st.delay {
-		wait = st.delay
-	}
 	return wait
 }
 
