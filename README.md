@@ -1,4 +1,4 @@
-<img width="5189" height="640" alt="logo2" src="https://github.com/user-attachments/assets/dbace4f7-b2f7-42d7-aec0-edacdf6688e2" />
+<img width="5189" height="640" alt="WHISPERA — 5189×640" src="https://github.com/user-attachments/assets/4d1ae5fd-9b4e-4692-9ff6-422936beeb2b" />
 
 ### It is a fast, easy-to-use and easy-to-install censorship-bypassing proxy server disguised as a regular HTTPS connection, written in Go.
 
