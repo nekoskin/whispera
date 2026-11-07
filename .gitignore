@@ -25,6 +25,10 @@ build/
 
 # Logs
 *.log
+*.log.*
+*.stdout
+*.stderr
+.logs/
 # logs/ (Commented out to allow src/modules/logs/)
 /logs/
 
@@ -122,16 +126,12 @@ core/protocol/fingerprint/corpus_gen_test.go
 # Runtime-generated GAN model state
 /ml_models/
 
-# e2e stand artifacts
-scripts/e2e/out/
-scripts/e2e/cfg/key.txt
-scripts/e2e/cfg/.config.checksum
-scripts/e2e/cfg/origin-tls/
+# Docker build files, the e2e stand and test data stay local
+Dockerfile*
+scripts/e2e/
+testdata/
 
 # stray build artifacts
 /censor
 /clientinsert
-
-# per-run generated keys
-scripts/e2e/cfg/key-*.txt
-scripts/e2e/cfg/torrent-key.txt
+/goclient
