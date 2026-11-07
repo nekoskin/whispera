@@ -91,6 +91,28 @@ func TestFragmentSplitsSNI(t *testing.T) {
 	}
 }
 
+func TestFragmentCapOverridesTheBudget(t *testing.T) {
+	record, _, _ := buildClientHello("www.google.com", 1600)
+	want := record[5:]
+	const cap = 2
+	for attempt := 0; attempt < 200; attempt++ {
+		conn := &captureConn{}
+		if err := writeFragmentedTLSRecord(conn, record, fragmentPlan{size: 40, maxRecords: defaultMaxHelloRecords, cap: cap}); err != nil {
+			t.Fatalf("%v", err)
+		}
+		if len(conn.records) > cap {
+			t.Fatalf("cap=%d but wrote %d records", cap, len(conn.records))
+		}
+		var got []byte
+		for _, r := range conn.records {
+			got = append(got, r[5:]...)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("reassembled %d bytes, hello is %d", len(got), len(want))
+		}
+	}
+}
+
 func TestFragmentRespectsRecordBudget(t *testing.T) {
 	record, _, _ := buildClientHello("www.google.com", 1600)
 	want := record[5:]

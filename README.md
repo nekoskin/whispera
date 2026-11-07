@@ -71,8 +71,8 @@ Available options
 -sni <domain> real domain whose TLS certificate is cloned and presented for this key
               (required unless whispera.domain is set in the config)
 
--fingerprint auto|chrome|firefox|safari|ios|android|edge|random
-             default is auto: it embeds the freshest collected chrome fingerprint
+-fingerprint chrome|firefox|safari|ios|android|edge|random
+             default is chrome
 
 -transport whispera|grpc|quic (default: whispera)
 

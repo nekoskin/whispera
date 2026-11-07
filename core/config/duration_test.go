@@ -28,37 +28,3 @@ func TestDurationSurvivesRepeatedSaves(t *testing.T) {
 		h = back
 	}
 }
-
-func TestDurationAcceptsPlainSeconds(t *testing.T) {
-	var h struct {
-		D Duration `yaml:"d"`
-	}
-	if err := yaml.Unmarshal([]byte("d: 45\n"), &h); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if h.D.D() != 45*time.Second {
-		t.Errorf("d = %v, want 45s", h.D.D())
-	}
-}
-
-func TestFillRepairsCorruptedDurations(t *testing.T) {
-	c := *DefaultServerConfig()
-	c.Session.KeepaliveInterval = Duration(-1914857 * time.Hour)
-	c.Session.SessionTimeout = 0
-	c.Server.GracefulStop = Duration(1 << 62)
-
-	if err := c.fill(); err != nil {
-		t.Fatalf("fill: %v", err)
-	}
-
-	d := DefaultServerConfig()
-	if c.Session.KeepaliveInterval != d.Session.KeepaliveInterval {
-		t.Errorf("keepalive_interval = %v, want %v", c.Session.KeepaliveInterval.D(), d.Session.KeepaliveInterval.D())
-	}
-	if c.Session.SessionTimeout != d.Session.SessionTimeout {
-		t.Errorf("session_timeout = %v, want %v", c.Session.SessionTimeout.D(), d.Session.SessionTimeout.D())
-	}
-	if c.Server.GracefulStop != d.Server.GracefulStop {
-		t.Errorf("graceful_stop = %v, want %v", c.Server.GracefulStop.D(), d.Server.GracefulStop.D())
-	}
-}

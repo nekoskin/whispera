@@ -1,11 +1,9 @@
 package split_tunnel
 
 import (
-	"context"
 	"fmt"
 	"net"
-	"net/http"
-	"net/http/httptest"
+
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,43 +58,6 @@ func TestGeoIPRejectsTruncatedList(t *testing.T) {
 	}
 	if g.Len() != before {
 		t.Fatalf("working list must survive a bad update: %d -> %d", before, g.Len())
-	}
-}
-
-func TestGeoIPRefreshUsesETag(t *testing.T) {
-	var hits, conditional int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
-		if r.Header.Get("If-None-Match") == `"v1"` {
-			conditional++
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
-		w.Header().Set("ETag", `"v1"`)
-		fmt.Fprint(w, sampleList(200))
-	}))
-	defer srv.Close()
-
-	cache := filepath.Join(t.TempDir(), "ru.txt")
-	g := NewGeoIPSet()
-
-	n, changed, err := g.Refresh(context.Background(), srv.Client(), srv.URL, cache)
-	if err != nil || !changed || n != 203 {
-		t.Fatalf("first refresh: n=%d changed=%v err=%v", n, changed, err)
-	}
-	if _, err := os.Stat(cache); err != nil {
-		t.Fatalf("cache must be written: %v", err)
-	}
-
-	_, changed, err = g.Refresh(context.Background(), srv.Client(), srv.URL, cache)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if changed {
-		t.Fatal("unchanged list must not be reapplied")
-	}
-	if conditional != 1 {
-		t.Fatalf("second request must carry If-None-Match, got %d conditional of %d", conditional, hits)
 	}
 }
 

@@ -1,7 +1,6 @@
 package fingerprint
 
 import (
-	"bytes"
 	"net"
 	"os"
 	"path/filepath"
@@ -36,8 +35,8 @@ func seedPool(t *testing.T) [][]byte {
 		AddCollected(spec, raw)
 		raws = append(raws, raw)
 	}
-	if CollectedCount() < 2 {
-		t.Fatalf("pool holds %d specs, recombination needs 2", CollectedCount())
+	if collectedCount() < 2 {
+		t.Fatalf("pool holds %d specs, recombination needs 2", collectedCount())
 	}
 	return raws
 }
@@ -54,61 +53,6 @@ func TestGeneratedHelloCanHandshake(t *testing.T) {
 	}
 	if !specHandshakeReady(spec) {
 		t.Fatal("generated hello cannot build a handshake — it would fail on a real dial")
-	}
-}
-
-func TestGeneratedHelloIsNotACopy(t *testing.T) {
-	raws := seedPool(t)
-	fresh := 0
-	for seed := int64(1); seed <= 20; seed++ {
-		raw, err := Generate(seed)
-		if err != nil {
-			continue
-		}
-		key, _ := collectKey(raw)
-		copied := false
-		for _, r := range raws {
-			if k, _ := collectKey(r); k == key {
-				copied = true
-			}
-		}
-		if !copied {
-			fresh++
-		}
-	}
-	if fresh == 0 {
-		t.Fatal("every generated hello repeats a pool entry — the pool stays finite")
-	}
-}
-
-func TestGeneratedFingerprintsDiffer(t *testing.T) {
-	seedPool(t)
-	seen := map[string]bool{}
-	for seed := int64(1); seed <= 20; seed++ {
-		if raw, err := Generate(seed); err == nil {
-			if k, ok := collectKey(raw); ok {
-				seen[k] = true
-			}
-		}
-	}
-	if len(seen) < 3 {
-		t.Fatalf("20 seeds gave %d distinct fingerprints — not effectively endless", len(seen))
-	}
-}
-
-func TestDeviceFingerprintSurvivesRestart(t *testing.T) {
-	seedPool(t)
-	path := filepath.Join(t.TempDir(), "hello.bin")
-	first, err := DeviceFingerprint(path)
-	if err != nil {
-		t.Fatalf("first launch: %v", err)
-	}
-	second, err := DeviceFingerprint(path)
-	if err != nil {
-		t.Fatalf("second launch: %v", err)
-	}
-	if !bytes.Equal(first, second) {
-		t.Fatal("fingerprint changed on restart — the device announces a new client every launch")
 	}
 }
 

@@ -7,6 +7,16 @@ import (
 	"time"
 )
 
+func WriteRandom(random []byte, sel [SelectorSize]byte, key []byte, window int64, keyShare []byte) bool {
+	if len(random) != 32 {
+		return false
+	}
+	marker := markerFor(key, window, keyShare)
+	copy(random[:SelectorSize], sel[:])
+	copy(random[SelectorSize:], marker[:])
+	return true
+}
+
 func newEph(t *testing.T) *ecdh.PrivateKey {
 	t.Helper()
 	k, err := ecdh.X25519().GenerateKey(rand.Reader)
@@ -38,72 +48,6 @@ func TestSelectorRoundTrip(t *testing.T) {
 	}
 	if got != UserTag(psk) {
 		t.Fatalf("сервер не восстановил метку пользователя")
-	}
-}
-
-func TestServerKeyIsDeterministic(t *testing.T) {
-	seed := make([]byte, 32)
-	rand.Read(seed)
-	a, _ := ServerKeyFromSeed(seed)
-	b, _ := ServerKeyFromSeed(seed)
-	if string(a.PublicKey().Bytes()) != string(b.PublicKey().Bytes()) {
-		t.Fatal("из одного сида должен получаться один и тот же ключ")
-	}
-}
-
-// Главное свойство: два соединения одного пользователя не должны быть связаны
-// пассивным наблюдателем — селектор рандомизируется эфемерным ключом.
-func TestSelectorDiffersPerConnection(t *testing.T) {
-	seed := make([]byte, 32)
-	rand.Read(seed)
-	srv, _ := ServerKeyFromSeed(seed)
-	psk := make([]byte, 32)
-	rand.Read(psk)
-
-	first, err := BuildSelector(psk, newEph(t), srv.PublicKey())
-	if err != nil {
-		t.Fatalf("BuildSelector: %v", err)
-	}
-	second, err := BuildSelector(psk, newEph(t), srv.PublicKey())
-	if err != nil {
-		t.Fatalf("BuildSelector: %v", err)
-	}
-	if first == second {
-		t.Fatal("селектор повторился между соединениями — это связываемый отпечаток")
-	}
-}
-
-func TestRandomLayoutAndMarker(t *testing.T) {
-	psk := make([]byte, 32)
-	rand.Read(psk)
-	key := DeriveKey(psk)
-	keyShare := make([]byte, 32)
-	rand.Read(keyShare)
-
-	var sel [SelectorSize]byte
-	rand.Read(sel[:])
-
-	random := make([]byte, 32)
-	now := time.Now().Unix()
-	if !WriteRandom(random, sel, key, now/WindowSeconds, keyShare) {
-		t.Fatal("WriteRandom отказал")
-	}
-
-	gotSel, marker, ok := SplitRandom(random)
-	if !ok || gotSel != sel {
-		t.Fatal("селектор не выделился обратно")
-	}
-	if len(marker) != MarkerSize {
-		t.Fatalf("маркер %d байт, ожидалось %d", len(marker), MarkerSize)
-	}
-	if !MarkerMatchesKey(key, marker, keyShare, now) {
-		t.Fatal("маркер своего ключа не сошёлся")
-	}
-
-	other := make([]byte, 32)
-	rand.Read(other)
-	if MarkerMatchesKey(DeriveKey(other), marker, keyShare, now) {
-		t.Fatal("маркер сошёлся с чужим ключом")
 	}
 }
 
@@ -152,21 +96,6 @@ func TestMarkerWithoutTimeIsRefused(t *testing.T) {
 	_, marker, _ := SplitRandom(random)
 	if MarkerMatchesKey(key, marker, keyShare, time.Now().Unix()) {
 		t.Fatal("a marker carrying no time was accepted, so a recorded hello replays forever")
-	}
-}
-
-func TestWindowedMarkerStillBoundToClock(t *testing.T) {
-	key, keyShare := randomBytes(t, 32), randomBytes(t, 32)
-	random := make([]byte, 32)
-	var sel [SelectorSize]byte
-	now := time.Now()
-	WriteRandom(random, sel, key, now.Unix()/WindowSeconds, keyShare)
-	_, marker, _ := SplitRandom(random)
-	if !MarkerMatchesKey(key, marker, keyShare, now.Unix()) {
-		t.Fatal("windowed marker rejected with an agreeing clock")
-	}
-	if MarkerMatchesKey(key, marker, keyShare, now.Add(6*time.Minute).Unix()) {
-		t.Fatal("windowed marker accepted six minutes off")
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nekoskin/whispera/core/protocol"
 	"github.com/nekoskin/whispera/core/protocol/quic"
 	"github.com/nekoskin/whispera/core/tunnel"
 )
@@ -271,7 +272,11 @@ func restartTransportEntry(ctx context.Context, e *TransportEntry, tunnelCfg *tu
 	cancelConnect()
 
 	if err != nil {
-		stdlog.Printf("tunnel %s connect failed: %v", e.ID, err)
+		if protocol.FirewallRefused(err) {
+			stdlog.Printf("tunnel %s connect failed: %v; the local firewall refused the connection to the server, most likely another VPN's kill switch that blocks traffic outside its own tunnel: turn that VPN off", e.ID, err)
+		} else {
+			stdlog.Printf("tunnel %s connect failed: %v", e.ID, err)
+		}
 		newCancel()
 		newMgr.Stop()
 		setEntryFailed(e, err)

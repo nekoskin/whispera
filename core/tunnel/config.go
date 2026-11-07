@@ -49,6 +49,9 @@ type WhisperaOptions struct {
 	WhisperaIDPub    string
 	WhisperaSelPub   string
 	WhisperaQUICAddr string
+	WhisperaIPv6     string
+	IPv6Fallback     bool
+	IPv6Only         bool
 	WhisperaMux      int
 
 	EnableGRPC     bool
@@ -104,6 +107,11 @@ type Config struct {
 
 	// How many records the hello may become. Zero keeps the default.
 	TLSFragmentCount int
+
+	// Hard ceiling on hello records whatever the dial policy picks, so a high
+	// fragment budget cannot make the hello span enough packets to look
+	// fragmented. Zero = no cap.
+	TLSFragmentCap int
 
 	// A flag, not just WHISPERA_HELLO_FRAG, because a Windows service takes no
 	// env. Zero value keeps fragmentation on.

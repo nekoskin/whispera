@@ -64,6 +64,9 @@ func RememberSelPub(idPub, selPub string) {
 const (
 	rtDatagramTokenHeader   = "X-Client-Data"
 	rtDatagramSessionHeader = "X-Request-Id"
+	rtFlowTokenHeader       = "X-Upload-Token"
+	rtFlowsHeader           = "X-Upload-Status"
+	rtFlowsActive           = "active"
 )
 
 const perflowMagic byte = 0xE7
@@ -115,6 +118,39 @@ func MessageSpliceResult(received bool) {
 func StreamMuxEnabled() bool { return os.Getenv("WHISPERA_STREAM_MUX") == "1" }
 
 func KeepAliveEnabled() bool { return os.Getenv("WHISPERA_KEEPALIVE") != "0" }
+
+type ConnLevers struct {
+	Migrate bool
+	Shaped  bool
+}
+
+type leverConn struct {
+	net.Conn
+	levers ConnLevers
+	arm    int
+}
+
+func (c *leverConn) NetConn() net.Conn { return NetConnOf(c.Conn) }
+
+func LeversOf(c net.Conn) (ConnLevers, bool) {
+	switch l := c.(type) {
+	case *leverConn:
+		return l.levers, true
+	case interface{ Levers() (ConnLevers, bool) }:
+		return l.Levers()
+	}
+	return ConnLevers{}, false
+}
+
+func ArmOf(c net.Conn) (int, bool) {
+	switch l := c.(type) {
+	case *leverConn:
+		return l.arm, l.arm >= 0
+	case interface{ Arm() (int, bool) }:
+		return l.Arm()
+	}
+	return 0, false
+}
 
 func NetConnOf(c net.Conn) net.Conn {
 	if nc, ok := c.(interface{ NetConn() net.Conn }); ok {

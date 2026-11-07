@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -24,22 +25,28 @@ type ClientConfig struct {
 	ServerSelPub  string
 	SessionCache  any
 	TCPDialer     func(ctx context.Context, network, addr string) (net.Conn, error)
+	Control       func(network, address string, c syscall.RawConn) error
 
 	EnableQUIC bool
 	QUICAddr   string
 	OnQUICConn func(*quicgo.Conn)
 
 	DropECH          bool
-	HelloSplitOffset int
+	DropPQ           bool
+	Levers           *ConnLevers
+	Arm              int
 	HelloID          utls.ClientHelloID
 	HelloRaw         []byte
 	HandshakeTimeout time.Duration
-	OnHandshake      func(result HandshakeResult, latency time.Duration)
+	OnConnected      func(local, remote net.Addr, connect time.Duration)
+	OnHelloSent      func()
+	OnHandshake      func(result HandshakeResult, symptom Symptom, latency time.Duration)
+	OnConnectFail    func(result HandshakeResult, symptom Symptom, latency time.Duration)
 	OnServerSelPub   func(selPub string)
 	OnLiveReset      func()
 	OnLiveOK         func()
 
-	OnLiveEnd func(dur time.Duration, bytes int64, reset bool)
+	OnLiveEnd func(LiveEnd)
 }
 
 type ServerConfig struct {

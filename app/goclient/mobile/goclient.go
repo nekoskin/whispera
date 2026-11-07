@@ -17,6 +17,10 @@ func Stop() {
 	client.Stop()
 }
 
+func SetServerIPv6(mode string) {
+	client.SetServerIPv6(mode)
+}
+
 func SetNetwork(descriptor string) {
 	tunnel.SetNetwork(descriptor)
 }

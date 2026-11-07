@@ -12,16 +12,16 @@ func TestEveryPresetCarriesX25519KeyShare(t *testing.T) {
 	for i := range PresetCount() {
 		id := PresetAt(i)
 
-		spec, err := utls.UTLSIdToSpec(id)
+		spec, err := SpecFor(id)
 		if err != nil {
 			t.Fatalf("arm %d (%s): spec: %v", i, id.Client, err)
 		}
 		if DropPQEnabled() {
-			DropPQKeyShares(&spec)
+			DropPQKeyShares(spec)
 		}
 
 		u := utls.UClient(nil, &utls.Config{ServerName: "www.google.com"}, utls.HelloCustom)
-		if err := u.ApplyPreset(&spec); err != nil {
+		if err := u.ApplyPreset(spec); err != nil {
 			t.Fatalf("arm %d (%s): apply: %v", i, id.Client, err)
 		}
 		if err := u.BuildHandshakeState(); err != nil {

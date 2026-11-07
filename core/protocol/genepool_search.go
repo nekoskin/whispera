@@ -18,12 +18,17 @@ type geneStat struct {
 func (e *geneStat) rate() float64 { return float64(e.alive+1) / float64(e.total+2) }
 
 const (
-	genePopCap     = 24
-	geneExplore    = 0.2
-	geneCross      = 0.3
-	geneMaxRecords = 12
-	geneMaxPause   = 20
+	geneScrambleModes = 4
+	genePopCap        = 24
+	geneExplore       = 0.2
+	geneCross         = 0.3
+	geneMaxRecords    = 12
+	geneMaxPause      = 20
 )
+
+// Candidate phantom TTLs the search draws from; 0 is off. A useful value lands
+// between the inspector's hop and the server, so it is calibrated per path.
+var genePhantomTTLs = []int{0, 2, 3, 4, 5, 8}
 
 type GenePool struct {
 	mu     sync.Mutex
@@ -78,13 +83,6 @@ func (s *GenePool) Observe(g Gene, alive bool) {
 	s.prune()
 }
 
-func (s *GenePool) Best() (Gene, float64, int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e := s.best()
-	return e.gene, e.rate(), e.total
-}
-
 func (s *GenePool) best() *geneStat {
 	best := s.pop[0]
 	for _, e := range s.pop[1:] {
@@ -108,21 +106,25 @@ func (s *GenePool) breed() Gene {
 	if len(s.pop) >= 2 && s.rng.Float64() < geneCross {
 		a := s.pop[s.rng.Intn(len(s.pop))].gene
 		b := s.pop[s.rng.Intn(len(s.pop))].gene
-		return s.mutate(Gene{Ident: a.Ident, Records: b.Records, PauseMs: b.PauseMs})
+		return s.mutate(Gene{Ident: a.Ident, Records: b.Records, PauseMs: b.PauseMs, Scramble: a.Scramble, PhantomTTL: b.PhantomTTL})
 	}
 	return s.mutate(s.pop[s.rng.Intn(len(s.pop))].gene)
 }
 
 func (s *GenePool) mutate(g Gene) Gene {
-	switch s.rng.Intn(3) {
+	switch s.rng.Intn(5) {
 	case 0:
 		if s.idents > 1 {
 			g.Ident = (g.Ident + 1 + s.rng.Intn(s.idents-1)) % s.idents
 		}
 	case 1:
-		g.Records = clampInt(g.Records+s.rng.Intn(3)-1, 1, geneMaxRecords)
+		g.Records = min(max(g.Records+s.rng.Intn(3)-1, 1), geneMaxRecords)
+	case 2:
+		g.PauseMs = min(max(g.PauseMs+s.rng.Intn(5)-2, 0), geneMaxPause)
+	case 3:
+		g.Scramble = s.rng.Intn(geneScrambleModes)
 	default:
-		g.PauseMs = clampInt(g.PauseMs+s.rng.Intn(5)-2, 0, geneMaxPause)
+		g.PhantomTTL = genePhantomTTLs[s.rng.Intn(len(genePhantomTTLs))]
 	}
 	return g
 }

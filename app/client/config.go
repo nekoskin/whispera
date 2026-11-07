@@ -6,6 +6,7 @@ import (
 	stdlog "log"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -62,6 +63,11 @@ const (
 
 	logLinesDesktop = 5000
 	logLinesMobile  = 2000
+
+	packetLogKeepBytes  = 2 << 20
+	packetLogCheckEvery = 16 << 10
+	packetLogLines      = 1000
+	packetLogSuffix     = "-packets"
 )
 
 // A phone has less to spare, so it keeps a shorter tail.
@@ -72,10 +78,28 @@ func logMaxLines() int {
 	return logLinesDesktop
 }
 
+type trimLimits struct {
+	keepBytes  int64
+	maxLines   int
+	checkEvery int
+}
+
+func mainLogLimits() trimLimits {
+	return trimLimits{keepBytes: logKeepBytes, maxLines: logMaxLines(), checkEvery: logCheckEvery}
+}
+
+var packetLogLimits = trimLimits{keepBytes: packetLogKeepBytes, maxLines: packetLogLines, checkEvery: packetLogCheckEvery}
+
+func packetLogPath(logPath string) string {
+	ext := filepath.Ext(logPath)
+	return strings.TrimSuffix(logPath, ext) + packetLogSuffix + ext
+}
+
 type trimmingLog struct {
 	mu      sync.Mutex
 	f       *os.File
 	path    string
+	limits  trimLimits
 	written int
 }
 
@@ -95,7 +119,7 @@ func openTrimmingLog(path string) (*trimmingLog, error) {
 		return currentLog, nil
 	}
 
-	t, err := newTrimmingLog(path)
+	t, err := newTrimmingLog(path, mainLogLimits())
 	if err != nil {
 		return nil, err
 	}
@@ -118,12 +142,12 @@ func (t *trimmingLog) reopen(path string) error {
 	return nil
 }
 
-func newTrimmingLog(path string) (*trimmingLog, error) {
+func newTrimmingLog(path string, limits trimLimits) (*trimmingLog, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return nil, err
 	}
-	t := &trimmingLog{f: f, path: path}
+	t := &trimmingLog{f: f, path: path, limits: limits}
 	t.trimLocked()
 	return t, nil
 }
@@ -137,7 +161,7 @@ func (t *trimmingLog) Write(p []byte) (int, error) {
 	// Checked by what has been written rather than by the clock: an hourly timer
 	// let the file grow without bound in between, and a client that is logging
 	// hard is exactly the one that fills a phone.
-	if t.written >= logCheckEvery {
+	if t.written >= t.limits.checkEvery {
 		t.written = 0
 		t.trimLocked()
 	}
@@ -161,8 +185,8 @@ func (t *trimmingLog) trimLocked() {
 	}
 
 	from := int64(0)
-	if fi.Size() > logKeepBytes {
-		from = fi.Size() - logKeepBytes
+	if fi.Size() > t.limits.keepBytes {
+		from = fi.Size() - t.limits.keepBytes
 	}
 
 	src, err := os.Open(t.path)
@@ -183,7 +207,7 @@ func (t *trimmingLog) trimLocked() {
 	}
 
 	var kept []byte
-	if countLines(buf) <= logMaxLines() {
+	if countLines(buf) <= t.limits.maxLines {
 		kept = buf
 	}
 	if from == 0 && len(kept) == len(buf) {
@@ -208,9 +232,7 @@ func setupLogging() {
 	if *logFilePath != "" {
 		trimmed, err := openTrimmingLog(*logFilePath)
 		if err != nil {
-			rb := newRingLogBuffer(2000)
-			globalLogBuf = rb
-			logWriter = rb
+			logWriter = io.Discard
 		} else {
 			logWriter = trimmed
 		}
@@ -221,9 +243,7 @@ func setupLogging() {
 			os.Stdout = null
 			os.Stderr = null
 		}
-		rb := newRingLogBuffer(2000)
-		globalLogBuf = rb
-		logWriter = rb
+		logWriter = io.Discard
 	}
 	stdlog.SetOutput(logWriter)
 	log.SetOutput(logWriter)

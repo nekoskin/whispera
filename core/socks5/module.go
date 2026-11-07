@@ -399,7 +399,7 @@ func (m *Module) directIP(ctx context.Context, host string) net.IP {
 			ip = ips[0]
 		}
 	}
-	if ip != nil {
+	if ip != nil && !fakeIP(ip) {
 		m.resolve.put(host, ip)
 	}
 	return ip
@@ -456,36 +456,29 @@ func relayWithIdle(a, b net.Conn, idle time.Duration) {
 }
 
 func (m *Module) bypassRoute(host string, port uint16) (direct bool, dialIP net.IP) {
-	if m.config.BypassDecision != nil {
-		bypass, byCountry := m.config.BypassDecision(host, port)
-		if !bypass {
-			return false, nil
-		}
-		if !byCountry || m.config.BypassAddrDirect == nil {
-			return true, nil
-		}
-		ip := m.directIP(context.Background(), host)
-		if ip == nil || !m.config.BypassAddrDirect(ip) {
-			return false, nil
-		}
-		return true, ip
+	bypass, byCountry := false, false
+	switch {
+	case m.config.BypassDecision != nil:
+		bypass, byCountry = m.config.BypassDecision(host, port)
+	case m.config.BypassFunc != nil:
+		bypass = m.config.BypassFunc(host, port)
 	}
-	if m.config.BypassFunc != nil && m.config.BypassFunc(host, port) {
-		return true, nil
+	if !bypass {
+		return false, nil
 	}
-	return false, nil
+	ip := m.directIP(context.Background(), host)
+	if ip == nil || fakeIP(ip) {
+		return false, nil
+	}
+	if byCountry && m.config.BypassAddrDirect != nil && !m.config.BypassAddrDirect(ip) {
+		return false, nil
+	}
+	return true, ip
 }
 
 func (m *Module) dialDirect(clientConn net.Conn, ip net.IP, host string, port uint16) error {
 	ctx := context.Background()
-	if ip == nil {
-		ip = m.directIP(ctx, host)
-	}
-	target := host
-	if ip != nil {
-		target = ip.String()
-	}
-	addr := net.JoinHostPort(target, strconv.Itoa(int(port)))
+	addr := net.JoinHostPort(ip.String(), strconv.Itoa(int(port)))
 	d := net.Dialer{Timeout: 10 * time.Second}
 	started := time.Now()
 	upstream, err := d.DialContext(ctx, "tcp", addr)
@@ -778,10 +771,6 @@ func parseUDPHeader(data []byte) (host string, port uint16, payload []byte, err 
 		return "", 0, nil, fmt.Errorf("unsupported ATYP 0x%02x", atyp)
 	}
 	return host, port, data[offset:], nil
-}
-
-func buildUDPReply(host string, port uint16, payload []byte) []byte {
-	return append(replyHeader(host, port), payload...)
 }
 
 func replyHeader(host string, port uint16) []byte {

@@ -1,28 +1,35 @@
 module github.com/nekoskin/whispera
 
-go 1.26.0
-
-toolchain go1.26.9
+go 1.27
 
 require (
+	github.com/google/gopacket v1.1.19
 	github.com/hashicorp/golang-lru/v2 v2.0.7
+	github.com/klauspost/reedsolomon v1.13.0
 	github.com/quic-go/quic-go v0.59.1
-	github.com/refraction-networking/utls v1.8.3-0.20260301010127-aa6edf4b11af
+	github.com/refraction-networking/utls v1.8.3-0.20261006222701-ff1b50fbbe9a
 	github.com/sagernet/sing v0.8.11
 	github.com/sagernet/sing-mux v0.3.5
 	go.uber.org/automaxprocs v1.6.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.60.0
+	golang.org/x/sys v0.48.0
 	google.golang.org/grpc v1.83.2
+	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
 	github.com/hashicorp/yamux v0.1.2 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
+	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/molecule-man/go-brrr v1.2.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/sagernet/smux v1.5.50-sing-box-mod.1 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 )
 
 replace (
@@ -31,15 +38,4 @@ replace (
 	golang.org/x/sys => golang.org/x/sys v0.35.0
 	golang.org/x/text => golang.org/x/text v0.39.0
 // gvisor.dev/gvisor => ./internal/gvisor/gvisor@v0.0.0-20251115042331-9fc4303aefe1
-)
-
-require (
-	github.com/andybalholm/brotli v1.1.1 // indirect
-	github.com/klauspost/compress v1.18.2 // indirect
-	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
-	github.com/klauspost/reedsolomon v1.13.0
-	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/protobuf v1.36.11
 )

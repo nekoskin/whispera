@@ -115,22 +115,6 @@ func StartInbound(inbound config.InboundConfig, serverConfig *config.ServerConfi
 	go acceptInbound(listener, inbound.Tag, listenAddr)
 	return nil
 }
-func StopInbound(tag string) error {
-	listenersMutex.Lock()
-	defer listenersMutex.Unlock()
-
-	listener, exists := activeListeners[tag]
-	if !exists {
-		return fmt.Errorf("inbound %s not running", tag)
-	}
-
-	if err := listener.Close(); err != nil {
-		return fmt.Errorf("failed to close listener %s: %w", tag, err)
-	}
-
-	delete(activeListeners, tag)
-	return nil
-}
 
 func StartReverseInbound(inbound config.InboundConfig, stopCh <-chan struct{}) {
 	remoteAddr := inbound.RemoteAddr

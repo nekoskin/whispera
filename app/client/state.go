@@ -7,10 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/nekoskin/whispera/common/dns"
-	"github.com/nekoskin/whispera/core/config"
-	"github.com/nekoskin/whispera/core/socks5"
 	"github.com/nekoskin/whispera/core/tunnel"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,24 +25,25 @@ const (
 )
 
 type entryView struct {
-	ID                string     `json:"id"`
-	Transport         string     `json:"transport"`
-	Server            string     `json:"server"`
-	Status            connStatus `json:"status"`
-	Enabled           bool       `json:"enabled"`
-	Obfuscated        bool       `json:"obfuscated"`
-	Mux               bool       `json:"mux"`
-	RateLimitKB       int        `json:"rate_limit_kb"`
-	SNI               string     `json:"sni"`
-	BytesUp           uint64     `json:"bytes_up"`
-	BytesDown         uint64     `json:"bytes_down"`
-	ConnectedAt       time.Time  `json:"connected_at,omitempty"`
-	Error             string     `json:"error,omitempty"`
-	ForceObfuscation  bool       `json:"force_obfuscation"`
-	BehavioralProfile string     `json:"behavioral_profile,omitempty"`
-	NoSNI             bool       `json:"no_sni"`
-	QualityRTTMs      int64      `json:"quality_rtt_ms,omitempty"`
-	QualityMissedKAs  int        `json:"quality_missed_kas,omitempty"`
+	ID                string               `json:"id"`
+	Transport         string               `json:"transport"`
+	Server            string               `json:"server"`
+	Status            connStatus           `json:"status"`
+	Enabled           bool                 `json:"enabled"`
+	Obfuscated        bool                 `json:"obfuscated"`
+	Mux               bool                 `json:"mux"`
+	RateLimitKB       int                  `json:"rate_limit_kb"`
+	SNI               string               `json:"sni"`
+	BytesUp           uint64               `json:"bytes_up"`
+	BytesDown         uint64               `json:"bytes_down"`
+	ConnectedAt       time.Time            `json:"connected_at,omitempty"`
+	Error             string               `json:"error,omitempty"`
+	ForceObfuscation  bool                 `json:"force_obfuscation"`
+	BehavioralProfile string               `json:"behavioral_profile,omitempty"`
+	NoSNI             bool                 `json:"no_sni"`
+	QualityRTTMs      int64                `json:"quality_rtt_ms,omitempty"`
+	QualityMissedKAs  int                  `json:"quality_missed_kas,omitempty"`
+	Failure           *tunnel.FailureCause `json:"failure,omitempty"`
 }
 
 type TransportEntry struct {
@@ -100,39 +98,6 @@ var reconnectEntry func(e *TransportEntry)
 var controlAddr = "127.0.0.1:10801"
 
 var globalDNS *dns.Resolver
-var globalMultiRouter *socks5.MultiRouter
-var globalSubscriptionMgr *config.SubscriptionManager
-
-var globalLogBuf *ringLogBuffer
-
-type ringLogBuffer struct {
-	mu   sync.Mutex
-	buf  []string
-	cap_ int
-}
-
-func newRingLogBuffer(capacity int) *ringLogBuffer {
-	return &ringLogBuffer{buf: make([]string, 0, capacity), cap_: capacity}
-}
-
-func (r *ringLogBuffer) Write(p []byte) (int, error) {
-	line := strings.TrimRight(string(p), "\n")
-	r.mu.Lock()
-	if len(r.buf) >= r.cap_ {
-		r.buf = r.buf[1:]
-	}
-	r.buf = append(r.buf, line)
-	r.mu.Unlock()
-	return len(p), nil
-}
-
-func (r *ringLogBuffer) Lines() []string {
-	r.mu.Lock()
-	out := make([]string, len(r.buf))
-	copy(out, r.buf)
-	r.mu.Unlock()
-	return out
-}
 
 var socksUser string
 var socksPass string
@@ -150,19 +115,10 @@ func generateSocksAuth() {
 	socksPass = hex.EncodeToString(b)
 }
 
-var newMultiBridgeTunnel func(ctx context.Context, bridgeID, bridgeAddr string, rules []string)
-
 func (p *TransportPool) Add(entry *TransportEntry) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.entries[entry.ID] = entry
-}
-
-func (p *TransportPool) Get(id string) (*TransportEntry, bool) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	e, ok := p.entries[id]
-	return e, ok
 }
 
 func (p *TransportPool) List() []*TransportEntry {
@@ -199,8 +155,10 @@ func toView(e *TransportEntry) entryView {
 	defer e.mu.Unlock()
 	var qualityRTT int64
 	var missedKAs int
+	var failure *tunnel.FailureCause
 	status := e.Status
 	if e.mgr != nil {
+		failure = e.mgr.LastFailure()
 		e.BytesUp, e.BytesDown = e.mgr.Stats()
 		e.ForceObfuscation = e.mgr.IsForceObfuscation()
 		rtt, missed := e.mgr.GetQualityMetrics()
@@ -222,5 +180,6 @@ func toView(e *TransportEntry) entryView {
 		NoSNI:             e.NoSNI,
 		QualityRTTMs:      qualityRTT,
 		QualityMissedKAs:  missedKAs,
+		Failure:           failure,
 	}
 }

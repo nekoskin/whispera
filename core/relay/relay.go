@@ -80,16 +80,6 @@ var udpCopyBufPool = sync.Pool{
 	},
 }
 
-// The server sits in a datacentre, not behind the censor, so the system
-// resolver is the right one to ask — it answers in microseconds where going out
-// to 8.8.8.8, and falling back to DoH when that is unreachable, spent whole
-// seconds before the stream had dialed anything.
-//
-// It gets a cache of our own on top. systemd-resolved honors the TTL to the
-// letter, and a CDN record lives thirty seconds, so on a real server it was
-// missing three times out of four — every miss a query on the path of opening a
-// stream. Holding an answer a little past its TTL costs at most a stale address
-// for a minute; the routing decision it feeds is coarse enough for that.
 const (
 	routeLookupWait = 300 * time.Millisecond
 	routeCacheTTL   = time.Minute
@@ -117,17 +107,8 @@ func lookupIPCached(host string) ([]net.IP, error) {
 	return ips, nil
 }
 
-// An address that has not answered in eight seconds will not answer in fifteen:
-// 99% of dials finish inside 100 ms, and the ones that time out are blocked
-// routes. The stream — and the person waiting on it — is held for the whole
-// budget, so it is worth keeping short.
 const targetDialTimeout = 8 * time.Second
 
-// targetIPs resolves a name for the router to decide on. Only the router needs
-// this: dialing by name lets the system resolver do the work, with its own cache
-// and its own happy-eyeballs, and it answers in microseconds where ours went to
-// 8.8.8.8 and, when that is unreachable, sat in a DoH fallback until the 3s
-// budget ran out — once per stream, before a single byte moved.
 func targetIPs(host string) []net.IP {
 	if ip := net.ParseIP(host); ip != nil {
 		return []net.IP{ip}
@@ -139,10 +120,6 @@ func targetIPs(host string) []net.IP {
 	return ips
 }
 
-// firstTCPAddr returns a net.Addr, not a *net.TCPAddr: a nil pointer put in an
-// interface stops being nil, so every "if addr != nil" downstream would let it
-// through and route on the string "<nil>" — one cache entry shared by every
-// name that failed to resolve.
 func firstTCPAddr(ips []net.IP, port uint16) net.Addr {
 	if len(ips) == 0 {
 		return nil
@@ -328,13 +305,18 @@ func (s *Server) runSession(under net.Conn, streamObf bool, user, clientID strin
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
-	if protocol.StreamMuxEnabled() {
+	_ = under.SetReadDeadline(time.Now().Add(proxyHeaderWait))
+	var first [1]byte
+	if _, err := io.ReadFull(under, first[:]); err != nil {
+		return
+	}
+	_ = under.SetReadDeadline(time.Time{})
+	under = &sniffedConn{Conn: under, head: first[:]}
+	if first[0] <= xmux.Version1 {
 		s.serveStreamMux(under, clientID, traceID)
 		return
 	}
-	// One padding budget for the whole connection: the streams that follow are
-	// requests on an established socket, and a fresh burst of padded records
-	// after each of them is a pattern of its own.
+
 	pad := protocol.NewShapeBudget()
 	wait := proxyHeaderWait
 	for {
@@ -349,16 +331,9 @@ func (s *Server) runSession(under net.Conn, streamObf bool, user, clientID strin
 const (
 	proxyHeaderWait = 10 * time.Second
 
-	// Switching to raw costs the connection: a stream that leaves framing can
-	// never be handed back to the pool, and reopening one is two round trips —
-	// about 3 MB of transfer at the rates and latencies we see. Below that the
-	// kernel path saves less CPU than the handshake costs, so ordinary pages,
-	// images and video chunks stay framed and keep their connection.
 	spliceAfterBytes = 4 << 20
 	targetDrainWait  = 5 * time.Second
-	// Read as much as the copy path does elsewhere. Reading one record's worth at
-	// a time meant four syscalls where one would do, and on short answers — the
-	// whole of a page — that is the entire transfer.
+
 	spliceReadBuf = 64 << 10
 )
 
@@ -384,8 +359,7 @@ func (c *serverSpliceConn) countTx(n int) {
 
 func (c *serverSpliceConn) spliceFrom(src net.Conn) (int64, error) {
 	var total int64
-	// One 64K buffer per stream is 64 MB of garbage per thousand streams, and
-	// the pool already holds buffers of exactly this size.
+
 	pb := buf.New()
 	defer pb.Release()
 	pre := pb.Extend(spliceReadBuf)
@@ -414,6 +388,28 @@ func (c *serverSpliceConn) spliceFrom(src net.Conn) (int64, error) {
 	n, err := io.Copy(c.raw, src)
 	c.countTx(int(n))
 	return total + n, err
+}
+
+type sniffedConn struct {
+	net.Conn
+	head []byte
+}
+
+func (c *sniffedConn) Read(p []byte) (int, error) {
+	if len(c.head) > 0 {
+		n := copy(p, c.head)
+		c.head = c.head[n:]
+		return n, nil
+	}
+	return c.Conn.Read(p)
+}
+
+func (c *sniffedConn) NetConn() net.Conn { return protocol.NetConnOf(c.Conn) }
+
+func (c *sniffedConn) CountTx(n int) {
+	if tc, ok := c.Conn.(interface{ CountTx(int) }); ok {
+		tc.CountTx(n)
+	}
 }
 
 func (s *Server) serveStreamMux(under net.Conn, clientID string, traceID uint64) {
@@ -515,9 +511,6 @@ func (s *Server) dialProxyTarget(outboundTag, network, targetAddr, addr string, 
 	return dialFn(dctx, outboundTag, network, targetAddr)
 }
 
-// routeIPs resolves only when a router is there to route on the answer, and
-// only when its rules actually look at addresses. A ruleset that matches on
-// ports alone needs no lookup at all.
 func (s *Server) routeIPs(host string) []net.IP {
 	s.routerMu.RLock()
 	rtr := s.router
@@ -618,10 +611,6 @@ func (s *Server) relayUDP(stream, target net.Conn, resCh chan copyResult) {
 	}()
 }
 
-// relayTCP moves the stream both ways. down reports the end of the answer as
-// soon as the origin has finished, so the caller can say so on the wire without
-// waiting for the client's own marker — that wait cost a round trip after every
-// byte had already arrived, and the connection sat out of the pool for it.
 func (s *Server) relayTCP(stream, target net.Conn, resCh chan copyResult, downDone func()) {
 	go func() {
 		res := copyResult{dir: "up"}
@@ -641,10 +630,7 @@ func (s *Server) relayTCP(stream, target net.Conn, resCh chan copyResult, downDo
 		if res.err != nil {
 			return
 		}
-		// Half-close instead of Close: the origin answers our FIN with its own,
-		// which ends the downstream copy cleanly. Closing outright made that copy
-		// fail with "use of closed network connection", and a stream whose copy
-		// ended in an error is never handed back to the pool.
+
 		if tc, ok := target.(*net.TCPConn); ok {
 			tc.CloseWrite()
 			tc.SetReadDeadline(time.Now().Add(targetDrainWait))
@@ -778,11 +764,7 @@ func spliceWrap(stream net.Conn, framed *protocol.FramedConn, h proxyStreamHeade
 	if raw == nil {
 		return framed, framed
 	}
-	// The client is already reading from the raw socket, so the framing has to
-	// move there either way — that part is agreed in the header and cannot be
-	// declined here. What can be declined is dropping the framing altogether:
-	// that is what costs the connection, and it only pays for itself while the
-	// CPU is the scarce resource.
+
 	left := int64(math.MaxInt64)
 	if cpuBusy() {
 		left = spliceAfterBytes
@@ -898,10 +880,7 @@ func (s *Server) handleProxyStream(tunnelID uint64, user, clientID string, strea
 	resCh := make(chan copyResult, 2)
 	switch {
 	case network == "udp" && framed != nil:
-		// UDP streams are framed too, so they end the same way and their
-		// connection goes back to the pool. Leaving downFramed nil here had the
-		// server close a connection the client had already pooled, and the next
-		// stream to pick it up found it dead.
+
 		downFramed = framed
 		s.relayUDP(framed, target, resCh)
 	case network == "udp":

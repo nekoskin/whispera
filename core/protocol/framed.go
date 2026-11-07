@@ -29,6 +29,11 @@ const (
 	shapeChunkMin = 4096
 	shapeChunkMax = framedMaxData
 
+	openingFillMin      = 32
+	openingFillMax      = 160
+	openingEveryDefault = 5
+	openingMaxFillers   = 64
+
 	framedSwitchMarker  = 0xFFFF
 	framedFillerMarker  = 0xFFFE
 	framedMigrateMarker = 0xFFFD
@@ -44,36 +49,34 @@ type ShapeKnobs struct {
 	fillMin      atomic.Int32
 	fillMax      atomic.Int32
 
-	// Payload length range per record. Zero fills every record to the brim.
+	openMs    atomic.Int32
+	openEvery atomic.Int32
+
 	chunkMin atomic.Int32
 	chunkMax atomic.Int32
 
-	// Draw from chunkShape instead of the range above.
 	chunkShaped atomic.Bool
 }
 
-// 5 TLS header, 1 content type, 16 AEAD tag, 7 ours.
 const chunkWireOverhead = 29
 
-// Record sizes of real browsing, measured by neural/fast.py diff.
-// Bounds are wire sizes, weights percent.
 var chunkShape = []struct {
 	lo, hi int
 	w      float64
 }{
-	{0, 64, 7.2},
-	{64, 128, 2.3},
-	{128, 256, 1.6},
-	{256, 512, 3.1},
-	{512, 1024, 4.1},
-	{1024, 2048, 52.7},
-	{2048, 4096, 1.2},
-	{4096, 8192, 7.0},
-	{8192, 16000, 1.0},
-	{16000, framedMaxData + chunkWireOverhead, 19.7},
+	{0, 64, 20.0},
+	{64, 128, 4.8},
+	{128, 256, 3.0},
+	{256, 512, 3.4},
+	{512, 1024, 3.0},
+	{1024, 2048, 10.7},
+	{2048, 4096, 5.6},
+	{4096, 8192, 8.4},
+	{8192, 16000, 14.4},
+	{16000, framedMaxData + chunkWireOverhead, 26.8},
 }
 
-func shapedChunk(left int) int {
+func shapedTarget() int {
 	total := 0.0
 	for _, c := range chunkShape {
 		total += c.w
@@ -94,13 +97,19 @@ func shapedChunk(left int) int {
 		if hi <= lo {
 			hi = lo + 1
 		}
-		n := lo + mrand.Intn(hi-lo)
-		if n < left {
-			return n
-		}
-		return left
+		return lo + mrand.Intn(hi-lo)
 	}
-	return left
+	return framedMaxData
+}
+
+func shapedPlan(left int) (data, pad int) {
+	target := shapedTarget()
+	if target >= left {
+		noteChunk(left)
+		return left, target - left
+	}
+	noteChunk(target)
+	return target, 0
 }
 
 var Shape = newShapeKnobs()
@@ -116,11 +125,46 @@ func newShapeKnobs() *ShapeKnobs {
 	lo, hi := chunkDefaults()
 	k.chunkMin.Store(int32(lo))
 	k.chunkMax.Store(int32(hi))
+	openMs, openEvery := 300, openingEveryDefault
+	if v := strings.TrimSpace(os.Getenv("WHISPERA_OPENING_FILL_MS")); v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms >= 0 {
+			openMs = ms
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("WHISPERA_OPENING_EVERY_MS")); v != "" {
+		if e, err := strconv.Atoi(v); err == nil && e > 0 {
+			openEvery = e
+		}
+	}
+	k.openMs.Store(int32(openMs))
+	k.openEvery.Store(int32(openEvery))
 	return k
 }
 
-// chunkDefaults reads WHISPERA_CHUNK as "min-max", or a single number, or "0"
-// to fill every record. Anything unparsable keeps the built-in range.
+func (k *ShapeKnobs) Opening() (windowMs, everyMs, min, max int) {
+	return int(k.openMs.Load()), int(k.openEvery.Load()), openingFillMin, openingFillMax
+}
+
+// SetOpening sets the opening-window ping-pong: for windowMs after a stream
+// opens, emit a small filler every everyMs. windowMs 0 turns it off.
+func (k *ShapeKnobs) SetOpening(windowMs, everyMs int) error {
+	if windowMs < 0 || windowMs > 60000 || everyMs < 0 {
+		return errShapeRange
+	}
+	if windowMs > 0 && everyMs <= 0 {
+		everyMs = openingEveryDefault
+	}
+	k.openMs.Store(int32(windowMs))
+	k.openEvery.Store(int32(everyMs))
+	return nil
+}
+
+// SetChunkShaped draws record sizes from the measured real distribution when on,
+// instead of the plain min-max range.
+func (k *ShapeKnobs) SetChunkShaped(on bool) {
+	k.chunkShaped.Store(on)
+}
+
 func chunkDefaults() (min, max int) {
 	min, max = shapeChunkMin, shapeChunkMax
 	v := strings.TrimSpace(os.Getenv("WHISPERA_CHUNK"))
@@ -156,8 +200,6 @@ func (k *ShapeKnobs) SetChunk(min, max int) error {
 	return nil
 }
 
-// chunkTrace records the lengths actually chosen, so they can be matched against
-// the record lengths on the wire. Off unless WHISPERA_CHUNK_TRACE names a file.
 var chunkTrace struct {
 	once sync.Once
 	mu   sync.Mutex
@@ -189,13 +231,7 @@ func noteChunk(n int) {
 	chunkTrace.mu.Unlock()
 }
 
-// chunkLen is how much data the next record carries, given what is left.
 func chunkLen(left int) int {
-	if Shape.chunkShaped.Load() {
-		n := shapedChunk(left)
-		noteChunk(n)
-		return n
-	}
 	min, max := Shape.Chunk()
 	if max <= 0 {
 		return left
@@ -277,10 +313,6 @@ func AppendShapePad(out []byte, n int) []byte {
 	return out
 }
 
-// ShapeBudget is how many records still get padded, counted per connection
-// rather than per stream. A keep-alive connection has no "first few records"
-// after every request, so restarting the count for each stream drew the same
-// opening pattern over and over on one socket.
 type ShapeBudget struct{ left atomic.Int32 }
 
 func NewShapeBudget() *ShapeBudget {
@@ -325,33 +357,52 @@ type FramedConn struct {
 	endErr   error
 	switched bool
 	pad      *ShapeBudget
+	shapeSet bool
+	shaped   bool
 
-	lastWrite atomic.Int64
-	rxWire    atomic.Int64
-	stop      chan struct{}
-	stopOnce  sync.Once
-	filling   atomic.Bool
+	lastWrite  atomic.Int64
+	createdAt  int64
+	openFill   bool
+	openFilled int
+	rxWire     atomic.Int64
+	stop       chan struct{}
+	stopOnce   sync.Once
+	filling    atomic.Bool
 }
 
 func (c *FramedConn) RxWire() int64 { return c.rxWire.Load() }
 
+func (c *FramedConn) ShapeRecords(on bool) {
+	c.wmu.Lock()
+	c.shapeSet, c.shaped = true, on
+	c.wmu.Unlock()
+}
+
 func NewFramedConn(c net.Conn, pad *ShapeBudget) *FramedConn {
-	// The batch buffer is grown on the first write: half of these connections
-	// only ever read — the upstream half of a spliced stream, for one — and a
-	// 16K buffer each adds up once streams come in thousands.
-	fc := &FramedConn{Conn: c, pad: pad}
-	fc.lastWrite.Store(time.Now().UnixNano())
+	return newFramedConn(c, pad, false)
+}
+
+// NewFramedConnFilling marks the main outbound flow, which also trickles
+// opening-window fillers to break up the encapsulated-handshake burst. Only a
+// writable primary stream opts in — never a read-only or spliced half.
+func NewFramedConnFilling(c net.Conn, pad *ShapeBudget) *FramedConn {
+	return newFramedConn(c, pad, true)
+}
+
+func newFramedConn(c net.Conn, pad *ShapeBudget, openFill bool) *FramedConn {
+	fc := &FramedConn{Conn: c, pad: pad, openFill: openFill}
+	now := time.Now().UnixNano()
+	fc.lastWrite.Store(now)
+	fc.createdAt = now
 	fc.stop = make(chan struct{})
 	fc.armFiller()
 	return fc
 }
 
-// armFiller starts the loop only once the filler is actually switched on. It
-// used to run for every connection: with the filler off it never wrote, so it
-// never saw the connection die and never left. A stream that ends through
-// EndStream rather than Close left one such goroutine behind for good.
 func (c *FramedConn) armFiller() {
-	if _, intervalMs, _, _ := Shape.Filler(); intervalMs <= 0 {
+	intervalMs := int(Shape.fillInterval.Load())
+	openMs := int(Shape.openMs.Load())
+	if intervalMs <= 0 && !(c.openFill && openMs > 0) {
 		return
 	}
 	if c.filling.Swap(true) {
@@ -360,9 +411,6 @@ func (c *FramedConn) armFiller() {
 	go c.fillLoop()
 }
 
-// A stream carries its own 16K record buffer, and in a per-flow datapath every
-// flow is a new stream: that buffer was allocated and thrown away once per
-// flow. It now comes from a pool and goes back when the stream ends.
 var framedBatchPool = sync.Pool{
 	New: func() any {
 		b := make([]byte, 0, framedPlainTarget)
@@ -386,26 +434,53 @@ func (c *FramedConn) fillLoop() {
 	defer timer.Stop()
 	for {
 		idleMs, intervalMs, min, max := Shape.Filler()
-		if intervalMs <= 0 {
+		openMs, openEvery, openMin, openMax := Shape.Opening()
+		if c.opening(openMs) {
+			timer.Reset(time.Duration(openEvery) * time.Millisecond)
+		} else if intervalMs > 0 {
+			timer.Reset(time.Duration(intervalMs) * time.Millisecond)
+		} else {
 			return
 		}
-		timer.Reset(time.Duration(intervalMs) * time.Millisecond)
 		select {
 		case <-c.stop:
 			return
 		case <-timer.C:
 		}
+		if c.opening(openMs) {
+			c.openFilled++
+			if err := c.writeFiller(fillPad(openMin, openMax)); err != nil {
+				return
+			}
+			continue
+		}
+		if intervalMs <= 0 {
+			return
+		}
 		if time.Since(time.Unix(0, c.lastWrite.Load())) < time.Duration(idleMs)*time.Millisecond {
 			continue
 		}
-		pad := min
-		if max > min {
-			pad += mrand.Intn(max - min + 1)
-		}
-		if err := c.writeFiller(pad); err != nil {
+		if err := c.writeFiller(fillPad(min, max)); err != nil {
 			return
 		}
 	}
+}
+
+func (c *FramedConn) inOpening(windowMs int) bool {
+	return windowMs > 0 && time.Since(time.Unix(0, c.createdAt)) < time.Duration(windowMs)*time.Millisecond
+}
+
+// opening is true while the opening window is still open and the per-connection
+// filler ceiling has not been hit, so a dense cadence cannot flood the link.
+func (c *FramedConn) opening(windowMs int) bool {
+	return c.openFill && c.openFilled < openingMaxFillers && c.inOpening(windowMs)
+}
+
+func fillPad(min, max int) int {
+	if max > min {
+		return min + mrand.Intn(max-min+1)
+	}
+	return min
 }
 
 func (c *FramedConn) writeFiller(pad int) error {
@@ -468,15 +543,26 @@ func (c *FramedConn) Write(b []byte) (int, error) {
 	}
 	c.lastWrite.Store(time.Now().UnixNano())
 	c.armFiller()
+	shaped := Shape.chunkShaped.Load()
+	if c.shapeSet {
+		shaped = c.shaped
+	}
 	sent := 0
 	for len(b) > 0 {
-		n := chunkLen(len(b))
+		var n, pad int
+		if shaped {
+			n, pad = shapedPlan(len(b))
+		} else {
+			n = chunkLen(len(b))
+		}
 		if n > framedMaxData {
 			n = framedMaxData
 		}
-		pad := 0
+		if pad > framedMaxData-n {
+			pad = framedMaxData - n
+		}
 		if c.pad.take() {
-			pad = ShapePadLen(framedMaxData - n)
+			pad += ShapePadLen(framedMaxData - n - pad)
 		}
 		out := c.batch[:0]
 		out = append(out, 0x17, 0x03, 0x03)

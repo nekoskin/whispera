@@ -9,18 +9,14 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/nekoskin/whispera/core/protocol/fingerprint"
 	"io"
-	"math"
 	mrand "math/rand"
 	"net"
 	"net/http"
 	"os"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,35 +36,21 @@ const handshakeTimeout = 3 * time.Second
 
 const FastRotateHandshakeTimeout = 2500 * time.Millisecond
 
-type helloSplitConn struct {
-	net.Conn
-	splitAt int
-	split   bool
-}
-
-func (c *helloSplitConn) Write(b []byte) (int, error) {
-	if c.split || c.splitAt <= 0 || c.splitAt >= len(b) {
-		c.split = true
-		return c.Conn.Write(b)
-	}
-	c.split = true
-	n1, err := c.Conn.Write(b[:c.splitAt])
-	if err != nil {
-		return n1, err
-	}
-	n2, err := c.Conn.Write(b[c.splitAt:])
-	return n1 + n2, err
-}
-
 const liveResetWindow = 8 * time.Second
 
 type livenessConn struct {
 	net.Conn
-	onReset func()
-	onOK    func()
-	onEnd   func(time.Duration, int64, bool)
+	onReset     func()
+	onOK        func()
+	onEnd       func(LiveEnd)
+	onHelloSent func()
 
-	moved atomic.Int64
+	reading   atomic.Bool
+	moved     atomic.Int64
+	down      atomic.Int64
+	stalled   atomic.Bool
+	midRecord atomic.Bool
+	records   recordCursor
 
 	mu            sync.Mutex
 	establishedAt time.Time
@@ -76,10 +58,14 @@ type livenessConn struct {
 	closedByUs    bool
 	fired         bool
 	ended         bool
+	frozen        *time.Timer
 }
 
 func (c *livenessConn) reportEnd(reset bool) {
 	c.mu.Lock()
+	if c.frozen != nil {
+		c.frozen.Stop()
+	}
 	if c.ended || !c.established || c.onEnd == nil {
 		c.mu.Unlock()
 		return
@@ -88,7 +74,40 @@ func (c *livenessConn) reportEnd(reset bool) {
 	dur := time.Since(c.establishedAt)
 	cb := c.onEnd
 	c.mu.Unlock()
-	cb(dur, c.moved.Load(), reset)
+	cb(LiveEnd{Dur: dur, Moved: c.moved.Load(), Down: c.down.Load(), Reset: reset, Stalled: c.stalled.Load(), MidRecord: c.midRecord.Load()})
+}
+
+func (c *livenessConn) watchVolume(b []byte, down int64) {
+	if down-int64(len(b)) > volumeFreezeMaxBytes {
+		return
+	}
+	c.records.feed(b)
+	inside := c.records.inside()
+	c.midRecord.Store(inside)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.established || c.ended || c.onEnd == nil {
+		return
+	}
+	if !inside || !inVolumeWindow(down) {
+		if c.frozen != nil {
+			c.frozen.Stop()
+		}
+		return
+	}
+	if c.frozen == nil {
+		c.frozen = time.AfterFunc(StreamStallSilence, c.freezeSeen)
+		return
+	}
+	c.frozen.Reset(StreamStallSilence)
+}
+
+func (c *livenessConn) freezeSeen() {
+	if !c.midRecord.Load() {
+		return
+	}
+	c.stalled.Store(true)
+	c.Close()
 }
 
 func (c *livenessConn) NetConn() net.Conn { return c.Conn }
@@ -103,9 +122,13 @@ func (c *livenessConn) markEstablished() {
 }
 
 func (c *livenessConn) Read(b []byte) (int, error) {
+	if c.onHelloSent != nil && !c.reading.Swap(true) {
+		c.onHelloSent()
+	}
 	n, err := c.Conn.Read(b)
 	if n > 0 {
 		c.moved.Add(int64(n))
+		c.watchVolume(b[:n], c.down.Add(int64(n)))
 	}
 	if err != nil {
 		c.note(err)
@@ -178,8 +201,7 @@ func classifyHandshake(err error, latency time.Duration) HandshakeResult {
 	}
 	s := err.Error()
 	switch {
-	case strings.Contains(s, "context canceled"), strings.Contains(s, "abort"),
-		strings.Contains(s, "unreachable"), strings.Contains(s, "network is down"):
+	case isLocalDialError(s):
 		return HandshakeLocal
 	case strings.Contains(s, "served the decoy"):
 		return HandshakeLocal
@@ -219,235 +241,46 @@ func HandshakeBlocked(r HandshakeResult) bool {
 	return r == HandshakeResetFast || r == HandshakeRejected
 }
 
-func (r HandshakeResult) Reward() float64 {
-	switch r {
-	case HandshakeOK:
-		return 1.0
-	case HandshakeResetFast:
-		return -1.0
-	case HandshakeRejected:
-		return -0.9
-	case HandshakeIncomplete:
-		return -0.7
-	case HandshakeLocal:
-		return 0
-	default:
-		return -0.3
-	}
-}
+var fragmentBudgets = []int{1, 2, 4, 8}
 
-var splitOffsets = []int{0, 8, 24, 64}
+type HandshakeStrategy struct{}
 
-var fragmentBudgets = growRepertoire([]int{1, 2, 4, 8})
+func NewHandshakeStrategy() *HandshakeStrategy { return &HandshakeStrategy{} }
 
-func growRepertoire(base []int) []int {
-	extra := os.Getenv("WHISPERA_ARM_BUDGETS")
-	if extra == "" {
-		return base
-	}
-	seen := map[int]bool{}
-	for _, b := range base {
-		seen[b] = true
-	}
-	out := append([]int(nil), base...)
-	for _, part := range strings.Split(extra, ",") {
-		n, err := strconv.Atoi(strings.TrimSpace(part))
-		if err != nil || n < 1 || seen[n] {
-			continue
-		}
-		seen[n] = true
-		out = append(out, n)
-	}
-	sort.Ints(out)
-	return out
-}
+const (
+	armPQStates      = 2
+	armMigrateStates = 2
+	armShapeStates   = 2
+)
 
-type HandshakeStrategy struct {
-	mu       sync.Mutex
-	sum      map[string][]float64
-	cnt      map[string][]int64
-	survEWMA float64
-	surv     map[string]float64
-	seen     map[string]int64
-	current  map[string]int
-	rev      uint64
-	saved    uint64
-}
-
-func NewHandshakeStrategy() *HandshakeStrategy {
-	h := &HandshakeStrategy{
-		sum:     make(map[string][]float64),
-		cnt:     make(map[string][]int64),
-		surv:    make(map[string]float64),
-		seen:    make(map[string]int64),
-		current: make(map[string]int),
-	}
-	return h
-}
-
-const survSwitchThreshold = 0.3
-
-var exploreEpsilon = 0.15
-
-func (h *HandshakeStrategy) Select(ctx string, arms int) int {
-	if arms <= 0 {
-		return 0
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	cur, ok := h.current[ctx]
-	if !ok || cur < 0 || cur >= arms {
-		cur = h.bestArm(ctx, arms)
-		h.current[ctx] = cur
-		return cur
-	}
-	if exploreEpsilon > 0 && arms > 1 && mrand.Float64() < exploreEpsilon {
-		return h.leastTried(ctx, arms)
-	}
-	if h.seen[ctx] >= int64(arms) && h.surv[ctx] < survSwitchThreshold {
-		if next := h.bestArm(ctx, arms); next != cur {
-			traceLog.Infow("arm switched", "ctx", ctx, "from", cur, "to", next, "survival", h.surv[ctx])
-			h.current[ctx] = next
-			h.surv[ctx] = survSwitchThreshold
-			h.rev++
-			cur = next
-		}
-	}
-	return cur
-}
-
-func (h *HandshakeStrategy) leastTried(ctx string, arms int) int {
-	cnt := h.cnt[ctx]
-	best, fewest := 0, int64(math.MaxInt64)
-	for i := 0; i < arms; i++ {
-		var c int64
-		if i < len(cnt) {
-			c = cnt[i]
-		}
-		if c < fewest {
-			best, fewest = i, c
-		}
-	}
-	return best
-}
-
-func (h *HandshakeStrategy) bestArm(ctx string, arms int) int {
-	sum, cnt := h.sum[ctx], h.cnt[ctx]
-	best, bestScore := 0, math.Inf(-1)
-	for i := 0; i < arms; i++ {
-		score := math.Inf(1)
-		if i < len(cnt) && cnt[i] > 0 {
-			score = sum[i] / float64(cnt[i])
-		}
-		if score > bestScore {
-			best, bestScore = i, score
-		}
-	}
-	return best
-}
-
-func (h *HandshakeStrategy) Record(ctx string, r HandshakeResult) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.seen[ctx] == 0 {
-		h.surv[ctx] = 0.5
-	}
-	surv := 0.0
-	if r == HandshakeOK {
-		surv = 1.0
-	}
-	h.surv[ctx] += 0.05 * (surv - h.surv[ctx])
-	h.seen[ctx]++
-	h.survEWMA += 0.05 * (surv - h.survEWMA)
-	h.rev++
-	traceLog.Infow("handshake signal",
-		"ctx", ctx, "result", int(r), "survival", h.surv[ctx], "seen", h.seen[ctx])
-}
-
-type signalSnapshot struct {
-	Surv     map[string]float64 `json:"surv"`
-	Seen     map[string]int64   `json:"seen"`
-	SurvEWMA float64            `json:"surv_ewma"`
-}
-
-func (h *HandshakeStrategy) Save(path string) error {
-	h.mu.Lock()
-	if h.rev == h.saved {
-		h.mu.Unlock()
-		return nil
-	}
-	rev := h.rev
-	data, err := json.Marshal(signalSnapshot{Surv: h.surv, Seen: h.seen, SurvEWMA: h.survEWMA})
-	h.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return err
-	}
-	h.mu.Lock()
-	h.saved = rev
-	h.mu.Unlock()
-	return nil
-}
-
-func (h *HandshakeStrategy) Load(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	var snap signalSnapshot
-	if err := json.Unmarshal(data, &snap); err != nil {
-		return err
-	}
-	h.mu.Lock()
-	if snap.Surv != nil {
-		h.surv = snap.Surv
-	}
-	if snap.Seen != nil {
-		h.seen = snap.Seen
-	}
-	h.survEWMA = snap.SurvEWMA
-	h.saved = h.rev
-	h.mu.Unlock()
-	return nil
-}
-
-func (h *HandshakeStrategy) ensure(ctx string, arms int) {
-	if len(h.sum[ctx]) < arms {
-		s := make([]float64, arms)
-		copy(s, h.sum[ctx])
-		h.sum[ctx] = s
-		c := make([]int64, arms)
-		copy(c, h.cnt[ctx])
-		h.cnt[ctx] = c
-	}
-}
-
-func armMean(sum float64, cnt int64) float64 {
-	if cnt == 0 {
-		return 0
-	}
-	return sum / float64(cnt)
-}
-
-func (h *HandshakeStrategy) SelectSplit(ctx string) (offset, arm int) {
-	return h.selectFromRepertoire(ctx, splitOffsets, anyArm)
-}
-
-func (h *HandshakeStrategy) SelectFragments(ctx string) (budget, arm int) {
-	return h.selectFromRepertoire(ctx, fragmentBudgets, anyArm)
-}
-
-func JointArmCount(presets int) int {
+func jointBlock(presets int) int {
 	if presets < 1 {
 		presets = 1
 	}
 	return presets * len(fragmentBudgets)
+}
+
+func JointArmCount(presets int) int {
+	return jointBlock(presets) * armPQStates * armMigrateStates * armShapeStates
+}
+
+func jointArmBit(arm, below, states int) bool {
+	if arm < 0 {
+		return false
+	}
+	return (arm/below)%states == 1
+}
+
+func JointArmHello(arm, presets int) int {
+	return arm % (jointBlock(presets) * armPQStates)
+}
+
+func JointArmMigrates(arm, presets int) bool {
+	return jointArmBit(arm, jointBlock(presets)*armPQStates, armMigrateStates)
+}
+
+func JointArmShaped(arm, presets int) bool {
+	return jointArmBit(arm, jointBlock(presets)*armPQStates*armMigrateStates, armShapeStates)
 }
 
 func JointArmParts(arm, presets int) (preset, budget int) {
@@ -455,80 +288,57 @@ func JointArmParts(arm, presets int) (preset, budget int) {
 		presets = 1
 	}
 	n := len(fragmentBudgets)
-	if arm < 0 || arm >= presets*n {
+	if arm < 0 || arm >= JointArmCount(presets) {
 		return 0, fragmentBudgets[0]
 	}
-	return arm / n, fragmentBudgets[arm%n]
+	within := arm % jointBlock(presets)
+	return within / n, fragmentBudgets[within%n]
 }
 
-func anyArm(int) bool { return true }
+func JointArmDropPQ(arm, presets int) bool {
+	return jointArmBit(arm, jointBlock(presets), armPQStates)
+}
+
+func JointArmFor(preset, records int, dropPQ bool, presets int) (int, bool) {
+	if preset < 0 || preset >= presets {
+		return 0, false
+	}
+	for i, b := range fragmentBudgets {
+		if b == records {
+			arm := preset*len(fragmentBudgets) + i
+			if dropPQ {
+				arm += jointBlock(presets)
+			}
+			return arm, true
+		}
+	}
+	return 0, false
+}
+
+func JointArmRemap(arm, from, to int) (int, bool) {
+	if arm < 0 || arm >= JointArmCount(from) {
+		return 0, false
+	}
+	preset, budget := JointArmParts(arm, from)
+	base, ok := JointArmFor(preset, budget, JointArmDropPQ(arm, from), to)
+	if !ok {
+		return 0, false
+	}
+	levers := arm / (jointBlock(from) * armPQStates)
+	return base + levers*jointBlock(to)*armPQStates, true
+}
+
+func JointArmWithPreset(arm, preset int) int {
+	n := len(fragmentBudgets)
+	block := jointBlock(polPresets())
+	pq := arm / block
+	return pq*block + preset*n + arm%n
+}
 
 func jointArmFits(fragmented bool) func(int) bool {
 	return func(arm int) bool {
 		return fragmented || fragmentBudgets[arm%len(fragmentBudgets)] == 1
 	}
-}
-
-func (h *HandshakeStrategy) SelectJoint(ctx string, presets int, fragmented bool) int {
-	seq := make([]int, JointArmCount(presets))
-	for i := range seq {
-		seq[i] = i
-	}
-	_, arm := h.selectFromRepertoire(ctx, seq, jointArmFits(fragmented))
-	return arm
-}
-
-func (h *HandshakeStrategy) selectFromRepertoire(ctx string, repertoire []int, fits func(int) bool) (value, arm int) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.ensure(ctx, len(repertoire))
-	sum, cnt := h.sum[ctx], h.cnt[ctx]
-
-	var total int64
-	for i := range repertoire {
-		if !fits(i) {
-			continue
-		}
-		if cnt[i] == 0 {
-			return repertoire[i], i
-		}
-		total += cnt[i]
-	}
-
-	lnTotal := math.Log(float64(total))
-	best := math.Inf(-1)
-	for i := range repertoire {
-		if !fits(i) {
-			continue
-		}
-		norm := (armMean(sum[i], cnt[i]) + 1) / 2
-		score := norm + math.Sqrt(2*lnTotal/float64(cnt[i]))
-		if score > best {
-			best, arm = score, i
-		}
-	}
-	return repertoire[arm], arm
-}
-
-func (h *HandshakeStrategy) Observe(ctx string, arm int, r HandshakeResult) {
-	if arm < 0 {
-		return
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.ensure(ctx, arm+1)
-	reward := r.Reward()
-	h.sum[ctx][arm] += reward
-	h.cnt[ctx][arm]++
-	surv := 0.0
-	if r == HandshakeOK {
-		surv = 1.0
-	}
-	h.survEWMA += 0.05 * (surv - h.survEWMA)
-	h.rev++
-	traceLog.Infow("handshake control observed",
-		"ctx", ctx, "arm", arm,
-		"result", int(r), "reward", reward, "survival_ewma", h.survEWMA)
 }
 
 func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
@@ -545,7 +355,7 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	if cfg.HelloID.Client != "" {
 		helloID, helloRaw = cfg.HelloID, cfg.HelloRaw
 	} else {
-		helloID, helloRaw, _ = fingerprint.Session()
+		helloID, helloRaw = fingerprint.Session()
 	}
 
 	camoKey := camo.DeriveKey(cfg.SharedSecret)
@@ -558,7 +368,11 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 		helloRaw: helloRaw,
 	}
 
-	return dialPerflow(ctx, d, sessionID, token)
+	conn, err := dialPerflow(ctx, d, sessionID, token)
+	if err != nil || cfg.Levers == nil {
+		return conn, err
+	}
+	return &leverConn{Conn: conn, levers: *cfg.Levers, arm: cfg.Arm}, nil
 }
 
 type clientDialer struct {
@@ -585,29 +399,33 @@ func (d *clientDialer) markEstablished() {
 func (d *clientDialer) dialRaw(ctx context.Context, network, addr string) (net.Conn, error) {
 	var rawConn net.Conn
 	var err error
+	start := time.Now()
 	if d.cfg.TCPDialer != nil {
 		rawConn, err = d.cfg.TCPDialer(ctx, network, addr)
 	} else {
-		dl := &net.Dialer{Timeout: dialTimeout}
+		dl := &net.Dialer{Timeout: dialTimeout, Control: d.cfg.Control}
 		rawConn, err = dl.DialContext(ctx, network, addr)
 	}
 	if err != nil {
+		if d.cfg.OnConnectFail != nil {
+			latency := time.Since(start)
+			d.cfg.OnConnectFail(classifyHandshake(err, latency), connectSymptom(err), latency)
+		}
 		return nil, err
+	}
+	if d.cfg.OnConnected != nil {
+		d.cfg.OnConnected(rawConn.LocalAddr(), rawConn.RemoteAddr(), time.Since(start))
 	}
 	if tcpConn, ok := rawConn.(*net.TCPConn); ok {
 		tcpConn.SetKeepAlive(true)
 		tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
 		tcpConn.SetNoDelay(true)
 	}
-	lc := &livenessConn{Conn: rawConn, onReset: d.cfg.OnLiveReset, onOK: d.cfg.OnLiveOK, onEnd: d.cfg.OnLiveEnd}
+	lc := &livenessConn{Conn: rawConn, onReset: d.cfg.OnLiveReset, onOK: d.cfg.OnLiveOK, onEnd: d.cfg.OnLiveEnd, onHelloSent: d.cfg.OnHelloSent}
 	d.mu.Lock()
 	d.live = lc
 	d.mu.Unlock()
-	rawConn = lc
-	if d.cfg.HelloSplitOffset > 0 {
-		rawConn = &helloSplitConn{Conn: rawConn, splitAt: d.cfg.HelloSplitOffset}
-	}
-	return rawConn, nil
+	return lc, nil
 }
 
 func (d *clientDialer) selectorFor(uConn *utls.UConn, keyShare []byte) ([camo.SelectorSize]byte, bool) {
@@ -676,17 +494,20 @@ func (d *clientDialer) tlsHandshake(ctx context.Context, rawConn net.Conn, useSp
 		if id == utls.HelloCustom {
 			id = fingerprint.PresetAt(0)
 		}
-		s, err := utls.UTLSIdToSpec(id)
+		s, err := fingerprint.SpecFor(id)
 		if err != nil {
 			return nil, fmt.Errorf("whispera: fingerprint: %w", err)
 		}
-		spec = &s
+		spec = s
 	}
-	if fingerprint.DropPQEnabled() {
+	if (d.cfg != nil && d.cfg.DropPQ) || fingerprint.DropPQEnabled() {
 		fingerprint.DropPQKeyShares(spec)
 	}
-	if d.cfg != nil && d.cfg.DropECH {
+	if (d.cfg != nil && d.cfg.DropECH) || fingerprint.DropECHEnabled() {
 		fingerprint.DropECH(spec)
+	}
+	if protos, ok := fingerprint.ForcedALPN(); ok {
+		fingerprint.SetALPN(spec, protos)
 	}
 	uConn := utls.UClient(rawConn, uCfg, utls.HelloCustom)
 	if err := uConn.ApplyPreset(spec); err != nil {
@@ -711,7 +532,8 @@ func (d *clientDialer) tlsHandshake(ctx context.Context, rawConn net.Conn, useSp
 	hsErr := uConn.HandshakeContext(ctx)
 	if d.cfg.OnHandshake != nil {
 		latency := time.Since(start)
-		d.cfg.OnHandshake(classifyHandshake(hsErr, latency), latency)
+		result := classifyHandshake(hsErr, latency)
+		d.cfg.OnHandshake(result, helloSymptom(result, hsErr), latency)
 	}
 	if hsErr != nil {
 		return nil, fmt.Errorf("whispera: utls handshake: %w", hsErr)
@@ -740,7 +562,10 @@ func helloRetryWorthwhile(ctx context.Context, err error) bool {
 	return !errors.Is(err, os.ErrDeadlineExceeded)
 }
 
+const helloRedialGap = 500 * time.Millisecond
+
 func (d *clientDialer) dialTLS(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+	started := time.Now()
 	rawConn, err := d.dialRaw(ctx, network, addr)
 	if err != nil {
 		return nil, err
@@ -748,6 +573,13 @@ func (d *clientDialer) dialTLS(ctx context.Context, network, addr string, _ *tls
 	uConn, err := d.handshakeWithin(ctx, rawConn, true)
 	if err != nil && len(d.helloRaw) > 0 && helloRetryWorthwhile(ctx, err) {
 		rawConn.Close()
+		wait := time.NewTimer(time.Until(started.Add(helloRedialGap)))
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			return nil, ctx.Err()
+		case <-wait.C:
+		}
 		rawConn, err = d.dialRaw(ctx, network, addr)
 		if err != nil {
 			return nil, err
@@ -790,78 +622,165 @@ func dialPerflow(ctx context.Context, d *clientDialer, sessionID []byte, token s
 	return uConn, nil
 }
 
-func DialRTDatagrams(ctx context.Context, cfg *ClientConfig) error {
+var ErrQUICFlowsUnsupported = errors.New("whispera: the server does not carry flows over QUIC")
+
+type QUICLane struct {
+	conn   *quicgo.Conn
+	client *http3.ClientConn
+	cfg    *ClientConfig
+	sni    string
+	flows  bool
+}
+
+func DialQUICLane(ctx context.Context, cfg *ClientConfig) (*QUICLane, error) {
 	if cfg.QUICAddr == "" {
-		return fmt.Errorf("whispera: no QUIC address configured")
+		return nil, fmt.Errorf("whispera: no QUIC address configured")
 	}
-
-	sessionID := make([]byte, 16)
-	if _, err := crand.Read(sessionID); err != nil {
-		return fmt.Errorf("whispera: session id: %w", err)
-	}
-	keys := DeriveKeys(cfg.SharedSecret)
-	token := AuthToken(keys.Auth, authTimeless, sessionID)
-
 	sni := sessionSNI(cfg)
-	tr := newQUICTransport(cfg, sni)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		fmt.Sprintf("https://%s/", cfg.QUICAddr), http.NoBody)
+	conn, err := dialQUIC(ctx, cfg, sni)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("whispera: QUIC dial: %w", err)
 	}
-	req.Host = sni
-	req.Header.Set(rtDatagramTokenHeader, "Bearer "+token)
-	req.Header.Set(rtDatagramSessionHeader, hex.EncodeToString(sessionID))
-
-	resp, err := (&http.Client{Transport: tr}).Do(req)
+	lane := &QUICLane{
+		conn:   conn,
+		client: (&http3.Transport{DisableCompression: true}).NewClientConn(conn),
+		cfg:    cfg,
+		sni:    sni,
+	}
+	req, err := lane.request(ctx, rtDatagramTokenHeader)
 	if err != nil {
-		return fmt.Errorf("whispera: rt datagram register: %w", err)
+		lane.Close()
+		return nil, err
+	}
+	resp, err := lane.client.RoundTrip(req)
+	if err != nil {
+		lane.Close()
+		return nil, fmt.Errorf("whispera: rt datagram register: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
-		return fmt.Errorf("whispera: rt datagram register: status %d", resp.StatusCode)
+		lane.Close()
+		return nil, fmt.Errorf("whispera: rt datagram register: status %d", resp.StatusCode)
 	}
-
-	logTransportMode("rt-datagrams")
+	lane.flows = resp.Header.Get(rtFlowsHeader) == rtFlowsActive
 	go func() {
 		defer resp.Body.Close()
 		_, _ = io.Copy(io.Discard, resp.Body)
 	}()
-	return nil
+	if cfg.OnQUICConn != nil {
+		cfg.OnQUICConn(conn)
+	}
+	logTransportMode("rt-datagrams")
+	return lane, nil
 }
 
-func newQUICTransport(cfg *ClientConfig, sni string) http.RoundTripper {
+func dialQUIC(ctx context.Context, cfg *ClientConfig, sni string) (*quicgo.Conn, error) {
 	tlsCfg := &tls.Config{
 		ServerName:         sni,
 		InsecureSkipVerify: true,
+		NextProtos:         []string{http3.NextProtoH3},
 	}
 	if cfg.ServerCertPin != "" || cfg.ServerIDPub != "" {
 		tlsCfg.VerifyPeerCertificate = certVerifier(cfg.ServerCertPin, cfg.ServerIDPub, sni, cfg.OnServerSelPub)
 	}
-	return &http3.Transport{
-		TLSClientConfig:    tlsCfg,
-		QUICConfig:         chromeLikeQUICConfig(),
-		DisableCompression: true,
-		Dial: func(ctx context.Context, addr string, tlsConf *tls.Config, qCfg *quicgo.Config) (*quicgo.Conn, error) {
-			udpAddr, err := net.ResolveUDPAddr("udp", addr)
-			if err != nil {
-				return nil, err
-			}
-			pconn, err := net.ListenUDP("udp", nil)
-			if err != nil {
-				return nil, err
-			}
-			if camoKey := camo.DeriveKey(cfg.SharedSecret); camoKey != nil {
-				if probe, perr := quicpkg.BuildCamoProbe(camoKey, sni); perr == nil {
-					_, _ = pconn.WriteToUDP(probe, udpAddr)
-				}
-			}
-			qconn, derr := quicgo.Dial(ctx, pconn, udpAddr, tlsConf, qCfg)
-			if derr == nil && cfg.OnQUICConn != nil {
-				cfg.OnQUICConn(qconn)
-			}
-			return qconn, derr
-		},
+	udpAddr, err := net.ResolveUDPAddr("udp", cfg.QUICAddr)
+	if err != nil {
+		return nil, err
 	}
+	lc := net.ListenConfig{Control: cfg.Control}
+	packetConn, err := lc.ListenPacket(ctx, "udp", ":0")
+	if err != nil {
+		return nil, err
+	}
+	pconn := packetConn.(*net.UDPConn)
+	if camoKey := camo.DeriveKey(cfg.SharedSecret); camoKey != nil {
+		if probe, perr := quicpkg.BuildCamoProbe(camoKey, sni); perr == nil {
+			_, _ = pconn.WriteToUDP(probe, udpAddr)
+		}
+	}
+	conn, err := quicgo.Dial(ctx, pconn, udpAddr, tlsCfg, chromeLikeQUICConfig())
+	if err != nil {
+		pconn.Close()
+		return nil, err
+	}
+	context.AfterFunc(conn.Context(), func() { pconn.Close() })
+	return conn, nil
 }
+
+func (l *QUICLane) request(ctx context.Context, tokenHeader string) (*http.Request, error) {
+	sessionID := make([]byte, 16)
+	if _, err := crand.Read(sessionID); err != nil {
+		return nil, fmt.Errorf("whispera: session id: %w", err)
+	}
+	token := AuthToken(DeriveKeys(l.cfg.SharedSecret).Auth, authTimeless, sessionID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://%s/", l.cfg.QUICAddr), http.NoBody)
+	if err != nil {
+		return nil, err
+	}
+	req.Host = l.sni
+	req.Header.Set(tokenHeader, "Bearer "+token)
+	req.Header.Set(rtDatagramSessionHeader, hex.EncodeToString(sessionID))
+	return req, nil
+}
+
+func (l *QUICLane) Flows() bool { return l.flows }
+
+func (l *QUICLane) Done() <-chan struct{} { return l.conn.Context().Done() }
+
+func (l *QUICLane) Close() { _ = l.conn.CloseWithError(0, "") }
+
+func (l *QUICLane) OpenFlow(ctx context.Context) (net.Conn, error) {
+	if !l.flows {
+		return nil, ErrQUICFlowsUnsupported
+	}
+	str, err := l.client.OpenRequestStream(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("whispera: QUIC flow stream: %w", err)
+	}
+	flow := &quicFlowConn{str: str, conn: l.conn}
+	stop := context.AfterFunc(ctx, flow.abort)
+	defer stop()
+	req, err := l.request(ctx, rtFlowTokenHeader)
+	if err != nil {
+		flow.abort()
+		return nil, err
+	}
+	if err := str.SendRequestHeader(req); err != nil {
+		flow.abort()
+		return nil, fmt.Errorf("whispera: QUIC flow request: %w", err)
+	}
+	resp, err := str.ReadResponse()
+	if err != nil {
+		flow.abort()
+		return nil, fmt.Errorf("whispera: QUIC flow response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK || resp.Header.Get(rtFlowsHeader) != rtFlowsActive {
+		flow.abort()
+		return nil, ErrQUICFlowsUnsupported
+	}
+	return flow, nil
+}
+
+type quicFlowConn struct {
+	str  *http3.RequestStream
+	conn *quicgo.Conn
+}
+
+func (c *quicFlowConn) abort() {
+	c.str.CancelRead(quicgo.StreamErrorCode(http3.ErrCodeRequestCanceled))
+	c.str.CancelWrite(quicgo.StreamErrorCode(http3.ErrCodeRequestCanceled))
+}
+
+func (c *quicFlowConn) Read(b []byte) (int, error)  { return c.str.Read(b) }
+func (c *quicFlowConn) Write(b []byte) (int, error) { return c.str.Write(b) }
+
+func (c *quicFlowConn) Close() error {
+	c.str.CancelRead(quicgo.StreamErrorCode(http3.ErrCodeNoError))
+	return c.str.Close()
+}
+
+func (c *quicFlowConn) LocalAddr() net.Addr                { return c.conn.LocalAddr() }
+func (c *quicFlowConn) RemoteAddr() net.Addr               { return c.conn.RemoteAddr() }
+func (c *quicFlowConn) SetDeadline(t time.Time) error      { return c.str.SetDeadline(t) }
+func (c *quicFlowConn) SetReadDeadline(t time.Time) error  { return c.str.SetReadDeadline(t) }
+func (c *quicFlowConn) SetWriteDeadline(t time.Time) error { return c.str.SetWriteDeadline(t) }

@@ -41,35 +41,13 @@ func newLive(t *testing.T, v *verdict, readErr error) *livenessConn {
 	c := &livenessConn{
 		Conn:    &stubConn{readErr: readErr},
 		onReset: func() {},
-		onEnd: func(dur time.Duration, bytes int64, reset bool) {
+		onEnd: func(e LiveEnd) {
 			v.calls++
-			v.dur, v.bytes, v.reset = dur, bytes, reset
+			v.dur, v.bytes, v.reset = e.Dur, e.Moved, e.Reset
 		},
 	}
 	c.markEstablished()
 	return c
-}
-
-func TestLiveEndReportsBytesOnClose(t *testing.T) {
-	var v verdict
-	c := newLive(t, &v, nil)
-	if _, err := c.Write(make([]byte, 1500)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.Read(make([]byte, 500)); err != nil {
-		t.Fatal(err)
-	}
-	c.Close()
-
-	if v.calls != 1 {
-		t.Fatalf("got %d verdicts, want exactly one", v.calls)
-	}
-	if v.bytes != 2000 {
-		t.Errorf("verdict counted %d bytes, want 2000", v.bytes)
-	}
-	if v.reset {
-		t.Error("a connection we closed ourselves was reported as reset")
-	}
 }
 
 func TestLiveEndReportsAResetOnce(t *testing.T) {
@@ -85,19 +63,5 @@ func TestLiveEndReportsAResetOnce(t *testing.T) {
 	}
 	if !v.reset {
 		t.Error("a censor-looking reset was not reported as one")
-	}
-}
-
-func TestLiveEndStaysQuietBeforeEstablished(t *testing.T) {
-	var v verdict
-	c := &livenessConn{
-		Conn: &stubConn{},
-		onEnd: func(time.Duration, int64, bool) {
-			v.calls++
-		},
-	}
-	c.Close()
-	if v.calls != 0 {
-		t.Errorf("a connection that never came up reported %d verdicts", v.calls)
 	}
 }

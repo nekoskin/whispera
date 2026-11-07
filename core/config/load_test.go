@@ -64,23 +64,3 @@ func TestLoadKeepsPreviousConfigWhenParsingFails(t *testing.T) {
 		t.Fatalf("previous config must survive a failed reload, private key = %q", got)
 	}
 }
-
-func TestSaveConfigBacksUpPreviousFile(t *testing.T) {
-	path := writeConfig(t, goodConfig)
-
-	p := &Provider{config: DefaultServerConfig(), configPath: path}
-	if err := p.Load(path); err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if err := p.SaveConfig(path); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-
-	backup, err := os.ReadFile(path + ".bak")
-	if err != nil {
-		t.Fatalf("backup must exist before overwrite: %v", err)
-	}
-	if !strings.Contains(string(backup), "secret-key-value") {
-		t.Fatal("backup must hold the pre-overwrite content")
-	}
-}

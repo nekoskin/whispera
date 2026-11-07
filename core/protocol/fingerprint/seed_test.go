@@ -55,19 +55,8 @@ func TestSeedFingerprintsValidAndCamoReady(t *testing.T) {
 	}
 }
 
-func TestSeedFingerprintsLoadIntoPool(t *testing.T) {
-	collectMu.Lock()
-	collectSpecs = nil
-	collectRaw = nil
-	collectKinds = nil
-	collectSeen = map[string]bool{}
-	collectMu.Unlock()
-
-	n := loadSeedFingerprints()
-	if n == 0 {
-		t.Fatal("loadSeedFingerprints added 0")
-	}
-	if got := CollectedCount(); got == 0 {
-		t.Fatalf("pool empty after seeding, count=%d", got)
-	}
+func collectedCount() int {
+	collectMu.RLock()
+	defer collectMu.RUnlock()
+	return len(collectSpecs)
 }

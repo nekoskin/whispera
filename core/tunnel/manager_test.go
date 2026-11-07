@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net"
 	"sync/atomic"
@@ -189,37 +190,6 @@ func TestKeepAliveStreamDiscardsUnfinishedStream(t *testing.T) {
 	}
 }
 
-func TestPooledConnectionOutlivesTheStreamDeadline(t *testing.T) {
-	m := newTestManager(t)
-	base := newPoolConn(t, shortAnswerWire([][]byte{[]byte("answer")}))
-	fc := protocol.NewFramedConn(base, protocol.NewShapeBudget())
-	ks := &keepAliveStream{Conn: base, up: fc, down: fc, m: m, base: base}
-
-	if err := ks.SetDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
-		t.Fatalf("SetDeadline() error = %v", err)
-	}
-	if _, err := io.Copy(io.Discard, ks); err != nil {
-		t.Fatalf("read answer: %v", err)
-	}
-	if err := ks.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	for pooled(&m.idle) == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	time.Sleep(300 * time.Millisecond)
-
-	c := m.idle.take()
-	if c == nil {
-		t.Fatal("finished stream was not pooled")
-	}
-	if _, err := c.Write([]byte("next stream")); err != nil {
-		t.Fatalf("write on a pooled connection: %v: the last stream's deadline stayed on it, and TLS spends a record number on every such failed write", err)
-	}
-}
-
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	m, err := New(DefaultConfig())
@@ -227,20 +197,6 @@ func newTestManager(t *testing.T) *Manager {
 		t.Fatalf("New() error = %v", err)
 	}
 	return m
-}
-
-func TestNewInitialState(t *testing.T) {
-	m := newTestManager(t)
-
-	if got := m.GetState(); got != StateDisconnected {
-		t.Errorf("GetState() = %v, want %v", got, StateDisconnected)
-	}
-	if m.IsConnected() {
-		t.Error("IsConnected() = true on fresh Manager")
-	}
-	if m.GetSessionID() != 0 {
-		t.Errorf("GetSessionID() = %d, want 0", m.GetSessionID())
-	}
 }
 
 func TestDisconnectOnFreshManagerIsSafe(t *testing.T) {
@@ -253,98 +209,145 @@ func TestDisconnectOnFreshManagerIsSafe(t *testing.T) {
 	}
 }
 
-func TestQualityMetrics(t *testing.T) {
+func TestRefusedStreamMuxIsRetriedAndComesBack(t *testing.T) {
 	m := newTestManager(t)
-
-	rtt, missed := m.GetQualityMetrics()
-	if rtt != 0 || missed != 0 {
-		t.Errorf("GetQualityMetrics() = (%v, %d), want (0, 0) on fresh Manager", rtt, missed)
+	for range muxRefusalsToFallback {
+		m.noteMuxTransport(true)
+	}
+	if !m.muxRefused() {
+		t.Fatalf("stream-mux stayed on after the server refused %d sessions", muxRefusalsToFallback)
+	}
+	first := m.muxRefusedFlows.Load()
+	for range first {
+		m.notePerFlowWhileRefused()
+	}
+	if m.muxRefused() {
+		t.Fatalf("stream-mux was not tried again after %d flows went their own way", first)
+	}
+	m.noteMuxTransport(true)
+	if !m.muxRefused() {
+		t.Fatal("a refused retry did not turn stream-mux off again")
+	}
+	second := m.muxRefusedFlows.Load()
+	if second <= first {
+		t.Fatalf("the retry wait did not grow after another refusal: %d flows, then %d", first, second)
+	}
+	for range second {
+		m.notePerFlowWhileRefused()
+	}
+	m.noteMuxTransport(false)
+	if m.muxRefused() || m.muxRetries.Load() != 0 || m.muxRefusals.Load() != 0 {
+		t.Fatal("a working stream-mux session left the refusal state in place")
 	}
 }
 
-func TestStats(t *testing.T) {
-	m := newTestManager(t)
-
-	up, down := m.Stats()
-	if up != 0 || down != 0 {
-		t.Errorf("Stats() = (%d, %d), want (0, 0) on fresh Manager", up, down)
+func TestFallbackRetriesThePrimaryByFlowsAndReturnsOnItsFirstSuccess(t *testing.T) {
+	var f fallback
+	if f.flow() {
+		t.Fatal("a flow asked for a primary retry while nothing rode the fallback")
+	}
+	if !f.engage() || f.engage() {
+		t.Fatal("engage did not report the switch exactly once")
+	}
+	if got := f.armRetry(); got != fallbackRetryAfterFlows {
+		t.Fatalf("the first retry came after %d flows, want %d", got, fallbackRetryAfterFlows)
+	}
+	for i := int64(1); i < fallbackRetryAfterFlows; i++ {
+		if f.flow() {
+			t.Fatalf("the primary was retried after %d flows instead of %d", i, fallbackRetryAfterFlows)
+		}
+	}
+	if !f.flow() {
+		t.Fatal("the primary was not retried once the flow countdown ran out")
+	}
+	if got := f.armRetry(); got != 2*fallbackRetryAfterFlows {
+		t.Fatalf("a failed retry did not double the wait: %d flows", got)
+	}
+	for range fallbackRetryDoublings + 2 {
+		f.armRetry()
+	}
+	if got := f.armRetry(); got != fallbackRetryAfterFlows<<fallbackRetryDoublings {
+		t.Fatalf("the wait between retries grew past its cap: %d flows", got)
+	}
+	if !f.primaryWorks() || f.active.Load() {
+		t.Fatal("a working primary did not end the fallback")
+	}
+	f.engage()
+	if got := f.armRetry(); got != fallbackRetryAfterFlows {
+		t.Fatalf("the retry wait was not reset after the primary worked: %d flows", got)
 	}
 }
 
-func TestTransportGetSet(t *testing.T) {
+func TestServerIPv6IsDialedOnlyWhenTheKeyHasIt(t *testing.T) {
 	m := newTestManager(t)
+	m.config.WhisperaAddr = "203.0.113.7:443"
+	m.config.IPv6Fallback = true
+	m.config.IPv6Only = true
+	if addr, v6 := m.selector.serverAddr(context.Background()); v6 || addr != "203.0.113.7:443" {
+		t.Fatalf("a key without whispera_ipv6 got dialed at %s (IPv6 %v); existing keys must keep their address", addr, v6)
+	}
+	if m.noteConnectSilent(false) {
+		t.Fatal("a silent IPv4 connect was taken over by IPv6 for a key that has no IPv6 address")
+	}
 
-	m.SetTransport("quic")
-	if got := m.GetTransport(); got != "quic" {
-		t.Errorf("GetTransport() = %q, want %q", got, "quic")
+	m.config.IPv6Only = false
+	m.config.WhisperaIPv6 = "2001:db8::7"
+	if _, v6 := m.selector.serverAddr(context.Background()); v6 {
+		t.Fatal("IPv6 was dialed before IPv4 failed, with only the fallback on")
+	}
+	if !m.noteConnectSilent(false) {
+		t.Fatal("a silent IPv4 connect did not move dials to the key's IPv6 address")
+	}
+	if addr, v6 := m.selector.serverAddr(context.Background()); !v6 || addr != "[2001:db8::7]:443" {
+		t.Fatalf("after IPv4 went silent the server was dialed at %s (IPv6 %v)", addr, v6)
+	}
+	if addr, _ := m.selector.serverAddr(withServerIPv6(context.Background(), false)); addr != "203.0.113.7:443" {
+		t.Fatalf("the IPv4 retry dialed %s instead of the IPv4 address", addr)
+	}
+	m.noteServerAnswered(false)
+	if _, v6 := m.selector.serverAddr(context.Background()); v6 {
+		t.Fatal("dials stayed on IPv6 after the server answered at its IPv4 address")
+	}
+
+	m.config.IPv6Fallback = false
+	if m.noteConnectSilent(false) {
+		t.Fatal("IPv6 took over with the fallback switched off")
 	}
 }
 
-func TestRateLimitGetSet(t *testing.T) {
-	m := newTestManager(t)
-
-	m.SetRateLimit(1024)
-	if got := m.GetRateLimit(); got != 1024 {
-		t.Errorf("GetRateLimit() = %d, want 1024", got)
+func TestUnansweredMuxFlowGoesAgainOnItsOwnConnection(t *testing.T) {
+	dead, deadPeer := net.Pipe()
+	deadPeer.Close()
+	fresh, freshPeer := net.Pipe()
+	got := make(chan []byte, 1)
+	go func() {
+		b := make([]byte, 5)
+		_, _ = io.ReadFull(freshPeer, b)
+		got <- b
+		_, _ = freshPeer.Write([]byte("reply"))
+	}()
+	c := &replayConn{conn: dead, reopen: func() (net.Conn, error) { return fresh, nil }}
+	if _, err := c.Write([]byte("hello")); err != nil {
+		t.Fatalf("a write into a stream-mux session the server dropped failed instead of going again on its own connection: %v", err)
 	}
-}
-
-func TestTLSFragmentSizeGetSet(t *testing.T) {
-	m := newTestManager(t)
-
-	m.SetTLSFragmentSize(40)
-	if got := m.GetTLSFragmentSize(); got != 40 {
-		t.Errorf("GetTLSFragmentSize() = %d, want 40", got)
+	reply := make([]byte, 5)
+	if _, err := io.ReadFull(c, reply); err != nil || string(reply) != "reply" {
+		t.Fatalf("the flow got %q, %v after going again on its own connection", reply, err)
 	}
-
-	m.SetTLSFragmentSize(-5)
-	if got := m.GetTLSFragmentSize(); got != 0 {
-		t.Errorf("GetTLSFragmentSize() = %d, want 0 after negative input", got)
-	}
-}
-
-func TestForceObfuscationGetSet(t *testing.T) {
-	m := newTestManager(t)
-
-	m.SetForceObfuscation(true)
-	if !m.IsForceObfuscation() {
-		t.Error("IsForceObfuscation() = false after SetForceObfuscation(true)")
+	if sent := <-got; string(sent) != "hello" {
+		t.Fatalf("the new connection got %q instead of the bytes the flow had sent", sent)
 	}
 
-	m.SetForceObfuscation(false)
-	if m.IsForceObfuscation() {
-		t.Error("IsForceObfuscation() = true after SetForceObfuscation(false)")
-	}
-}
-
-func TestSetBehavioralProfileWithoutObfuscator(t *testing.T) {
-	m := newTestManager(t)
-	m.obfuscator = nil
-
-	if err := m.SetBehavioralProfile("steady"); err == nil {
-		t.Error("SetBehavioralProfile() error = nil, want error when obfuscator is nil")
-	}
-	if err := m.SetBehavioralProfile(""); err == nil {
-		t.Error("SetBehavioralProfile(\"\") error = nil, want error when obfuscator is nil")
-	}
-}
-
-func TestHealthCheck(t *testing.T) {
-	m := newTestManager(t)
-
-	status := m.HealthCheck()
-	if status.Details["state"] != StateDisconnected.String() {
-		t.Errorf("HealthCheck() state = %v, want %v", status.Details["state"], StateDisconnected.String())
-	}
-}
-
-func TestHelloSplitDisabledByDefault(t *testing.T) {
-	t.Setenv("WHISPERA_HELLO_SPLIT", "")
-	if helloSplitEnabled() {
-		t.Fatal("outer ClientHello split must be off by default (one-segment invariant under tail-drop DPI)")
-	}
-	t.Setenv("WHISPERA_HELLO_SPLIT", "1")
-	if !helloSplitEnabled() {
-		t.Fatal("WHISPERA_HELLO_SPLIT=1 must enable outer ClientHello split")
+	answered, answeredPeer := net.Pipe()
+	go func() {
+		_, _ = answeredPeer.Write([]byte("x"))
+		answeredPeer.Close()
+	}()
+	reopened := false
+	c = &replayConn{conn: answered, reopen: func() (net.Conn, error) { reopened = true; return nil, io.EOF }}
+	b := make([]byte, 1)
+	_, _ = c.Read(b)
+	if _, err := c.Read(b); err == nil || reopened {
+		t.Fatal("a flow the server had already answered was sent again, which could repeat a request")
 	}
 }

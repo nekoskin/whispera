@@ -11,7 +11,7 @@ func TestPositiveCacheServedWithoutQuery(t *testing.T) {
 	want := net.IPv4(203, 0, 113, 7)
 	_ = r.cache.Set(context.Background(), "host.example", []net.IP{want}, 0)
 
-	ips, err := r.Resolve(context.Background(), "host.example")
+	ips, err := r.ResolveUpstream(context.Background(), "host.example")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -22,7 +22,7 @@ func TestPositiveCacheServedWithoutQuery(t *testing.T) {
 
 func TestResolveIPLiteral(t *testing.T) {
 	r := NewResolver(DefaultConfig())
-	ips, err := r.Resolve(context.Background(), "198.51.100.9")
+	ips, err := r.ResolveUpstream(context.Background(), "198.51.100.9")
 	if err != nil || len(ips) != 1 || !ips[0].Equal(net.IPv4(198, 51, 100, 9)) {
 		t.Fatalf("got ips=%v err=%v", ips, err)
 	}

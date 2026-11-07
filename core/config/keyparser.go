@@ -34,10 +34,10 @@ type ConnectionKey struct {
 	WhisperaAddr     string `json:"whispera_addr,omitempty"`
 	WhisperaSNI      string `json:"whispera_sni,omitempty"`
 	WhisperaQUICAddr string `json:"whispera_quic_addr,omitempty"`
+	WhisperaIPv6     string `json:"whispera_ipv6,omitempty"`
 	WhisperaCertPin  string `json:"whispera_pin,omitempty"`
 	WhisperaIDPub    string `json:"whispera_idpub,omitempty"`
 	WhisperaSelPub   string `json:"whispera_selpub,omitempty"`
-	WhisperaFPRaw    string `json:"tls_fp_raw,omitempty"`
 
 	ChameleonAddr string `json:"chameleon_addr,omitempty"`
 
@@ -267,10 +267,10 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 		WhisperaSNI:      ck.WhisperaSNI,
 		DropECH:          ck.DropECH,
 		WhisperaQUICAddr: ck.WhisperaQUICAddr,
+		WhisperaIPv6:     ck.WhisperaIPv6,
 		WhisperaCertPin:  ck.WhisperaCertPin,
 		WhisperaIDPub:    ck.WhisperaIDPub,
 		WhisperaSelPub:   ck.WhisperaSelPub,
-		WhisperaFPRaw:    ck.WhisperaFPRaw,
 		GRPCAddr:         ck.GRPCAddr,
 		GRPCServerName:   ck.GRPCServerName,
 		GRPCUseTLS:       ck.GRPCUseTLS,

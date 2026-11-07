@@ -24,6 +24,13 @@ var (
 	pkgLC         *lifecycle.Manager
 )
 
+func SetServerIPv6(mode string) {
+	mobileMu.Lock()
+	defer mobileMu.Unlock()
+	*ipv6Only = mode == "only"
+	*ipv6Fallback = mode != "off"
+}
+
 func Start(key, socks, logFile, fingerprint, dns, rules string, hwid bool) {
 	mobileMu.Lock()
 	if mobileRunning {

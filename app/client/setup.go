@@ -15,6 +15,7 @@ import (
 	"github.com/nekoskin/whispera/common/dns"
 	"github.com/nekoskin/whispera/common/split_tunnel"
 	"github.com/nekoskin/whispera/core/config"
+	"github.com/nekoskin/whispera/core/protocol"
 	"github.com/nekoskin/whispera/core/protocol/fingerprint"
 	"github.com/nekoskin/whispera/core/socks5"
 	"github.com/nekoskin/whispera/core/tunnel"
@@ -106,11 +107,6 @@ func resolveFingerprintSettings(cfg *config.ClientConfig) (bool, string) {
 	if name != "" && !fingerprint.Generating() {
 		fingerprint.SetForced(name)
 	}
-	if cfg.WhisperaFPRaw != "" {
-		if raw, err := base64.StdEncoding.DecodeString(cfg.WhisperaFPRaw); err == nil {
-			fingerprint.SetForcedRaw(raw)
-		}
-	}
 	return enabled, name
 }
 
@@ -138,6 +134,46 @@ func applySNIOverride(cfg *config.ClientConfig) {
 	}
 	globalForceSNI.Store(sni)
 	stdlog.Printf("SNI override active: all connections will use SNI=%q", sni)
+}
+
+func applyDialTraceSize(cfg *config.ClientConfig) {
+	mb := *dialTraceMB
+	if mb == 0 {
+		mb = cfg.DialTraceMB
+	}
+	if mb == 0 {
+		return
+	}
+	tunnel.SetDialTraceMB(mb)
+	if mb < 0 {
+		stdlog.Printf("dial trace keeps every line")
+		return
+	}
+	stdlog.Printf("dial trace keeps %d MB", mb)
+}
+
+// applyShapeProfile applies the server-delivered traffic-shape profile, if the
+// config carries one. The profile is the whole shape, so every knob comes from
+// it; a knob left at zero is applied as zero.
+func applyShapeProfile(cfg *config.ClientConfig) {
+	p := cfg.Shape
+	if p == nil {
+		return
+	}
+	if err := protocol.Shape.Set(p.PadRecords, p.PadMin, p.PadMax); err != nil {
+		stdlog.Printf("shape profile %q: pad rejected: %v", p.Name, err)
+	}
+	if err := protocol.Shape.SetFiller(p.FillerIdleMs, p.FillerEveryMs, p.FillerMin, p.FillerMax); err != nil {
+		stdlog.Printf("shape profile %q: filler rejected: %v", p.Name, err)
+	}
+	if err := protocol.Shape.SetChunk(p.ChunkMin, p.ChunkMax); err != nil {
+		stdlog.Printf("shape profile %q: chunk rejected: %v", p.Name, err)
+	}
+	protocol.Shape.SetChunkShaped(p.ChunkShaped)
+	if err := protocol.Shape.SetOpening(p.OpeningFillMs, p.OpeningEveryMs); err != nil {
+		stdlog.Printf("shape profile %q: opening rejected: %v", p.Name, err)
+	}
+	stdlog.Printf("shape profile %q applied", p.Name)
 }
 
 func resolveTransportList(cfg *config.ClientConfig) []string {
@@ -175,6 +211,8 @@ func resolveRuntimeParams(cfg *config.ClientConfig) *clientRuntimeParams {
 		stdlog.Printf("Override: Russian Service masquerading enabled: %s", cfg.RussianService)
 	}
 	applySNIOverride(cfg)
+	applyDialTraceSize(cfg)
+	applyShapeProfile(cfg)
 
 	return &clientRuntimeParams{
 		serverAddress:    resolveServerAddress(cfg, resolvedTransport),
@@ -214,10 +252,8 @@ func setupNetworking(cfg *config.ClientConfig) (*socks5.Module, *dns.Resolver, *
 	socks5.CollectHook = func(b []byte) { _ = fingerprint.CollectRawClientHello(b) }
 
 	dnsMod, _ := dns.New(&dns.Config{
-		Upstream:       dnsUpstreamAddr,
-		CacheEnabled:   true,
-		BypassFunc:     stm.ShouldBypassByHostname,
-		BypassResolver: bypassDNSResolver,
+		Upstream:     dnsUpstreamAddr,
+		CacheEnabled: true,
 	})
 	return socksMod, dnsMod, stm
 }
@@ -242,6 +278,9 @@ func whisperaOptions(cfg *config.ClientConfig, whisperaSecret []byte) tunnel.Whi
 		WhisperaSNI:      cfg.WhisperaSNI,
 		DropECH:          cfg.DropECH,
 		WhisperaQUICAddr: cfg.WhisperaQUICAddr,
+		WhisperaIPv6:     cfg.WhisperaIPv6,
+		IPv6Fallback:     *ipv6Fallback,
+		IPv6Only:         *ipv6Only,
 		WhisperaCertPin:  cfg.WhisperaCertPin,
 		WhisperaIDPub:    cfg.WhisperaIDPub,
 		WhisperaSelPub:   cfg.WhisperaSelPub,

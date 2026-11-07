@@ -225,7 +225,6 @@ func asRecord(handshake []byte) []byte {
 var (
 	deviceOnce sync.Once
 	deviceRaw  []byte
-	deviceKind kind
 )
 
 // DeviceHello is the generated fingerprint this install presents, or nothing if
@@ -240,7 +239,7 @@ var (
 // client — the generator worked, and nothing ever called it.
 func Generating() bool { return os.Getenv("WHISPERA_GEN_HELLO") != "0" }
 
-func DeviceHello() ([]byte, kind, bool) {
+func DeviceHello() ([]byte, bool) {
 	deviceOnce.Do(func() {
 		if !Generating() {
 			return
@@ -254,13 +253,13 @@ func DeviceHello() ([]byte, kind, bool) {
 			traceLog.Errorw("fingerprint generation failed", "err", err.Error())
 			return
 		}
-		deviceRaw, deviceKind = raw, ClassifyClientHello(raw)
+		deviceRaw = raw
 		traceLog.Infow("fingerprint generated", "bytes", len(raw))
 	})
 	if len(deviceRaw) == 0 {
-		return nil, 0, false
+		return nil, false
 	}
-	return append([]byte(nil), deviceRaw...), deviceKind, true
+	return append([]byte(nil), deviceRaw...), true
 }
 
 // DeviceFingerprint makes this install's hello once and keeps it. Regenerating

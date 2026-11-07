@@ -18,7 +18,6 @@ import (
 	"github.com/nekoskin/whispera/core/apiserver"
 	"github.com/nekoskin/whispera/core/config"
 	"github.com/nekoskin/whispera/core/keylimits"
-	"github.com/nekoskin/whispera/core/protocol/fingerprint"
 	"github.com/nekoskin/whispera/core/transport/grpc"
 )
 
@@ -92,7 +91,6 @@ func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 			cCfg.ExtraQUICListenAddrs = append(cCfg.ExtraQUICListenAddrs, net.JoinHostPort(quicHost, strconv.Itoa(p)))
 		}
 	}
-	fingerprint.SetCollectDir(apiserver.FingerprintStoreDir)
 	if id, err := protocol.LoadOrCreateCertIdentity(whisperaIdentityFile); err != nil {
 		log.Warn("whispera: cert identity unavailable (verify-by-key disabled): %v", err)
 	} else {

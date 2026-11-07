@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/nekoskin/whispera/core/protocol/fingerprint"
 	"io"
 	"net"
 	"net/url"
@@ -349,10 +348,6 @@ func (l *camouflageListener) handle(conn net.Conn) {
 		traceLog.Infow("relaying to decoy, throttled", "remote", remote, "sni", ph.sni)
 		conn.Close()
 		return
-	}
-
-	if err == nil && validSNI(ph.sni) {
-		fingerprint.CollectFromHello(ph.raw)
 	}
 
 	target := l.decoyAddr(ph.sni)

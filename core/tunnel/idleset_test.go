@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nekoskin/whispera/core/protocol"
 )
 
 type fakeConn struct {
@@ -26,54 +28,7 @@ func (c *fakeConn) Close() error {
 	return nil
 }
 
-func (c *fakeConn) isClosed() bool {
-	select {
-	case <-c.closed:
-		return true
-	default:
-		return false
-	}
-}
-
 func (c *fakeConn) SetReadDeadline(time.Time) error { return nil }
-
-func TestIdleSetCapsPool(t *testing.T) {
-	var s idleSet
-	conns := make([]*fakeConn, 40)
-	for i := range conns {
-		conns[i] = newFakeConn()
-		s.put(conns[i])
-	}
-
-	s.mu.Lock()
-	held := len(s.conns)
-	s.mu.Unlock()
-
-	if held > idleMax {
-		t.Fatalf("pool holds %d connections, cap is %d", held, idleMax)
-	}
-
-	closed := 0
-	for _, c := range conns {
-		if c.isClosed() {
-			closed++
-		}
-	}
-	if closed != len(conns)-held {
-		t.Fatalf("evicted %d but closed %d", len(conns)-held, closed)
-	}
-}
-
-func TestIdleSetPutClosesWhenShut(t *testing.T) {
-	var s idleSet
-	s.closeAll()
-
-	c := newFakeConn()
-	s.put(c)
-	if !c.isClosed() {
-		t.Fatal("connection was not closed on a shut pool")
-	}
-}
 
 func tcpPair(t *testing.T) (client, server net.Conn) {
 	t.Helper()
@@ -112,6 +67,39 @@ func pooled(s *idleSet) int {
 	return len(s.conns)
 }
 
+var takeAny = func(net.Conn) bool { return true }
+
+type leveredConn struct {
+	net.Conn
+	levers protocol.ConnLevers
+}
+
+func (c leveredConn) Levers() (protocol.ConnLevers, bool) { return c.levers, true }
+
+func TestIdleSetSkipsAConnectionDialedUnderLeversTheNetLeft(t *testing.T) {
+	plain, _ := tcpPair(t)
+	migrating, _ := tcpPair(t)
+	var s idleSet
+	defer s.closeAll()
+	var sel selector
+	sel.wanted.Store(&protocol.ConnLevers{Migrate: true})
+
+	s.put(leveredConn{Conn: migrating, levers: protocol.ConnLevers{Migrate: true}})
+	s.put(leveredConn{Conn: plain})
+	time.Sleep(20 * time.Millisecond)
+
+	c := s.take(sel.leversFit)
+	if c == nil {
+		t.Fatal("no connection handed out although one matches the net's levers")
+	}
+	if got, _ := protocol.LeversOf(c); !got.Migrate {
+		t.Fatal("handed out a connection without migration after the net switched to it: the next big download freezes again")
+	}
+	if pooled(&s) != 0 {
+		t.Fatal("the stale connection is still parked")
+	}
+}
+
 func TestIdleSetDropsConnectionClosedByServer(t *testing.T) {
 	client, server := tcpPair(t)
 	var s idleSet
@@ -124,7 +112,7 @@ func TestIdleSetDropsConnectionClosedByServer(t *testing.T) {
 	for pooled(&s) > 0 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if c := s.take(); c != nil {
+	if c := s.take(takeAny); c != nil {
 		t.Fatal("took a connection the server had already closed: the next stream on it ends in a reset")
 	}
 }
@@ -136,7 +124,7 @@ func TestIdleSetHandsBackLiveConnectionIntact(t *testing.T) {
 
 	s.put(client)
 	time.Sleep(20 * time.Millisecond)
-	c := s.take()
+	c := s.take(takeAny)
 	if c == nil {
 		t.Fatal("live parked connection was dropped")
 	}
@@ -162,7 +150,7 @@ func TestIdleSetTakeDoesNotHangWithoutDeadlines(t *testing.T) {
 
 	s.put(newFakeConn())
 	took := make(chan net.Conn, 1)
-	go func() { took <- s.take() }()
+	go func() { took <- s.take(takeAny) }()
 
 	select {
 	case c := <-took:

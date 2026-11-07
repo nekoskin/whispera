@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	mrand "math/rand"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"sync/atomic"
 	"time"
 
 	"github.com/nekoskin/whispera/core/protocol"
@@ -21,8 +23,6 @@ import (
 
 	quicgo "github.com/quic-go/quic-go"
 )
-
-func helloSplitEnabled() bool { return os.Getenv("WHISPERA_HELLO_SPLIT") == "1" }
 
 func poisonEnabled() bool { return os.Getenv("WHISPERA_POISON") == "1" }
 
@@ -70,16 +70,6 @@ func poisonPreset(current, presets int) (int, bool) {
 	return alt, true
 }
 
-var (
-	shapeSearchOnce sync.Once
-	shapeSearchInst *protocol.ShapeSearch
-)
-
-func shapeSearch() *protocol.ShapeSearch {
-	shapeSearchOnce.Do(func() { shapeSearchInst = protocol.NewShapeSearch() })
-	return shapeSearchInst
-}
-
 const altTransportSessionIDLen = 8
 
 func sendAltTransportAuth(conn net.Conn, psk []byte) error {
@@ -110,8 +100,17 @@ const datagramDialTimeout = 15 * time.Second
 type datagramLane struct {
 	mu      sync.Mutex
 	quicGD  *quic.DatagramClient
-	dialing bool
+	quic    *protocol.QUICLane
+	dialing chan struct{}
 }
+
+var errNoQUICLane = errors.New("whispera: no QUIC lane to the server")
+
+var closedChan = func() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
 
 type selector struct {
 	m *Manager
@@ -119,7 +118,38 @@ type selector struct {
 	sessionCache any
 	lane         datagramLane
 	strategy     *protocol.HandshakeStrategy
-	shape        *shapeController
+	wanted       atomic.Pointer[protocol.ConnLevers]
+}
+
+type resumedArmKey struct{}
+
+func withResumedArm(ctx context.Context, arm int) context.Context {
+	return context.WithValue(ctx, resumedArmKey{}, arm)
+}
+
+func resumedArm(ctx context.Context) (int, bool) {
+	arm, ok := ctx.Value(resumedArmKey{}).(int)
+	return arm, ok
+}
+
+func armLevers(arm, presets int) *protocol.ConnLevers {
+	return &protocol.ConnLevers{Migrate: protocol.JointArmMigrates(arm, presets), Shaped: protocol.JointArmShaped(arm, presets)}
+}
+
+func (s *selector) preferLevers(ctx string, presets int, fragmented, migrate bool) {
+	arm, ok := s.strategy.SelectJointOnline(ctx, presets, fragmented, migrate)
+	if _, pinned := pinnedArm(arm, presets); ok && !pinned {
+		s.wanted.Store(armLevers(arm, presets))
+	}
+}
+
+func (s *selector) leversFit(c net.Conn) bool {
+	want := s.wanted.Load()
+	if want == nil {
+		return true
+	}
+	have, _ := protocol.LeversOf(c)
+	return have == *want
 }
 
 func newSelector(m *Manager) *selector {
@@ -127,16 +157,31 @@ func newSelector(m *Manager) *selector {
 	if strategy == nil {
 		strategy = protocol.NewHandshakeStrategy()
 	}
-	sni := m.config.WhisperaSNI
-	if net.ParseIP(sni) != nil {
-		sni = ""
-	}
 	return &selector{
 		m:            m,
 		sessionCache: protocol.SharedSessionCache(),
 		strategy:     strategy,
-		shape:        newShapeController(strategy, sni),
 	}
+}
+
+func (s *selector) serverTarget() (addr, sni string) {
+	addr = s.m.config.WhisperaAddr
+	if addr == "" {
+		addr = s.m.config.ServerAddr
+	}
+	sni = s.m.config.WhisperaSNI
+	if net.ParseIP(sni) != nil {
+		sni = ""
+	}
+	return addr, sni
+}
+
+func (s *selector) serverAddr(ctx context.Context) (string, bool) {
+	addr, _ := s.serverTarget()
+	if s.m.dialsIPv6(ctx) {
+		return s.m.onIPv6(addr), true
+	}
+	return addr, false
 }
 
 func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool) {
@@ -144,14 +189,7 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 	if !m.config.EnableWhispera || len(m.config.WhisperaSecret) == 0 {
 		return nil, false
 	}
-	addr := m.config.WhisperaAddr
-	if addr == "" {
-		addr = m.config.ServerAddr
-	}
-	sni := m.config.WhisperaSNI
-	if net.ParseIP(sni) != nil {
-		sni = ""
-	}
+	addr, sni := s.serverTarget()
 	var tcpDialer func(context.Context, string, string) (net.Conn, error)
 	if m.asnBypassDialer != nil {
 		tcpDialer = m.asnBypassDialer.DialTCP
@@ -166,6 +204,7 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 		DropECH:       m.config.DropECH,
 		SessionCache:  s.sessionCache,
 		TCPDialer:     tcpDialer,
+		Control:       bindDefaultRoute,
 	}
 	strategy := s.strategy
 	fragDialer := m.asnBypassDialer
@@ -175,6 +214,8 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 	fragmented := fragDialer != nil && fragDialer.Fragmenting()
 	return func(ctx context.Context) (net.Conn, error) {
 		c := *cCfg
+		addr, overIPv6 := s.serverAddr(ctx)
+		c.ServerAddr = addr
 		if c.ServerSelPub == "" {
 			c.ServerSelPub = protocol.LearnedSelPub(c.ServerIDPub)
 		}
@@ -182,185 +223,205 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 			protocol.RememberSelPub(c.ServerIDPub, selPub)
 		}
 		presets := fingerprint.PresetCount()
-		arm, fragArm, jointArm := -1, -1, -1
-		var mutant protocol.Mutant
-		mutantUsed := false
 		network := networkKey(ctx, addr)
-		splitCtx := armContext(sni, network, "split")
-		fragCtx := armContext(sni, network, "frag")
 		jointCtx := armContext(sni, network, "joint")
+		helloKey := armContext(sni, addr, "hello")
 
-		if err := sharedFreeze.waitOutFreeze(ctx, network); err != nil {
+		release, err := sharedHellos.admit(ctx, helloKey, func() bool {
+			return strategy.JointAnyAlive(jointCtx, presets, fragmented)
+		})
+		if err != nil {
 			return nil, err
 		}
+		defer release()
+		mark, err := sharedHellos.start(ctx, helloKey)
+		if err != nil {
+			return nil, err
+		}
+		strategy.SetJointChain(jointCtx, mark.pos, mark.gap)
+		migrate := !chainGuarded(ctx) && !sharedHellos.limited(helloKey)
 
-		if protocol.JointArmEnabled() {
-			a, ok := 0, false
-			onlineChose := false
-			if protocol.PolicyOnlineEnabled() {
-				a, _, ok = strategy.SelectJointOnline(jointCtx, presets, fragmented)
-				onlineChose = ok
-			}
-			if !ok && protocol.PolicyEnabled() {
-				a, ok = strategy.SelectJointPolicy(jointCtx, presets, fragmented)
-			}
-			if !ok {
-				a = strategy.SelectJoint(jointCtx, presets, fragmented)
-			}
-			jointArm = a
-			preset, budget := protocol.JointArmParts(a, presets)
-			if alt, ok := poisonPreset(preset, presets); ok {
-				budget, jointArm = 1, -1
-				c.HelloID = fingerprint.PresetAt(alt)
-			} else {
-				c.HelloID = fingerprint.PresetAt(preset)
-				alive := 0
-				if onlineChose {
-					alive = strategy.JointAliveArms(jointCtx, presets, fragmented)
-				}
-				switch {
-				case onlineChose && (alive == 0 || strategy.MutantPreferred(jointCtx)):
-					if m, ok := strategy.ApplyMutant(jointCtx, fragmented, &c); ok {
-						mutant, mutantUsed = m, true
-						budget, jointArm = m.Records, -1
-					}
-				case alive > 1:
-					c.HandshakeTimeout = protocol.FastRotateHandshakeTimeout
-				}
-				if fragmented {
-					c.TCPDialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
-						return fragDialer.DialTCPWithFragments(ctx, network, addr, budget)
-					}
-				}
-			}
+		a, resuming := resumedArm(ctx)
+		onlineChose, isPinned := resuming, false
+		if !resuming {
+			a, onlineChose = strategy.SelectJointOnline(jointCtx, presets, fragmented, migrate)
+			a, isPinned = pinnedArm(a, presets)
+		}
+		jointArm := a
+		preset, budget := protocol.JointArmParts(a, presets)
+		c.DropPQ = protocol.JointArmDropPQ(a, presets)
+		if onlineChose || isPinned {
+			c.Levers = armLevers(a, presets)
+		}
+		if onlineChose && !isPinned && !resuming {
+			s.wanted.Store(c.Levers)
+		}
+		if alt, ok := poisonPreset(preset, presets); ok && !isPinned && !resuming {
+			budget, jointArm = 1, -1
+			c.HelloID = fingerprint.PresetAt(alt)
 		} else {
-			arm = strategy.Select(sni, presets)
-			c.HelloID = fingerprint.PresetAt(arm)
+			c.HelloID = fingerprint.PresetAt(preset)
+			if onlineChose && !resuming && strategy.JointAliveArms(jointCtx, presets, fragmented) > 1 {
+				c.HandshakeTimeout = protocol.FastRotateHandshakeTimeout
+			}
 			if fragmented {
-				budget, a := 0, 0
-				if protocol.PolicyEnabled() {
-					var ok bool
-					if budget, a, ok = strategy.SelectFragmentsPolicy(fragCtx); !ok {
-						budget, a = strategy.SelectFragments(fragCtx)
-					}
-				} else {
-					budget, a = strategy.SelectFragments(fragCtx)
-				}
-				fragArm = a
 				c.TCPDialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
 					return fragDialer.DialTCPWithFragments(ctx, network, addr, budget)
 				}
 			}
 		}
 
-		shapeUsed := false
-		var chosenShape protocol.HelloShape
-		if protocol.ShapeSearchEnabled() && fragDialer != nil {
-			chosenShape = shapeSearch().Select()
-			shapeUsed = true
-			c.TCPDialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return fragDialer.DialTCPWithShape(ctx, network, addr, chosenShape.Records, chosenShape.PauseMs)
-			}
-		}
-
-		splitArm := -1
-		if helloSplitEnabled() {
-			c.HelloSplitOffset, splitArm = strategy.SelectSplit(splitCtx)
-		}
-
+		c.Arm = jointArm
 		gene, geneUsed := applyGene(&c, fragDialer)
 
-		observe := func(result protocol.HandshakeResult, stage string, latency time.Duration) {
-			mutantCtx := armContext(sni, network, "mutant:"+mutant.String())
-			if result == protocol.HandshakeLocal {
-				switch {
-				case mutantUsed:
-					recordDial(mutantCtx, -1, result, stage, latency)
-				case jointArm >= 0:
-					recordDial(jointCtx, jointArm, result, stage, latency)
-				case fragArm >= 0:
-					recordDial(fragCtx, fragArm, result, stage, latency)
-				}
-				return
+		var flowLocal, flowRemote net.Addr
+		var flowConnect time.Duration
+		var dialID atomic.Uint64
+		var netSet string
+		predicted := strategy.JointPredict(jointCtx, jointArm)
+		trace := func(result protocol.HandshakeResult, stage string, latency time.Duration, symptom protocol.Symptom, down int64, wire protocol.WireVerdict, measure protocol.DialMeasure) {
+			if jointArm >= 0 && !resuming {
+				trust, check := strategy.JointTrust(jointCtx)
+				recordDial(dialRow{ctx: jointCtx, arm: jointArm, result: result, stage: stage, latency: latency, connect: flowConnect, symptom: symptom, down: down, wire: wire, measure: measure, trust: trust, check: check, set: netSet, predict: predicted})
 			}
-			frozen := false
-			if stage == dialStageHandshake {
-				if result == protocol.HandshakeOK {
-					sharedFreeze.ok(network)
-				} else if freezeSilent(result) {
-					frozen = sharedFreeze.silent(network, jointArm)
-				}
-			}
-			if geneUsed && stage == dialStageHandshake {
-				observeGene(gene, result == protocol.HandshakeOK)
-			}
-			strategy.Record(sni, result)
-			if shapeUsed && stage == dialStageHandshake {
-				shapeSearch().Observe(chosenShape, result == protocol.HandshakeOK)
-			}
-			if mutantUsed {
-				if stage == dialStageHandshake {
-					if !frozen {
-						strategy.NoteMutant(jointCtx, mutant, result == protocol.HandshakeOK)
-					}
-					recordDial(mutantCtx, -1, result, stage, latency)
-				}
-				return
-			}
-			if jointArm >= 0 {
-				if stage == dialStageHandshake {
-					if !frozen {
-						alive := result == protocol.HandshakeOK
-						strategy.Observe(jointCtx, jointArm, result)
-						strategy.NoteDial(jointCtx, jointArm, alive)
-						if protocol.PolicyOnlineEnabled() {
-							strategy.NoteJointOnline(jointCtx, jointArm, alive, protocol.HandshakeBlocked(result))
-						}
-					}
-					recordDial(jointCtx, jointArm, result, stage, latency)
-				}
-				return
-			}
-			if arm >= 0 {
-				strategy.Observe(sni, arm, result)
-			}
-			if splitArm >= 0 {
-				strategy.Observe(splitCtx, splitArm, result)
-			}
-			if fragArm >= 0 && stage == dialStageHandshake {
-				if !frozen {
-					strategy.Observe(fragCtx, fragArm, result)
-					strategy.NoteDial(fragCtx, fragArm, result == protocol.HandshakeOK)
-				}
-				recordDial(fragCtx, fragArm, result, stage, latency)
+		}
+		liveDeath := func(down int64, lived time.Duration, tail []protocol.WirePacket) {
+			if id := dialID.Load(); id != 0 {
+				strategy.NoteJointLiveDeath(jointCtx, id, down, lived, tail)
+				s.preferLevers(jointCtx, presets, fragmented, migrate && !sharedHellos.limited(helloKey))
 			}
 		}
 
-		c.OnHandshake = func(result protocol.HandshakeResult, latency time.Duration) {
-			observe(result, dialStageHandshake, latency)
+		observe := func(result protocol.HandshakeResult, symptom protocol.Symptom, latency time.Duration, wire protocol.WireVerdict, measure protocol.DialMeasure) {
+			if result == protocol.HandshakeLocal {
+				trace(result, dialStageHandshake, latency, symptom, 0, wire, measure)
+				return
+			}
+			if geneUsed {
+				observeGene(gene, result == protocol.HandshakeOK)
+			}
+			if jointArm < 0 || resuming {
+				return
+			}
+			dialID.Store(strategy.NoteJointOnline(jointCtx, jointArm, protocol.DialNote{
+				Alive:   result == protocol.HandshakeOK,
+				Strong:  protocol.HandshakeBlocked(result),
+				Wire:    wire,
+				Slow:    protocol.PolicySlowness(latency, flowConnect),
+				Measure: measure,
+			}))
+			trace(result, dialStageHandshake, latency, symptom, 0, wire, measure)
 		}
-		c.OnLiveReset = func() { observe(protocol.HandshakeResetFast, dialStageLiveReset, 0) }
-		c.OnLiveOK = func() { observe(protocol.HandshakeOK, dialStageLiveOK, 0) }
-		c.OnLiveEnd = func(dur time.Duration, bytes int64, reset bool) {
-			s.shape.note(dur, bytes, reset)
+
+		netArm := onlineChose && jointArm >= 0
+		choice := dialChoice{
+			fingerprint:    c.HelloID.Str(),
+			netFingerprint: netArm && !isPinned,
+			netRecords:     netArm && fragmented,
+			netDropPQ:      netArm && !fingerprint.DropPQEnabled(),
 		}
-		return protocol.Client(ctx, &c)
+		netSet = netSetFields(choice, jointArm, presets, netArm && !isPinned)
+		c.OnConnected = func(local, remote net.Addr, connect time.Duration) {
+			flowLocal, flowRemote, flowConnect = local, remote, connect
+			sharedWire.watch(local, remote, choice)
+		}
+		c.OnHelloSent = func() { sharedHellos.sent(helloKey) }
+		handshake, connectFailed := protocol.HandshakeLocal, false
+		c.OnHandshake = func(result protocol.HandshakeResult, symptom protocol.Symptom, latency time.Duration) {
+			handshake = result
+			wire, measure, frames := sharedWire.settle(flowLocal, flowRemote, flowConnect, result == protocol.HandshakeOK)
+			measure.ChainPos, measure.ChainGap = mark.pos, mark.gap
+			observe(result, symptom, latency, wire, measure)
+			switch result {
+			case protocol.HandshakeOK:
+				m.clearFailure()
+			case protocol.HandshakeLocal:
+			default:
+				pattern := noteBlockPattern(protocol.DialHandshakeDead, wire, measure.Packets, frames)
+				m.noteFailure(FailureCause{Cause: CauseHandshakeBlocked, Symptom: string(symptom), Wire: wire.String(), Pattern: pattern, AtMs: time.Now().UnixMilli()})
+			}
+		}
+		c.OnConnectFail = func(result protocol.HandshakeResult, symptom protocol.Symptom, latency time.Duration) {
+			connectFailed = true
+			if cause, known := connectFailure(symptom); known {
+				m.noteFailure(cause)
+			}
+			trace(result, dialStageConnect, latency, symptom, 0, protocol.WireNoSignature, protocol.DialMeasure{})
+		}
+		c.OnLiveReset = func() {
+			tail, frames := sharedWire.tail(flowLocal, flowRemote)
+			liveDeath(0, 0, tail)
+			pattern := noteBlockPattern(protocol.DialLiveDead, protocol.WireNoSignature, tail, frames)
+			m.noteFailure(FailureCause{Cause: CauseLiveBlocked, Symptom: string(protocol.SymptomLiveReset), Pattern: pattern, AtMs: time.Now().UnixMilli()})
+			trace(protocol.HandshakeResetFast, dialStageLiveReset, 0, protocol.SymptomLiveReset, 0, protocol.WireNoSignature, protocol.DialMeasure{Packets: tail})
+		}
+		c.OnLiveEnd = func(end protocol.LiveEnd) {
+			if !end.Stalled || end.Reset {
+				sharedWire.drop(flowLocal, flowRemote)
+				return
+			}
+			tail, frames := sharedWire.tail(flowLocal, flowRemote)
+			if end.Symptom() == protocol.SymptomStallVolume {
+				liveDeath(end.Down, end.Dur, tail)
+				pattern := noteBlockPattern(protocol.DialLiveDead, protocol.WireNoSignature, tail, frames)
+				m.noteFailure(FailureCause{Cause: CauseLiveBlocked, Symptom: string(end.Symptom()), Pattern: pattern, Down: end.Down, AtMs: time.Now().UnixMilli()})
+			}
+			trace(protocol.HandshakeIncomplete, dialStageLiveEnd, end.Dur, end.Symptom(), end.Down, protocol.WireNoSignature, protocol.DialMeasure{Packets: tail})
+		}
+		conn, err := protocol.Client(ctx, &c)
+		sharedHellos.settle(helloKey, mark, handshake, connectFailed)
+		if err == nil {
+			m.noteServerAnswered(overIPv6)
+		} else if !errors.Is(ctx.Err(), context.Canceled) {
+			m.noteDialFailed(overIPv6, connectFailed, sharedHellos.failed(helloKey) && strategy.JointAliveArms(jointCtx, presets, fragmented) == 0)
+		}
+		return conn, err
 	}, true
 }
 
-func (s *selector) startDatagramLane() {
+func (s *selector) startDatagramLane() { s.laneDial() }
+
+func (s *selector) currentLane() *protocol.QUICLane {
+	s.lane.mu.Lock()
+	defer s.lane.mu.Unlock()
+	return s.lane.quic
+}
+
+func (s *selector) quicLane(ctx context.Context) (*protocol.QUICLane, error) {
+	if lane := s.currentLane(); lane != nil {
+		return lane, nil
+	}
+	done, ok := s.laneDial()
+	if !ok {
+		return nil, errNoQUICLane
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if lane := s.currentLane(); lane != nil {
+		return lane, nil
+	}
+	return nil, errNoQUICLane
+}
+
+func (s *selector) laneDial() (<-chan struct{}, bool) {
 	m := s.m
 	if !m.config.EnableWhispera || m.config.WhisperaQUICAddr == "" || len(m.config.WhisperaSecret) == 0 {
-		return
+		return nil, false
 	}
 
 	s.lane.mu.Lock()
-	if s.lane.quicGD != nil || s.lane.dialing {
-		s.lane.mu.Unlock()
-		return
+	defer s.lane.mu.Unlock()
+	if s.lane.quic != nil {
+		return closedChan, true
 	}
-	s.lane.dialing = true
-	s.lane.mu.Unlock()
+	if s.lane.dialing != nil {
+		return s.lane.dialing, true
+	}
+	done := make(chan struct{})
+	s.lane.dialing = done
 
 	sni := m.config.WhisperaSNI
 	if net.ParseIP(sni) != nil {
@@ -373,21 +434,36 @@ func (s *selector) startDatagramLane() {
 		ServerCertPin: m.config.WhisperaCertPin,
 		ServerIDPub:   m.config.WhisperaIDPub,
 		ServerSelPub:  m.config.WhisperaSelPub,
-		QUICAddr:      m.config.WhisperaQUICAddr,
+		QUICAddr:      m.quicAddr(),
 		OnQUICConn:    s.adoptDatagramConn,
+		Control:       bindDefaultRoute,
 	}
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), datagramDialTimeout)
 		defer cancel()
 
-		if err := protocol.DialRTDatagrams(ctx, cfg); err != nil {
-			log.Warn("datagram lane unavailable, UDP stays on the tunnel: %v", err)
+		lane, err := protocol.DialQUICLane(ctx, cfg)
+		if err != nil {
+			log.Warn("QUIC lane unavailable, UDP stays on the tunnel and TCP flows have no QUIC to fall back to: %v", err)
 		}
 		s.lane.mu.Lock()
-		s.lane.dialing = false
+		s.lane.dialing = nil
+		s.lane.quic = lane
+		s.lane.mu.Unlock()
+		close(done)
+		if lane == nil {
+			return
+		}
+		m.noteQUICLaneUp(lane)
+		<-lane.Done()
+		s.lane.mu.Lock()
+		if s.lane.quic == lane {
+			s.lane.quic = nil
+		}
 		s.lane.mu.Unlock()
 	}()
+	return done, true
 }
 
 func (s *selector) adoptDatagramConn(c *quicgo.Conn) {

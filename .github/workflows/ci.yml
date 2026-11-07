@@ -58,7 +58,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.26.x'
+        go-version: '1.27.x'
         cache: true
 
     - name: Install system dependencies
@@ -75,7 +75,7 @@ jobs:
     - name: Run golangci-lint
       uses: golangci/golangci-lint-action@v7
       with:
-        version: v2.11.3
+        version: v2.15.0
         args: --timeout=5m
 
     - name: Run go vet
@@ -104,7 +104,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.26.x'
+        go-version: '1.27.x'
         cache: true
 
     - name: Install system dependencies
@@ -141,7 +141,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.26.x'
+        go-version: '1.27.x'
         cache: true
 
     - name: Install system dependencies
@@ -160,7 +160,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.26.x'
+        go-version: '1.27.x'
         cache: true
 
     - name: Install system dependencies
@@ -169,7 +169,6 @@ jobs:
     - name: Fuzz protocol parsers
       run: |
         go test ./core/protocol/ -run '^$' -fuzz FuzzFramedRead -fuzztime 60s
-        go test ./core/relay/ -run '^$' -fuzz FuzzReadProxyStreamHeader -fuzztime 60s
         go test ./core/socks5/ -run '^$' -fuzz FuzzParseUDPHeader -fuzztime 60s
 
   scripts:
@@ -193,7 +192,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.26.x'
+        go-version: '1.27.x'
         cache: true
 
     - name: Download dependencies

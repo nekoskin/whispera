@@ -7,8 +7,6 @@ import (
 	stdlog "log"
 	"net"
 	"os"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -32,29 +30,9 @@ func genePool() *protocol.GenePool {
 
 func forcedGene() (protocol.Gene, bool) {
 	forcedGeneOnce.Do(func() {
-		spec := os.Getenv("WHISPERA_GENE")
-		if spec == "" {
-			return
+		if g, ok := protocol.ParseGene(os.Getenv("WHISPERA_GENE")); ok {
+			forcedGeneVal, forcedGeneSet = g, true
 		}
-		g := protocol.Gene{}
-		for _, part := range strings.Split(spec, "/") {
-			if part == "" {
-				continue
-			}
-			n, err := strconv.Atoi(part[1:])
-			if err != nil {
-				return
-			}
-			switch part[0] {
-			case 'i':
-				g.Ident = n
-			case 'r':
-				g.Records = n
-			case 'p':
-				g.PauseMs = n
-			}
-		}
-		forcedGeneVal, forcedGeneSet = g, true
 	})
 	return forcedGeneVal, forcedGeneSet
 }
@@ -75,9 +53,24 @@ func applyGene(c *protocol.ClientConfig, d tcpBypassDialer) (protocol.Gene, bool
 	}
 	applyIdent(c, g.Ident)
 	c.TCPDialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		writeGene(g)
 		return d.DialTCPWithShape(ctx, network, addr, g.Records, g.PauseMs)
 	}
 	return g, true
+}
+
+// writeGene publishes the gene chosen for the dial about to open, so the stand
+// evader can apply its wire parts (scramble/phantom) to that same flow. Atomic
+// rename keeps the evader from reading a half-written file.
+func writeGene(g protocol.Gene) {
+	path := os.Getenv("WHISPERA_GENE_FILE")
+	if path == "" {
+		return
+	}
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, []byte(g.String()), 0o644) == nil {
+		_ = os.Rename(tmp, path)
+	}
 }
 
 func observeGene(g protocol.Gene, alive bool) {

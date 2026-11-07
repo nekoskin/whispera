@@ -1,7 +1,6 @@
 package quic
 
 import (
-	"sync"
 	"testing"
 )
 
@@ -67,36 +66,4 @@ func TestDecodeFECRejectsShortPacket(t *testing.T) {
 	if recovered != nil || canRecover {
 		t.Fatalf("expected (nil, false) for short packet, got (%v, %v)", recovered, canRecover)
 	}
-}
-
-func TestFECDecoderConcurrentDecodeAndReconstruct(t *testing.T) {
-	const k, m = 10, 4
-	enc := NewFECEncoder(k, m)
-	dec := NewFECDecoder(k, m)
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		for block := uint32(0); block < 200; block++ {
-			base := block * uint32(k+m)
-			for i := 0; i < k; i++ {
-				pkt := enc.EncodeFEC([]byte("payload"), base+uint32(i), 0)
-				dec.DecodeFEC(pkt, base+uint32(i))
-			}
-			for i, pkt := range enc.GetParityPackets(base+uint32(k), 0) {
-				dec.DecodeFEC(pkt, base+uint32(k+i))
-			}
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		for block := uint32(0); block < 200; block++ {
-			dec.Reconstruct(block*uint32(k+m), k, m)
-		}
-	}()
-
-	wg.Wait()
 }

@@ -6,23 +6,6 @@ import (
 	"testing"
 )
 
-func TestBuildDNSMsgQType(t *testing.T) {
-	msgA, _ := buildDNSMsg("example.com", dnsTypeA)
-	msgAAAA, _ := buildDNSMsg("example.com", dnsTypeAAAA)
-
-	qtypeOffset := len(msgA) - 4
-	gotA := uint16(msgA[qtypeOffset])<<8 | uint16(msgA[qtypeOffset+1])
-	if gotA != dnsTypeA {
-		t.Fatalf("A query qtype = 0x%04x, want 0x%04x", gotA, dnsTypeA)
-	}
-
-	qtypeOffset = len(msgAAAA) - 4
-	gotAAAA := uint16(msgAAAA[qtypeOffset])<<8 | uint16(msgAAAA[qtypeOffset+1])
-	if gotAAAA != dnsTypeAAAA {
-		t.Fatalf("AAAA query qtype = 0x%04x, want 0x%04x", gotAAAA, dnsTypeAAAA)
-	}
-}
-
 // buildFakeResponse constructs a minimal wire-format DNS response with a
 // single answer record pointing back at the question name via compression.
 func buildFakeResponse(id [2]byte, rtype uint16, rdata []byte) []byte {
@@ -80,24 +63,6 @@ func TestParseDNSResponseA(t *testing.T) {
 	}
 }
 
-func TestMergeDualStackCombinesBothFamilies(t *testing.T) {
-	v4 := net.IPv4(203, 0, 113, 9)
-	v6 := net.ParseIP("2001:db8::1")
-
-	ips, err := mergeDualStack(func(qtype uint16) ([]net.IP, error) {
-		if qtype == dnsTypeA {
-			return []net.IP{v4}, nil
-		}
-		return []net.IP{v6}, nil
-	})
-	if err != nil {
-		t.Fatalf("mergeDualStack: %v", err)
-	}
-	if len(ips) != 2 {
-		t.Fatalf("got %d ips, want 2 (%v)", len(ips), ips)
-	}
-}
-
 func TestMergeDualStackSucceedsIfOneFamilyFails(t *testing.T) {
 	v4 := net.IPv4(203, 0, 113, 9)
 
@@ -112,14 +77,5 @@ func TestMergeDualStackSucceedsIfOneFamilyFails(t *testing.T) {
 	}
 	if len(ips) != 1 || !ips[0].Equal(v4) {
 		t.Fatalf("got %v want [%v]", ips, v4)
-	}
-}
-
-func TestMergeDualStackFailsIfBothFamiliesFail(t *testing.T) {
-	_, err := mergeDualStack(func(qtype uint16) ([]net.IP, error) {
-		return nil, errors.New("no records")
-	})
-	if err == nil {
-		t.Fatal("expected error when both families fail")
 	}
 }

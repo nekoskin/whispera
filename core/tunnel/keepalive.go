@@ -98,7 +98,7 @@ func (c *parkedConn) reclaim() bool {
 	}
 }
 
-func (s *idleSet) take() net.Conn {
+func (s *idleSet) take(fits func(net.Conn) bool) net.Conn {
 	for {
 		s.mu.Lock()
 		if len(s.conns) == 0 {
@@ -110,7 +110,7 @@ func (s *idleSet) take() net.Conn {
 		s.conns = s.conns[:last]
 		s.mu.Unlock()
 
-		if c.reclaim() {
+		if c.reclaim() && fits(c.Conn) {
 			return c.Conn
 		}
 		c.Close()
@@ -167,6 +167,9 @@ type keepAliveStream struct {
 	raw  net.Conn
 	once sync.Once
 
+	lastRead atomic.Int64
+	sawEnd   atomic.Bool
+
 	swapMu     sync.Mutex
 	pad        *protocol.ShapeBudget
 	token      []byte
@@ -187,6 +190,12 @@ func (c *keepAliveStream) Read(b []byte) (int, error) {
 		down := c.down
 		c.swapMu.Unlock()
 		n, err := down.Read(b)
+		if n > 0 {
+			c.lastRead.Store(time.Now().UnixNano())
+		}
+		if errors.Is(err, io.EOF) {
+			c.sawEnd.Store(true)
+		}
 		if errors.Is(err, protocol.ErrMigrate) {
 			if merr := c.migrate(); merr != nil {
 				return 0, merr
@@ -195,6 +204,10 @@ func (c *keepAliveStream) Read(b []byte) (int, error) {
 		}
 		return n, err
 	}
+}
+
+func (c *keepAliveStream) silentFor(d time.Duration) bool {
+	return !c.sawEnd.Load() && time.Since(time.Unix(0, c.lastRead.Load())) >= d
 }
 
 func (c *keepAliveStream) migrate() error {
@@ -213,7 +226,10 @@ func (c *keepAliveStream) migrate() error {
 		return err
 	}
 	base := newDecoyLeaveConn(conn)
-	up := protocol.NewFramedConn(base, c.pad)
+	up := protocol.NewFramedConnFilling(base, c.pad)
+	if levers, ok := protocol.LeversOf(conn); ok {
+		up.ShapeRecords(levers.Shaped)
+	}
 
 	c.swapMu.Lock()
 	old := c.base
@@ -253,29 +269,33 @@ func (c *keepAliveStream) SpliceTo(dst net.Conn) (int64, error) {
 	}
 }
 
-func drainToEnd(base net.Conn, down *protocol.FramedConn) bool {
+func drainToEnd(base net.Conn, down *protocol.FramedConn) (done, silent bool) {
 	if down.StreamDone() {
-		return true
+		return true, false
 	}
 	if err := base.SetReadDeadline(time.Now().Add(drainWait)); err != nil {
-		return false
+		return false, false
 	}
 	defer base.SetReadDeadline(time.Time{})
 
 	discard := make([]byte, 16<<10)
+	read := 0
 	for left := drainLimit; left > 0; {
 		n, err := down.Read(discard)
+		read += n
 		if err != nil {
-			return errors.Is(err, io.EOF) && down.StreamDone()
+			done = errors.Is(err, io.EOF) && down.StreamDone()
+			return done, !done && read == 0
 		}
 		left -= n
 	}
-	return false
+	return false, false
 }
 
 func (c *keepAliveStream) Close() error {
 	var err error
 	c.once.Do(func() {
+		quiet := c.silentFor(protocol.StreamStallSilence)
 		if err = c.base.SetDeadline(time.Time{}); err == nil {
 			err = c.up.EndStream()
 		}
@@ -288,10 +308,19 @@ func (c *keepAliveStream) Close() error {
 		if d, ok := base.(*decoyLeaveConn); ok && d.acct != nil {
 			hot = d.acct.down.Add(down.RxWire()) >= downstreamCapBytes
 		}
+		if quiet {
+			base.SetReadDeadline(time.Now().Add(drainWait))
+		}
 		go func() {
-			if !hot && drainToEnd(base, down) {
-				c.m.idle.put(base)
-				return
+			if !hot || quiet {
+				done, silent := drainToEnd(base, down)
+				if done && !hot {
+					c.m.idle.put(base)
+					return
+				}
+				if quiet && silent {
+					protocol.NoteStall(base)
+				}
 			}
 			base.Close()
 		}()

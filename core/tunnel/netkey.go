@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	stdlog "log"
 	"net"
 	"sync/atomic"
 )
@@ -13,6 +14,7 @@ const (
 	routePrefixBitsV4 = 24
 	routePrefixBitsV6 = 64
 	routeDescriptorAt = "route:"
+	routeHopAt        = " via "
 )
 
 var platformNetwork atomic.Pointer[string]
@@ -34,25 +36,39 @@ func hashNetwork(descriptor string) string {
 	return hex.EncodeToString(sum[:networkKeyBytes])
 }
 
+var lastNetwork atomic.Pointer[string]
+
 func networkKey(ctx context.Context, serverAddr string) string {
 	if key := platformNetwork.Load(); key != nil {
 		return *key
 	}
-	return hashNetwork(routeDescriptor(ctx, serverAddr))
+	local, ok := routeSource(ctx, serverAddr)
+	if !ok {
+		return ""
+	}
+	descriptor := routeDescriptorAt + localPrefix(local).String()
+	if hop, ok := sharedWire.nextHop(local); ok {
+		descriptor += routeHopAt + hop.String()
+	}
+	key := hashNetwork(descriptor)
+	if prev := lastNetwork.Swap(&key); prev == nil || *prev != key {
+		stdlog.Printf("[DIAL] network %s: %s", key, descriptor)
+	}
+	return key
 }
 
-func routeDescriptor(ctx context.Context, serverAddr string) string {
+func routeSource(ctx context.Context, serverAddr string) (net.IP, bool) {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "udp", serverAddr)
 	if err != nil {
-		return ""
+		return nil, false
 	}
 	defer conn.Close()
 	local, ok := conn.LocalAddr().(*net.UDPAddr)
 	if !ok {
-		return ""
+		return nil, false
 	}
-	return routeDescriptorAt + localPrefix(local.IP).String()
+	return local.IP, true
 }
 
 func localPrefix(ip net.IP) *net.IPNet {

@@ -69,7 +69,7 @@ func TestPerflowMuxAuthenticatesAndPositionsStream(t *testing.T) {
 	}
 }
 
-func TestPerflowMuxRejectsBadToken(t *testing.T) {
+func TestPerflowMuxBadTokenGoesToDecoy(t *testing.T) {
 	ln, _ := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	secret := make([]byte, 32)
 	crand.Read(secret)
@@ -89,14 +89,29 @@ func TestPerflowMuxRejectsBadToken(t *testing.T) {
 	defer c.Close()
 	c.Write(bad)
 
+	res := make(chan net.Conn, 1)
+	go func() { conn, _ := mux.Accept(); res <- conn }()
+
+	select {
+	case conn := <-res:
+		if conn == nil {
+			t.Fatal("bad token not forwarded to the decoy")
+		}
+		defer conn.Close()
+		got := make([]byte, len(bad))
+		if _, err := io.ReadFull(conn, got); err != nil {
+			t.Fatalf("reading the decoy side: %v", err)
+		}
+		if !bytes.Equal(got, bad) {
+			t.Error("decoy did not see the original preamble bytes")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("bad token neither reset nor sent to the decoy")
+	}
 	select {
 	case <-called:
-		t.Fatal("OnConn called for invalid token")
-	case <-time.After(500 * time.Millisecond):
-	}
-	c.SetReadDeadline(time.Now().Add(time.Second))
-	if _, err := c.Read(make([]byte, 1)); err == nil {
-		t.Error("server did not close conn on bad token")
+		t.Fatal("OnConn called for an invalid token")
+	default:
 	}
 }
 
@@ -132,29 +147,5 @@ func TestPerflowMuxForwardsNonMagicToAccept(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("non-magic conn not forwarded to Accept")
-	}
-}
-
-func TestHandshakeStrategyAvoidsCensoredArm(t *testing.T) {
-	h := NewHandshakeStrategy()
-
-	const censoredArm = 2
-	const ctx = "vk.com"
-	const total, tail = 4000, 500
-	okTail := 0
-	for i := 0; i < total; i++ {
-		_, arm := h.SelectSplit(ctx)
-		res := HandshakeOK
-		if arm == censoredArm {
-			res = HandshakeResetFast
-		}
-		h.Observe(ctx, arm, res)
-		if i >= total-tail && res == HandshakeOK {
-			okTail++
-		}
-	}
-
-	if survival := float64(okTail) / float64(tail); survival < 0.85 {
-		t.Errorf("survival in last %d handshakes = %.2f, want >0.85 — the bandit did not learn to avoid the censored arm", tail, survival)
 	}
 }

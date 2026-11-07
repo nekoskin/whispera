@@ -2,13 +2,11 @@ package dns
 
 import (
 	"context"
-	"fmt"
 	"github.com/nekoskin/whispera/common/cache"
 	"github.com/nekoskin/whispera/common/runtime/base"
 	"net"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -21,15 +19,11 @@ const (
 )
 
 type Config struct {
-	Upstream        string
-	CacheEnabled    bool
-	CacheSize       int
-	CacheTTL        time.Duration
-	BlockingEnabled bool
-	BlockLists      []string
-	DialContext     func(ctx context.Context, network, address string) (net.Conn, error)
-	BypassFunc      func(hostname string) bool
-	BypassResolver  *net.Resolver
+	Upstream     string
+	CacheEnabled bool
+	CacheSize    int
+	CacheTTL     time.Duration
+	DialContext  func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 // pending is one upstream query others can wait on, so a page opening twenty
@@ -50,24 +44,14 @@ type Resolver struct {
 
 	inflightMu sync.Mutex
 	inflight   map[string]*pending
-
-	blockList   map[string]bool
-	blockListMu sync.RWMutex
-
-	queries     uint64
-	cacheHits   uint64
-	cacheMisses uint64
-	blocked     uint64
-	errors      uint64
 }
 
 func DefaultConfig() *Config {
 	return &Config{
-		Upstream:        "8.8.8.8:53",
-		CacheEnabled:    true,
-		CacheSize:       DefaultCacheSize,
-		CacheTTL:        DefaultCacheTTL,
-		BlockingEnabled: false,
+		Upstream:     "8.8.8.8:53",
+		CacheEnabled: true,
+		CacheSize:    DefaultCacheSize,
+		CacheTTL:     DefaultCacheTTL,
 	}
 }
 
@@ -90,10 +74,9 @@ func New(cfg *Config) (*Resolver, error) {
 	}
 
 	r := &Resolver{
-		Module:    base.NewModule(ModuleName, ModuleVersion, nil),
-		config:    cfg,
-		cache:     cache.NewLRUCache[[]net.IP](cfg.CacheSize),
-		blockList: make(map[string]bool),
+		Module: base.NewModule(ModuleName, ModuleVersion, nil),
+		config: cfg,
+		cache:  cache.NewLRUCache[[]net.IP](cfg.CacheSize),
 	}
 
 	return r, nil
@@ -102,50 +85,6 @@ func New(cfg *Config) (*Resolver, error) {
 func NewResolver(cfg *Config) *Resolver {
 	r, _ := New(cfg)
 	return r
-}
-
-func (r *Resolver) Resolve(ctx context.Context, domain string) ([]net.IP, error) {
-	if ip := net.ParseIP(domain); ip != nil {
-		return []net.IP{ip}, nil
-	}
-	atomic.AddUint64(&r.queries, 1)
-	r.UpdateActivity()
-	if r.isBlocked(domain) {
-		atomic.AddUint64(&r.blocked, 1)
-		return nil, fmt.Errorf("domain blocked: %s", domain)
-	}
-
-	if r.config.BypassFunc != nil && r.config.BypassFunc(domain) {
-		resolver := r.config.BypassResolver
-		if resolver == nil {
-			resolver = net.DefaultResolver
-		}
-		addrs, err := resolver.LookupIPAddr(ctx, domain)
-		if err != nil {
-			return nil, err
-		}
-		ips := make([]net.IP, 0, len(addrs))
-		for _, a := range addrs {
-			ips = append(ips, a.IP)
-		}
-		return ips, nil
-	}
-
-	if r.config.CacheEnabled {
-		if ips, _ := r.cache.Get(ctx, domain); ips != nil {
-			atomic.AddUint64(&r.cacheHits, 1)
-			return ips, nil
-		}
-		atomic.AddUint64(&r.cacheMisses, 1)
-	}
-
-	ips, err := r.resolveShared(ctx, domain)
-	if err != nil {
-		atomic.AddUint64(&r.errors, 1)
-		return nil, err
-	}
-
-	return ips, nil
 }
 
 // resolveShared runs one upstream query per domain at a time; everyone else
@@ -227,23 +166,4 @@ func (r *Resolver) GetUpstream() string {
 	r.upstreamMu.RLock()
 	defer r.upstreamMu.RUnlock()
 	return r.config.Upstream
-}
-
-func (r *Resolver) isBlocked(domain string) bool {
-	if !r.config.BlockingEnabled {
-		return false
-	}
-	r.blockListMu.RLock()
-	defer r.blockListMu.RUnlock()
-	if r.blockList[domain] {
-		return true
-	}
-	for i := 0; i < len(domain); i++ {
-		if domain[i] == '.' {
-			if r.blockList[domain[i+1:]] {
-				return true
-			}
-		}
-	}
-	return false
 }

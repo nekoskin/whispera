@@ -137,16 +137,6 @@ func (c *verdictCache) put(host string, v verdict) {
 	sh.mu.Unlock()
 }
 
-func (c *verdictCache) len() int {
-	total := 0
-	for i := range c.shards {
-		c.shards[i].mu.RLock()
-		total += len(c.shards[i].m)
-		c.shards[i].mu.RUnlock()
-	}
-	return total
-}
-
 func (c *verdictCache) reset() {
 	for i := range c.shards {
 		c.shards[i].mu.Lock()
@@ -419,12 +409,6 @@ func (stm *SplitTunnelManager) SetEnabled(enabled bool) {
 	stm.mu.Unlock()
 }
 
-func (stm *SplitTunnelManager) isEnabled() bool {
-	stm.mu.RLock()
-	defer stm.mu.RUnlock()
-	return stm.config.Enabled
-}
-
 func (stm *SplitTunnelManager) ShouldBypass(addr string, port uint16) bool {
 	snap := stm.snap.Load()
 	if snap == nil || !snap.enabled {
@@ -502,14 +486,6 @@ func (stm *SplitTunnelManager) SetGeoIP(geo *GeoIPSet) {
 	stm.geo = geo
 	stm.publishLocked()
 	stm.mu.Unlock()
-}
-
-func (stm *SplitTunnelManager) ShouldBypassByHostname(hostname string) bool {
-	snap := stm.snap.Load()
-	if snap == nil || !snap.enabled {
-		return false
-	}
-	return stm.bypassHost(snap, hostname)
 }
 
 func (stm *SplitTunnelManager) bypassHost(snap *ruleSnapshot, hostname string) bool {

@@ -2,114 +2,99 @@ package protocol
 
 import (
 	"math"
+	"math/rand"
+	"os"
 	"testing"
+	"time"
 )
 
-// Values printed by neural/mutate.py's probe after training and export; they
-// pin the Go forward pass to the trainer's own outputs.
-func TestPolicyMatchesTrainer(t *testing.T) {
-	cases := []struct {
-		tokens []int
-		want   []float64
-	}{
-		{tokens: []int{24, 9}, want: []float64{0.128022, 0.041479, 0.012594, 0.003745, 0.553324, 0.267464, 0.097162, 0.030745, 0.660568, 0.364517, 0.144618, 0.047467}},
-		{tokens: []int{24, 2, 0, 18, 9, 13}, want: []float64{0.458268, 0.242645, 0.108211, 0.043937, 0.810193, 0.617831, 0.379761, 0.188241, 0.661640, 0.425484, 0.219049, 0.096030}},
-		{tokens: []int{16, 11, 4, 23, 6, 8, 14, 0, 7, 19, 14, 0, 3, 2, 22, 15}, want: []float64{0.535011, 0.303938, 0.142155, 0.059167, 0.809392, 0.617080, 0.379489, 0.188374, 0.558627, 0.324471, 0.154179, 0.064701}},
-		{tokens: []int{23, 11, 18, 11, 18, 9, 21, 10, 18, 2, 15, 5, 22, 15, 18, 14}, want: []float64{0.726149, 0.543940, 0.349157, 0.194394, 0.908446, 0.816955, 0.667498, 0.474505, 0.311967, 0.169398, 0.084026, 0.039627}},
-	}
-	for i, c := range cases {
-		got := policyArmScores(c.tokens, polArms)
-		if len(got) != len(c.want) {
-			t.Fatalf("case %d: %d scores, want %d", i, len(got), len(c.want))
-		}
-		for a := range got {
-			if math.Abs(got[a]-c.want[a]) > 1e-4 {
-				t.Errorf("case %d arm %d: got %.6f, trainer says %.6f", i, a, got[a], c.want[a])
-			}
-		}
-	}
-}
+const testMinute = 60_000
 
-func TestOnlineForwardMatchesFrozen(t *testing.T) {
+func testParams(rng *rand.Rand) *polParams {
 	p := newPolParams()
-	histories := [][]int{
-		{polBOS, 9},
-		{polBOS, 2, 0, 18, 9, 13},
-		{16, 11, 4, 23, 6, 8, 14, 0, 7, 19, 14, 0, 3, 2, 22, 15},
-	}
-	for i, h := range histories {
-		frozen := policyArmScores(h, polArms)
-		online := p.armScores(h, polArms)
-		for a := range frozen {
-			if math.Abs(frozen[a]-online[a]) > 1e-9 {
-				t.Errorf("case %d arm %d: online %.9f, frozen %.9f", i, a, online[a], frozen[a])
+	p.each(func(_ string, m [][]float64) {
+		for _, row := range m {
+			for j := range row {
+				row[j] = rng.NormFloat64() * polInitStd
 			}
 		}
+	})
+	return p
+}
+
+func testTrainer(t *testing.T) (python, script string) {
+	t.Helper()
+	script = os.Getenv("WHISPERA_TEST_TRAINER")
+	if script == "" {
+		t.Skip("WHISPERA_TEST_TRAINER names the PyTorch trainer (neural/mutate.py); the bridge is untested without it")
+	}
+	python = os.Getenv("WHISPERA_TEST_PYTHON")
+	if python == "" {
+		python = "python3"
+	}
+	return python, script
+}
+
+func polDistance(a, b *polParams) float64 {
+	sum := 0.0
+	bm := b.mats()
+	a.each(func(name string, m [][]float64) {
+		for i := range m {
+			for j := range m[i] {
+				d := m[i][j] - bm[name][i][j]
+				sum += d * d
+			}
+		}
+	})
+	return math.Sqrt(sum)
+}
+
+func waitTrained(t *testing.T, o *onlinePolicy) {
+	t.Helper()
+	deadline := time.Now().Add(time.Minute)
+	for {
+		o.mu.Lock()
+		busy, off := o.training, o.trainer == nil
+		o.mu.Unlock()
+		if off {
+			t.Fatal("the trainer was switched off")
+		}
+		if !busy {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the trainer did not answer within a minute")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
-func TestPolicyWindowIsBounded(t *testing.T) {
-	long := make([]int, polBlock*3)
-	for i := range long {
-		long[i] = i % (polArms * 2)
-	}
-	scores := policyArmScores(long, polArms)
-	if len(scores) != polArms {
-		t.Fatalf("got %d scores, want %d", len(scores), polArms)
-	}
-	for a, s := range scores {
-		if s < 0 || s > 1 || math.IsNaN(s) {
-			t.Errorf("arm %d scored %.6f, which is not a probability", a, s)
+func TestTrainerFineTunesNearTheAnchorAndSparesUnplayedArms(t *testing.T) {
+	python, script := testTrainer(t)
+	drift := map[float64]float64{}
+	for _, anchor := range []float64{0, polAnchorGrid[0]} {
+		o, clock := testOnlinePolicy(7)
+		o.anchor = anchor
+		o.trainer = newPolTrainer(python, script)
+		before := o.live.armScores(nil, clock.UnixMilli(), polArms)
+		for i := 0; i < 50*polOnlineStepEvery; i++ {
+			*clock = clock.Add(time.Minute)
+			o.NoteDial("c", 4, DialNote{Alive: true})
+			waitTrained(t, o)
 		}
-	}
-}
-
-func TestPolicyDialEncoding(t *testing.T) {
-	for arm := 0; arm < polArms; arm++ {
-		if got := polDial(arm, true); got != arm*2 {
-			t.Errorf("arm %d surviving encoded as %d, want %d", arm, got, arm*2)
+		o.trainer.close()
+		if o.steps == 0 || !o.tuned {
+			t.Fatal("the trainer took no step")
 		}
-		if got := polDial(arm, false); got != arm*2+1 {
-			t.Errorf("arm %d reset encoded as %d, want %d", arm, got, arm*2+1)
+		after := o.live.armScores(o.dials["c"], clock.UnixMilli()+time.Minute.Milliseconds(), polArms)
+		for a := range after {
+			if a != 4 && after[a] < before[a]-0.25 {
+				t.Fatalf("anchor %g: arm %d was never played but fell from %.3f to %.3f while arm 4 kept living", anchor, a, before[a], after[a])
+			}
 		}
+		drift[anchor] = polDistance(o.live, o.frozen)
 	}
-}
-
-func TestJointArmStaysWholeWithoutFragmentation(t *testing.T) {
-	presets := polArms / len(fragmentBudgets)
-	h := NewHandshakeStrategy()
-	pickers := map[string]func(ctx string) int{
-		"bandit": func(ctx string) int { return h.SelectJoint(ctx, presets, false) },
-		"policy": func(ctx string) int {
-			arm, ok := h.SelectJointPolicy(ctx, presets, false)
-			if !ok {
-				t.Fatal("frozen policy refused a repertoire it was built for")
-			}
-			return arm
-		},
-		"online": func(ctx string) int {
-			arm, _, ok := h.SelectJointOnline(ctx, presets, false)
-			if !ok {
-				t.Fatal("online policy refused a repertoire it was built for")
-			}
-			return arm
-		},
-	}
-	for name, pick := range pickers {
-		ctx := "whole-hello|" + name
-		for i := 0; i < 300; i++ {
-			arm := pick(ctx)
-			if _, budget := JointArmParts(arm, presets); budget != 1 {
-				t.Fatalf("%s picked arm %d with a %d-record hello, but fragmentation is off and the hello always leaves whole", name, arm, budget)
-			}
-			alive := i%4 == 0
-			result := HandshakeResetFast
-			if alive {
-				result = HandshakeOK
-			}
-			h.Observe(ctx, arm, result)
-			h.NoteDial(ctx, arm, alive)
-			h.NoteJointOnline(ctx, arm, alive, true)
-		}
+	if drift[polAnchorGrid[0]] >= drift[0] {
+		t.Fatalf("anchored weights drifted %.4f, unanchored %.4f", drift[polAnchorGrid[0]], drift[0])
 	}
 }

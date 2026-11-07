@@ -449,11 +449,7 @@ func (m *perflowMux) classify(c net.Conn) {
 	}()
 
 	if isDecoyConn(c) {
-		select {
-		case m.httpCh <- c:
-		case <-m.closed:
-			c.Close()
-		}
+		m.toDecoy(c)
 		return
 	}
 
@@ -464,13 +460,18 @@ func (m *perflowMux) classify(c net.Conn) {
 		return
 	}
 	if first[0] == perflowMagic {
-		handlePerflowConn(c, m.cfg)
+		m.handlePerflow(c, first[0])
 		return
 	}
 	c.SetReadDeadline(time.Time{})
-	pc := &prefixConn{Conn: c, prefix: []byte{first[0]}}
+	m.toDecoy(&prefixConn{Conn: c, prefix: []byte{first[0]}})
+}
+
+// toDecoy hands a connection to the decoy web server, the same path real HTTP
+// traffic takes, so whatever arrives gets a plausible site instead of a reset.
+func (m *perflowMux) toDecoy(c net.Conn) {
 	select {
-	case m.httpCh <- pc:
+	case m.httpCh <- c:
 	case <-m.closed:
 		c.Close()
 	}
@@ -500,48 +501,62 @@ func (m *perflowMux) Close() error {
 	return m.Listener.Close()
 }
 
-func handlePerflowConn(c net.Conn, cfg *ServerConfig) {
+func (m *perflowMux) handlePerflow(c net.Conn, magic byte) {
+	cfg := m.cfg
 	remote := c.RemoteAddr().String()
-	reject := func(reason string, err error) {
-		traceLog.Infow("per-flow preamble rejected", "remote", remote, "reason", reason, "err", err)
-		c.Close()
+	// Replay everything the preamble consumed, so a failed attempt reaches the
+	// decoy as the same bytes the peer sent, and a prober sees a web server
+	// answer rather than a bare reset that gives the port away.
+	seen := []byte{magic}
+	read := func(n int) ([]byte, error) {
+		b := make([]byte, n)
+		if _, err := io.ReadFull(c, b); err != nil {
+			return nil, err
+		}
+		seen = append(seen, b...)
+		return b, nil
+	}
+	fallback := func(reason string, err error) {
+		traceLog.Infow("per-flow preamble to decoy", "remote", remote, "reason", reason, "err", err)
+		c.SetReadDeadline(time.Time{})
+		m.toDecoy(&prefixConn{Conn: c, prefix: seen})
 	}
 
 	c.SetReadDeadline(time.Now().Add(perflowPreambleTimeout))
-	sessionID := make([]byte, 16)
-	if _, err := io.ReadFull(c, sessionID); err != nil {
-		reject("session_id", err)
+	sessionID, err := read(16)
+	if err != nil {
+		fallback("session_id", err)
 		return
 	}
-	var tl [2]byte
-	if _, err := io.ReadFull(c, tl[:]); err != nil {
-		reject("token_length", err)
+	tl, err := read(2)
+	if err != nil {
+		fallback("token_length", err)
 		return
 	}
-	tokLen := binary.BigEndian.Uint16(tl[:])
+	tokLen := binary.BigEndian.Uint16(tl)
 	if tokLen == 0 || tokLen > 512 {
-		reject("token_length_out_of_range", fmt.Errorf("%d", tokLen))
+		fallback("token_length_out_of_range", fmt.Errorf("%d", tokLen))
 		return
 	}
-	tok := make([]byte, tokLen)
-	if _, err := io.ReadFull(c, tok); err != nil {
-		reject("token", err)
+	tok, err := read(int(tokLen))
+	if err != nil {
+		fallback("token", err)
 		return
 	}
 	c.SetReadDeadline(time.Time{})
 
 	secret, userID := resolveSecretFor(cfg, knownUserOf(c), string(tok), sessionID)
 	if secret == nil {
-		reject("unknown_token", nil)
+		fallback("unknown_token", nil)
 		return
 	}
 	cfg.rememberUser(sessionID, knownUser{id: userID, psk: secret})
 	if !cfg.consumeToken(string(tok)) {
-		reject("token_replayed", nil)
+		fallback("token_replayed", nil)
 		return
 	}
 	if cfg.OnConn == nil {
-		reject("no_conn_handler", nil)
+		fallback("no_conn_handler", nil)
 		return
 	}
 	cfg.OnConn(AcceptedConn{Conn: c, UserID: userID, SessionID: sessionID, Secret: secret})

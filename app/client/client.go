@@ -28,7 +28,7 @@ import (
 
 var log = logger.Module("client")
 
-var Version = "neuro_0.0.6"
+var Version = "neuro_0.0.7"
 
 type clientRuntimeParams struct {
 	serverAddress    string
@@ -56,6 +56,7 @@ var (
 	dnsUpstream      = flag.String("dns", "", "DNS upstream: host:port for UDP (8.8.8.8:53), https://... for DoH (https://1.1.1.1/dns-query). Empty = 1.1.1.1:53. 'system' = ISP resolver")
 	tlsFragSize      = flag.Int("tls-fragment", 0, "TLS ClientHello fragment size in bytes (0=default 40, range 16-200). Smaller = harder for DPI but more RTT")
 	tlsFragCount     = flag.Int("tls-fragment-count", 0, "How many records the ClientHello may become (0=default: 4-8, drawn per connection). Fewer records with a longer delay separate more than many with a short one")
+	tlsFragCap       = flag.Int("tls-fragment-cap", 0, "Hard ceiling on ClientHello records whatever the dial policy picks (0 = no ceiling, the policy's record budget goes out as chosen)")
 	tlsFragDelay     = flag.String("tls-fragment-delay", "", "Pause between hello fragments, milliseconds, as min-max (default 1-4). \"0\" splits without waiting: keeps the record split, drops up to 28ms per new connection")
 	helloFrag        = flag.Bool("hello-frag", true, "Split the ClientHello across TLS records. Off sends it in one packet, the way a browser does; an inspector that counts packets before the server replies cannot tell us apart there")
 	logFilePath      = flag.String("log-file", "", "Write logs to file (default: in-memory only, no disk storage)")
@@ -64,40 +65,51 @@ var (
 	subInterval      = flag.Duration("sub-interval", 24*time.Hour, "Subscription refresh interval")
 	bypassDNS        = flag.String("bypass-dns", "77.88.8.8:53", "DNS server used for bypass resolver (never goes through tunnel)")
 	hwidFlag         = flag.Bool("hwid", true, "Send a persistent per-device ID in the handshake (false = random ID per connection)")
+	ipv6Fallback     = flag.Bool("ipv6-fallback", true, "Dial the server's IPv6 address while connects to its IPv4 address get no answer, and go back once IPv4 answers again (needs whispera_ipv6 in the key)")
+	ipv6Only         = flag.Bool("ipv6-only", false, "Dial the server only at its IPv6 address (needs whispera_ipv6 in the key)")
 	forceFingerprint = flag.String("force-fingerprint", "", "Force a specific TLS fingerprint for the main tunnel handshake: chrome, chrome_120, chrome_115, firefox, firefox_120, safari, ios, android, edge. Empty = auto/random (default)")
 	verbose          = flag.Bool("verbose", false, "Log every connection. Off keeps only failures and lifecycle events, so a page opening many connections a second does not flood the log")
+	dialTraceMB      = flag.Int("dial-trace-mb", 0, "How many megabytes of dial history dials.csv keeps for training (0=default 4, negative keeps every line). Past it the oldest lines are dropped")
+	pcapIface        = flag.String("pcap-iface", "", "Capture interface for the policy net's packet capture (empty = the interface that routes to the server, followed when the route moves)")
+	pcapFilter       = flag.String("pcap-filter", "", "BPF filter for the policy net's packet capture (empty = the server's host and port)")
+	pcapLog          = flag.Bool("pcap-log", false, "Log captured packets, at most a fixed number a second, into a separate <log-file>-packets log that is trimmed often")
+	policyTrainer    = flag.String("policy-trainer", os.Getenv("WHISPERA_POLICY_TRAINER"), "PyTorch script that fine-tunes the policy net on this machine as dials come in (neural/mutate.py); empty keeps the shipped weights")
+	policyPython     = flag.String("policy-python", envOr("WHISPERA_POLICY_PYTHON", "python"), "Python with PyTorch installed that runs -policy-trainer")
+	patternDumps     = flag.String("pattern-dumps", os.Getenv("WHISPERA_PATTERN_DUMPS"), "Directory where the first dial of every block pattern the policy net never trained on is saved as a classic pcap (empty = dumps beside the client state)")
 )
+
+func envOr(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
+}
 
 const (
 	onlinePolicyFile = "policy-online.json"
 	dialTraceFile    = "dials.csv"
+	patternDumpsDir  = "dumps"
 )
 
-func loadHandshakeSignal(ctx context.Context) (*protocol.HandshakeStrategy, func()) {
+func loadOnlinePolicy(ctx context.Context) (*protocol.HandshakeStrategy, func()) {
 	strategy := protocol.NewHandshakeStrategy()
-	path := handshakeSignalPath()
-	if path == "" {
+	policyPath := onlinePolicyPath()
+	if policyPath == "" {
 		return strategy, func() {}
 	}
 
-	policyPath := filepath.Join(filepath.Dir(path), onlinePolicyFile)
 	save := func() {
-		if err := strategy.Save(path); err != nil {
-			stdlog.Printf("handshake signal save: %v", err)
-		}
 		if err := protocol.SaveOnlinePolicy(policyPath); err != nil {
 			stdlog.Printf("online policy save: %v", err)
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		stdlog.Printf("handshake signal dir: %v", err)
-	}
-	if err := strategy.Load(path); err != nil && !os.IsNotExist(err) {
-		stdlog.Printf("handshake signal load: %v", err)
+	if err := os.MkdirAll(filepath.Dir(policyPath), 0o700); err != nil {
+		stdlog.Printf("online policy dir: %v", err)
 	}
 	if err := protocol.LoadOnlinePolicy(policyPath); err != nil && !os.IsNotExist(err) {
 		stdlog.Printf("online policy load: %v", err)
 	}
+	protocol.SetPolicyTrainer(*policyPython, *policyTrainer)
 
 	go func() {
 		t := time.NewTicker(30 * time.Second)
@@ -175,6 +187,7 @@ func (r *clientRuntime) entryCfg(e *TransportEntry) *tunnel.Config {
 	c.TLSFragmentSize = *tlsFragSize
 	c.TLSFragmentDelayMinMs, c.TLSFragmentDelayMaxMs, c.TLSFragmentDelaySet = parseFragmentDelay(*tlsFragDelay)
 	c.TLSFragmentCount = *tlsFragCount
+	c.TLSFragmentCap = *tlsFragCap
 	c.TLSFragmentDisabled = !*helloFrag
 	return c
 }
@@ -197,48 +210,6 @@ func (r *clientRuntime) addStandbyTransports() {
 		m := r.newTunnel(transport)
 		e := newPoolEntry(pool.NextID(), transport, r.params.serverAddress, connStatusStandby, m)
 		pool.Add(e)
-	}
-}
-
-func (r *clientRuntime) connectBridge(bridgeCtx context.Context, router *socks5.MultiRouter, bridgeID, bridgeAddr string, rules []string) {
-	m, err := tunnel.New(r.tunnelCfg(r.params.transports[0], bridgeAddr, r.cfg.TransportConfig))
-	if err != nil {
-		stdlog.Printf("[multi-bridge] build tunnel %s failed: %v", bridgeID, err)
-		return
-	}
-	e := newPoolEntry(pool.NextID(), r.params.transports[0], bridgeAddr, connStatusConnecting, m)
-	pool.Add(e)
-
-	fail := func(stage string, err error, cancel context.CancelFunc) {
-		stdlog.Printf("[multi-bridge] %s %s (%s) failed: %v", stage, bridgeID, bridgeAddr, err)
-		e.mu.Lock()
-		e.Status = connStatusFailed
-		e.Error = err.Error()
-		e.mu.Unlock()
-		cancel()
-	}
-
-	connCtx, cancel := context.WithCancel(bridgeCtx)
-	if err := m.Init(connCtx, nil); err != nil {
-		fail("init", err, cancel)
-		return
-	}
-	e.mu.Lock()
-	e.cancel = cancel
-	e.mu.Unlock()
-
-	if err := m.Connect(connCtx); err != nil {
-		fail("connect", err, cancel)
-		return
-	}
-	e.mu.Lock()
-	e.Status = connStatusConnected
-	e.ConnectedAt = time.Now()
-	e.mu.Unlock()
-
-	stdlog.Printf("[multi-bridge] bridge %s connected (%s), rules: %v", bridgeID, bridgeAddr, rules)
-	if err := router.AttachBridgeTunnel(bridgeID, m); err != nil {
-		stdlog.Printf("[multi-bridge] bridge %s attach error: %v", bridgeID, err)
 	}
 }
 
@@ -269,7 +240,6 @@ func (r *clientRuntime) startSubscription() *config.SubscriptionManager {
 		}
 	})
 	mgr.Start()
-	globalSubscriptionMgr = mgr
 	return mgr
 }
 
@@ -408,8 +378,8 @@ func RunMain() {
 	if mobileMode {
 		tunnel.SetDialTracePath(statePath(dialTraceFile))
 	}
-	handshakeSignal, flushHandshakeSignal := loadHandshakeSignal(ctx)
-	defer flushHandshakeSignal()
+	strategy, flushPolicy := loadOnlinePolicy(ctx)
+	defer flushPolicy()
 
 	socksMod, dnsMod, stm := setupNetworking(cfg)
 	defer stopPool(socksMod)
@@ -417,11 +387,30 @@ func RunMain() {
 	r := &clientRuntime{
 		cfg:       cfg,
 		ctx:       ctx,
-		handshake: handshakeSignal,
+		handshake: strategy,
 		params:    resolveRuntimeParams(cfg),
 	}
 	if r.params.asnBypassEnabled {
 		stdlog.Printf("ASN bypass enabled: ClientHello fragmentation")
+	}
+	tunnel.SetControlEndpoints(*bypassDNS, defaultDNSUpstream)
+	if tunnel.CaptureBuilt() {
+		if *pcapLog && *logFilePath != "" {
+			packets, err := newTrimmingLog(packetLogPath(*logFilePath), packetLogLimits)
+			if err != nil {
+				fatalf("Packet log: %v", err)
+			}
+			tunnel.SetPacketLog(packets)
+		}
+		pcapCfg := tunnel.PcapConfig{Interface: *pcapIface, Filter: *pcapFilter, Server: r.params.serverAddress, LogPackets: *pcapLog}
+		if err := tunnel.StartPcap(pcapCfg); err != nil {
+			fatalf("Packet capture for the policy net: %v", err)
+		}
+		dumps := *patternDumps
+		if dumps == "" {
+			dumps = statePath(patternDumpsDir)
+		}
+		tunnel.SetPatternDumps(dumps)
 	}
 
 	tunnels := newTunnelPool(
@@ -430,9 +419,7 @@ func RunMain() {
 		},
 		r.entryCfg,
 	)
-	multiRouter := socks5.NewMultiRouter(tunnels)
-	globalMultiRouter = multiRouter
-	socksMod.SetTunnel(multiRouter)
+	socksMod.SetTunnel(tunnels)
 	if err := socksMod.Start(); err != nil {
 		fatalf("Failed to start SOCKS5: %v", err)
 	}
@@ -447,9 +434,6 @@ func RunMain() {
 
 	reconnectEntry = func(e *TransportEntry) {
 		restartTransportEntry(ctx, e, r.entryCfg(e))
-	}
-	newMultiBridgeTunnel = func(bridgeCtx context.Context, bridgeID, bridgeAddr string, rules []string) {
-		r.connectBridge(bridgeCtx, multiRouter, bridgeID, bridgeAddr, rules)
 	}
 
 	if subMgr := r.startSubscription(); subMgr != nil {

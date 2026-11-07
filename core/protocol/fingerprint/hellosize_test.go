@@ -9,12 +9,12 @@ import (
 
 func helloSize(t *testing.T, id utls.ClientHelloID, drop bool) int {
 	t.Helper()
-	spec, err := utls.UTLSIdToSpec(id)
+	spec, err := SpecFor(id)
 	if err != nil {
 		t.Fatalf("spec %s: %v", id.Str(), err)
 	}
 	if drop {
-		DropPQKeyShares(&spec)
+		DropPQKeyShares(spec)
 	}
 	c0, c1 := net.Pipe()
 	defer c0.Close()
@@ -24,7 +24,7 @@ func helloSize(t *testing.T, id utls.ClientHelloID, drop bool) int {
 		InsecureSkipVerify:                 true,
 		PreferSkipResumptionOnNilExtension: true,
 	}, utls.HelloCustom)
-	if err := u.ApplyPreset(&spec); err != nil {
+	if err := u.ApplyPreset(spec); err != nil {
 		t.Fatalf("apply %s: %v", id.Str(), err)
 	}
 	if err := u.BuildHandshakeState(); err != nil {

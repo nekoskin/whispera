@@ -149,16 +149,6 @@ func SplitRandom(random []byte) (sel [SelectorSize]byte, marker []byte, ok bool)
 	return sel, random[SelectorSize:], true
 }
 
-func WriteRandom(random []byte, sel [SelectorSize]byte, key []byte, window int64, keyShare []byte) bool {
-	if len(random) != 32 {
-		return false
-	}
-	marker := markerFor(key, window, keyShare)
-	copy(random[:SelectorSize], sel[:])
-	copy(random[SelectorSize:], marker[:])
-	return true
-}
-
 func MarkerMatchesKey(key, marker, keyShare []byte, now int64) bool {
 	if len(marker) != MarkerSize || len(key) == 0 || len(keyShare) == 0 {
 		return false

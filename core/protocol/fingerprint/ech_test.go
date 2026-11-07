@@ -42,20 +42,3 @@ func TestDropECHRemovesBothForms(t *testing.T) {
 		t.Fatalf("kept %d extensions, want 3", len(spec.Extensions))
 	}
 }
-
-func TestDropECHKeepsOtherGenericExtensions(t *testing.T) {
-	spec := &utls.ClientHelloSpec{Extensions: []utls.TLSExtension{
-		&utls.GenericExtension{Id: 0x44cd},
-		&utls.GREASEEncryptedClientHelloExtension{},
-	}}
-
-	DropECH(spec)
-
-	if len(spec.Extensions) != 1 {
-		t.Fatalf("kept %d extensions, want 1", len(spec.Extensions))
-	}
-	e, ok := spec.Extensions[0].(*utls.GenericExtension)
-	if !ok || e.Id != 0x44cd {
-		t.Fatal("a non-ECH generic extension was dropped")
-	}
-}

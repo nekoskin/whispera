@@ -3,14 +3,14 @@ package tunnel
 import (
 	"context"
 	"fmt"
+	stdlog "log"
 	"net"
 	"os"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
-
-	"github.com/nekoskin/whispera/core/protocol"
 
 	logger "github.com/nekoskin/whispera/common/log"
 	"github.com/nekoskin/whispera/common/runtime/base"
@@ -20,6 +20,7 @@ import (
 	"github.com/nekoskin/whispera/core/killswitch"
 
 	xmux "github.com/sagernet/sing-mux"
+	"github.com/sagernet/sing/common/control"
 )
 
 var log = logger.Module("tunnel")
@@ -53,8 +54,18 @@ type Manager struct {
 
 	sm *tunnelStateMachine
 
-	smClient *xmux.Client
-	smMu     sync.Mutex
+	smClient        *xmux.Client
+	smMu            sync.Mutex
+	muxRefusals     atomic.Int32
+	muxRetries      atomic.Int32
+	muxRefusedFlows atomic.Int64
+	muxOverflowed   atomic.Bool
+	muxProven       atomic.Bool
+
+	overQUIC    fallback
+	overIPv6    fallback
+	ipv6Missing atomic.Bool
+	quicNoFlows atomic.Bool
 
 	idle idleSet
 
@@ -85,6 +96,8 @@ type Manager struct {
 
 	connCfg connConfig
 
+	failure atomic.Pointer[FailureCause]
+
 	lastGoodMu        sync.RWMutex
 	lastGoodSNI       string
 	lastGoodTransport string
@@ -104,12 +117,36 @@ func newASNBypassDialer(cfg *Config) *asnbypass.Dialer {
 		minMs, maxMs = cfg.TLSFragmentDelayMinMs, cfg.TLSFragmentDelayMaxMs
 	}
 	return asnbypass.NewDialer(&asnbypass.Config{
-		EnableTLSFragmentation: (!cfg.TLSFragmentDisabled && os.Getenv("WHISPERA_HELLO_FRAG") != "0") || protocol.ShapeSearchEnabled(),
+		EnableTLSFragmentation: !cfg.TLSFragmentDisabled && os.Getenv("WHISPERA_HELLO_FRAG") != "0",
 		TLSFragmentSize:        cfg.TLSFragmentSize,
 		FragmentDelayMinMs:     minMs,
 		FragmentDelayMaxMs:     maxMs,
 		MaxFragments:           cfg.TLSFragmentCount,
+		MaxHelloRecords:        cfg.TLSFragmentCap,
+		Control:                bindDefaultRoute,
 	})
+}
+
+var (
+	serverInterface atomic.Value
+	bindFailed      atomic.Bool
+)
+
+func bindDefaultRoute(network, address string, c syscall.RawConn) error {
+	index, name := defaultRouteInterface()
+	if index == 0 {
+		return nil
+	}
+	if err := control.BindToInterface(nil, name, index)(network, address, c); err != nil {
+		if bindFailed.CompareAndSwap(false, true) {
+			stdlog.Printf("[WARN] could not bind connections to the server to %s, they follow the routing table, so another VPN's routes can take them: %v", name, err)
+		}
+		return nil
+	}
+	if old, _ := serverInterface.Swap(name).(string); old != name {
+		stdlog.Printf("[INFO] connections to the server leave by %s, the interface with the default route, past the routes of other VPN adapters", name)
+	}
+	return nil
 }
 
 func (m *Manager) attachKillSwitch(cfg *Config) {
@@ -216,7 +253,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		m.setState(StateRotating)
 	}
 
-	if protocol.StreamMuxEnabled() {
+	if m.useStreamMux() {
 		return m.connectStreamMux(ctx)
 	}
 	return m.connectPerFlow(ctx)

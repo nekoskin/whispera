@@ -137,9 +137,6 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/backup/restore", s.handleRestoreBackup)
 
 	s.Handle("GET /api/logs", s.handleGetLogs)
-
-	s.Handle("GET /api/fingerprints", s.handleGetFingerprints)
-	s.Handle("POST /api/fingerprints/set", s.handleSetFingerprint)
 }
 
 func (s *Server) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {

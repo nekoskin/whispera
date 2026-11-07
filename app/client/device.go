@@ -21,15 +21,15 @@ func deviceIDPath() string {
 	return statePath("device.id")
 }
 
-func handshakeSignalPath() string {
+func onlinePolicyPath() string {
 	if runtime.GOOS == "windows" {
 		appData := os.Getenv("APPDATA")
 		if appData == "" {
 			appData = os.TempDir()
 		}
-		return filepath.Join(appData, "whispera", "handshake.json")
+		return filepath.Join(appData, "whispera", onlinePolicyFile)
 	}
-	return statePath("handshake.json")
+	return statePath(onlinePolicyFile)
 }
 
 func statePath(name string) string {

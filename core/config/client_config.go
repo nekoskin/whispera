@@ -19,8 +19,8 @@ type ClientConfig struct {
 	WhisperaCertPin  string `yaml:"whispera_cert_pin" json:"whispera_cert_pin"`
 	WhisperaIDPub    string `yaml:"whispera_idpub" json:"whispera_idpub"`
 	WhisperaSelPub   string `yaml:"whispera_selpub" json:"whispera_selpub"`
-	WhisperaFPRaw    string `yaml:"tls_fp_raw" json:"tls_fp_raw"`
 	WhisperaQUICAddr string `yaml:"whispera_quic_addr" json:"whispera_quic_addr"`
+	WhisperaIPv6     string `yaml:"whispera_ipv6" json:"whispera_ipv6"`
 	GRPCAddr         string `yaml:"grpc_addr" json:"grpc_addr"`
 	GRPCServerName   string `yaml:"grpc_server_name" json:"grpc_server_name"`
 	GRPCUseTLS       bool   `yaml:"grpc_use_tls" json:"grpc_use_tls"`
@@ -65,6 +65,30 @@ type ClientConfig struct {
 	SubscriptionURL string `yaml:"subscription_url,omitempty" json:"subscription_url,omitempty"`
 
 	ForceSNI string `yaml:"force_sni,omitempty" json:"force_sni,omitempty"`
+
+	DialTraceMB int `yaml:"dial_trace_mb,omitempty" json:"dial_trace_mb,omitempty"`
+
+	// Shape, when set, is the traffic-shape profile the client applies on start.
+	// It lets a new shape ship as config from the server instead of a new build.
+	Shape *ClientShapeProfile `yaml:"shape,omitempty" json:"shape,omitempty"`
+}
+
+// ClientShapeProfile is one named set of the shaping knobs. Empty fields mean
+// "leave at zero", so an operator sets only what a given shape needs.
+type ClientShapeProfile struct {
+	Name           string `yaml:"name,omitempty" json:"name,omitempty"`
+	PadRecords     int    `yaml:"pad_records" json:"pad_records"`
+	PadMin         int    `yaml:"pad_min" json:"pad_min"`
+	PadMax         int    `yaml:"pad_max" json:"pad_max"`
+	FillerIdleMs   int    `yaml:"filler_idle_ms" json:"filler_idle_ms"`
+	FillerEveryMs  int    `yaml:"filler_interval_ms" json:"filler_interval_ms"`
+	FillerMin      int    `yaml:"filler_min" json:"filler_min"`
+	FillerMax      int    `yaml:"filler_max" json:"filler_max"`
+	ChunkMin       int    `yaml:"chunk_min" json:"chunk_min"`
+	ChunkMax       int    `yaml:"chunk_max" json:"chunk_max"`
+	ChunkShaped    bool   `yaml:"chunk_shaped" json:"chunk_shaped"`
+	OpeningFillMs  int    `yaml:"opening_fill_ms" json:"opening_fill_ms"`
+	OpeningEveryMs int    `yaml:"opening_every_ms" json:"opening_every_ms"`
 }
 
 type ClientRoutingConfig struct {

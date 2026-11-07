@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -24,11 +25,18 @@ type Config struct {
 
 	// How many records the hello may become.
 	MaxFragments int
+
+	// Hard ceiling on hello records, whatever the per-connection budget asks for.
+	// Keeps the hello from spanning enough packets to look fragmented. Zero = no cap.
+	MaxHelloRecords int
+
+	Control func(network, address string, c syscall.RawConn) error
 }
 
 type fragmentPlan struct {
 	size       int
 	maxRecords int
+	cap        int
 	delayMin   int
 	delayMax   int
 }
@@ -96,6 +104,7 @@ func (d *Dialer) plan() fragmentPlan {
 	p := fragmentPlan{
 		size:       d.config.TLSFragmentSize,
 		maxRecords: d.config.MaxFragments,
+		cap:        d.config.MaxHelloRecords,
 		delayMin:   d.config.FragmentDelayMinMs,
 		delayMax:   d.config.FragmentDelayMaxMs,
 	}
@@ -185,6 +194,9 @@ func writeFragmentedTLSRecord(conn net.Conn, data []byte, plan fragmentPlan) err
 	if maxRecords < 1 {
 		maxRecords = defaultMaxHelloRecords
 	}
+	if plan.cap > 0 && maxRecords > plan.cap {
+		maxRecords = plan.cap
+	}
 	base := plan.size
 	if base < 8 {
 		base = 8
@@ -254,10 +266,19 @@ func fragmentPause(minMs, maxMs int) {
 	}
 }
 
+func directNetwork(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if ip := net.ParseIP(host); err == nil && ip != nil && ip.To4() == nil {
+		return "tcp6"
+	}
+	return "tcp4"
+}
+
 func (d *Dialer) dialDirect(ctx context.Context, _, addr string) (net.Conn, error) {
 	conn, err := (&net.Dialer{
 		KeepAlive: 30 * time.Second,
-	}).DialContext(ctx, "tcp4", addr)
+		Control:   d.config.Control,
+	}).DialContext(ctx, directNetwork(addr), addr)
 
 	if err != nil {
 		return nil, err

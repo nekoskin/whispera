@@ -87,7 +87,7 @@ jobs:
 
       - uses: actions/setup-go@v4
         with:
-          go-version: '1.26.x'
+          go-version: '1.27.x'
 
       - name: Install libpcap (amd64)
         if: matrix.goarch == 'amd64'
@@ -146,7 +146,7 @@ jobs:
 
       - uses: actions/setup-go@v4
         with:
-          go-version: '1.26.x'
+          go-version: '1.27.x'
 
       - name: Build
         env:
@@ -175,7 +175,7 @@ jobs:
 
       - uses: actions/setup-go@v4
         with:
-          go-version: '1.26.x'
+          go-version: '1.27.x'
 
       - name: Build
         env:

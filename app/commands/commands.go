@@ -187,7 +187,6 @@ type whisperaKeyPlan struct {
 	selPub     string
 	certPin    string
 	fpName     string
-	fpRaw      string
 }
 
 func planWhisperaKey(sc *config.ServerConfig, sniFlag, domainFlag, selfCertFlag, ownDomainFlag, fingerprintFlag string) (whisperaKeyPlan, error) {
@@ -224,7 +223,7 @@ func planWhisperaKey(sc *config.ServerConfig, sniFlag, domainFlag, selfCertFlag,
 		return plan, err
 	}
 
-	plan.fpName, plan.fpRaw = resolveFingerprint(fingerprintFlag)
+	plan.fpName = fingerprintFlag
 	if !useSelfCert {
 		return plan, nil
 	}
@@ -260,19 +259,6 @@ func planWhisperaKey(sc *config.ServerConfig, sniFlag, domainFlag, selfCertFlag,
 		plan.certPin = pin
 	}
 	return plan, nil
-}
-
-func resolveFingerprint(name string) (string, string) {
-	if name != "auto" {
-		return name, ""
-	}
-	raw, ok := fingerprint.FreshestRaw(apiserver.FingerprintStoreDir, "chrome")
-	if !ok {
-		fmt.Printf("No collected fingerprint in %s — using named uTLS chrome\n", apiserver.FingerprintStoreDir)
-		return "chrome", ""
-	}
-	fmt.Printf("Embedded freshest collected chrome fingerprint (%d bytes) from %s\n", len(raw), apiserver.FingerprintStoreDir)
-	return "chrome", base64.StdEncoding.EncodeToString(raw)
 }
 
 func portInUse(port int, sc *config.ServerConfig) bool {
@@ -354,7 +340,7 @@ func parseCreateKeyFlags(args []string) *createKeyFlags {
 	fs.StringVar(&f.yadiskToken, "yadisk-token", "", "Yandex.Disk OAuth token (only with -transport yadisk; saved to server config if not already set there)")
 	fs.StringVar(&f.yadiskSession, "yadisk-session", "", "Yandex.Disk session/folder id (only with -transport yadisk; auto-generated if empty)")
 	fs.StringVar(&f.sni, "sni", "", "Clone this real domain's TLS certificate and present it via SNI for this key (only with -transport whispera; required unless whispera.domain is set in the server config)")
-	fs.StringVar(&f.fingerprint, "fingerprint", "auto", "TLS fingerprint for the tunnel ClientHello: auto (embed freshest collected chrome), or a named uTLS profile: chrome, chrome_120, chrome_115, firefox, firefox_120, safari, ios, android, edge, random")
+	fs.StringVar(&f.fingerprint, "fingerprint", "chrome", "TLS fingerprint for the tunnel ClientHello, a named uTLS profile: chrome, chrome_120, chrome_115, firefox, firefox_120, safari, ios, android, edge, random")
 	fs.StringVar(&f.selfCert, "self-cert", "", "Clone a self-signed cert for the SNI and pin it in the key (enable/disable; default: auto from server config)")
 	fs.StringVar(&f.ownDomain, "own-domain", "", "Key targets a Caddy + real-domain front: SNI/addr = the domain, no cert pin (enable/disable; default: auto from server config)")
 	fs.StringVar(&f.domain, "domain", "", "Real domain for -own-domain mode (Caddy front); addr and SNI of the key are set to this. Empty = whispera.domain from config")
@@ -367,8 +353,8 @@ func (f *createKeyFlags) validate() error {
 	if f.user == "" || f.port == 0 {
 		return fmt.Errorf("whispera create-key -user <name> -port <port> [-config <path>] [-quic enable|disable] [-quic-port <port>] [-transport whispera|grpc|yadisk] [-yadisk-token <token>] [-yadisk-session <id>] [-sni <real-domain>] [-fingerprint <name>] [-dropech] [-self-cert enable|disable] [-own-domain enable|disable]")
 	}
-	if f.fingerprint != "auto" && !fingerprint.IsKnown(f.fingerprint) {
-		return fmt.Errorf("unknown -fingerprint %q (auto, chrome, chrome_120, chrome_115, firefox, firefox_120, safari, ios, android, edge, random)", f.fingerprint)
+	if !fingerprint.IsKnown(f.fingerprint) {
+		return fmt.Errorf("unknown -fingerprint %q (chrome, chrome_120, chrome_115, firefox, firefox_120, safari, ios, android, edge, random)", f.fingerprint)
 	}
 	if f.port < 1 || f.port > 65535 {
 		return fmt.Errorf("invalid port %d", f.port)
@@ -544,7 +530,6 @@ func RunCreateKeyCmd() {
 			IDPub:       plan.idPub,
 			SelPub:      plan.selPub,
 			Fingerprint: plan.fpName,
-			FPRaw:       plan.fpRaw,
 			DropECH:     f.dropECH,
 		}
 	}

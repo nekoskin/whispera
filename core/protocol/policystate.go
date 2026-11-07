@@ -8,19 +8,24 @@ import (
 	"math"
 	"os"
 	"sync"
+
+	"github.com/nekoskin/whispera/core/protocol/fingerprint"
 )
 
 type onlinePolicySnapshot struct {
-	Frozen   string                   `json:"frozen"`
-	Params   map[string][][]float64   `json:"params,omitempty"`
-	History  map[string][]int         `json:"history"`
-	Fails    map[string]map[int]int   `json:"fails"`
-	Strikes  map[string]map[int]int   `json:"strikes"`
-	Mutants  map[string][]*mutantStat `json:"mutants,omitempty"`
-	Decay    map[string]int           `json:"decay"`
-	Outcomes []bool                   `json:"outcomes"`
-	Steps    int                      `json:"steps"`
-	Reverts  int                      `json:"reverts"`
+	Frozen  string                         `json:"frozen"`
+	Presets []string                       `json:"presets,omitempty"`
+	Params  map[string][][]float64         `json:"params,omitempty"`
+	Dials   map[string][]PolicyStep        `json:"dials,omitempty"`
+	Deaths  map[string][]PolicyStep        `json:"deaths,omitempty"`
+	History map[string][]int               `json:"history,omitempty"`
+	Trust   map[string][polExperts]float64 `json:"trust,omitempty"`
+	Steps   int                            `json:"steps"`
+
+	Patterns    []BlockPattern `json:"patterns,omitempty"`
+	LastPattern int            `json:"last_pattern,omitempty"`
+
+	Speed map[string][]armSpeed `json:"speed,omitempty"`
 }
 
 var polFrozenOnce struct {
@@ -48,17 +53,38 @@ func polFrozenFingerprint() string {
 	return polFrozenOnce.sum
 }
 
+func presetIdentities() []string {
+	ids := make([]string, fingerprint.PresetCount())
+	for i := range ids {
+		id := fingerprint.PresetAt(i)
+		ids[i] = id.Str()
+	}
+	return ids
+}
+
+func changedPresets(saved []string) map[int]bool {
+	changed := map[int]bool{}
+	for i, id := range presetIdentities() {
+		if i >= len(saved) || saved[i] != id {
+			changed[i] = true
+		}
+	}
+	return changed
+}
+
 func (o *onlinePolicy) snapshot() onlinePolicySnapshot {
 	snap := onlinePolicySnapshot{
-		Frozen:   polFrozenFingerprint(),
-		History:  o.hist,
-		Fails:    o.fails,
-		Strikes:  o.strikes,
-		Mutants:  o.mutants,
-		Decay:    o.sinceDecay,
-		Outcomes: o.outcomes,
-		Steps:    o.steps,
-		Reverts:  o.reverts,
+		Frozen:  polFrozenFingerprint(),
+		Presets: presetIdentities(),
+		Dials:   o.dials,
+		Deaths:  o.deaths,
+		Trust:   o.trust,
+		Steps:   o.steps,
+
+		Patterns:    o.patterns,
+		LastPattern: o.lastPattern,
+
+		Speed: o.speed,
 	}
 	if o.tuned {
 		snap.Params = map[string][][]float64{}
@@ -68,72 +94,109 @@ func (o *onlinePolicy) snapshot() onlinePolicySnapshot {
 }
 
 func (o *onlinePolicy) restore(snap onlinePolicySnapshot) {
-	if live, ok := polParamsFrom(snap.Params); ok && snap.Frozen == polFrozenFingerprint() {
+	changed := changedPresets(snap.Presets)
+	armKept := func(arm int) bool {
+		preset, _ := JointArmParts(arm, fingerprint.PresetCount())
+		return !changed[preset]
+	}
+	if live, ok := polParamsFrom(snap.Params); ok && snap.Frozen == polFrozenFingerprint() && len(changed) == 0 {
 		o.live = live
-		o.adam = newPolAdam()
 		o.tuned = true
 	}
-	for ctx, seq := range snap.History {
-		if seq = polValidHistory(seq); len(seq) > 0 {
-			o.hist[ctx] = seq
+	dials := snap.Dials
+	if len(dials) == 0 {
+		dials = polStepsFromHistory(snap.History)
+	}
+	saved := len(snap.Presets)
+	for ctx, steps := range dials {
+		if kept := polValidSteps(remapSteps(steps, saved), armKept); len(kept) > 0 {
+			o.dials[ctx] = kept
 		}
 	}
-	restoreArmCounts(o.fails, snap.Fails)
-	restoreArmCounts(o.strikes, snap.Strikes)
-	restoreMutants(o.mutants, snap.Mutants)
-	for ctx, n := range snap.Decay {
-		if n > 0 && n < deadArmDecay {
-			o.sinceDecay[ctx] = n
+	for ctx, deaths := range snap.Deaths {
+		if kept := polValidSteps(remapSteps(deaths, saved), armKept); len(kept) > 0 {
+			o.deaths[ctx] = kept
 		}
 	}
-	if len(snap.Outcomes) > polOnlineWindow {
-		snap.Outcomes = snap.Outcomes[len(snap.Outcomes)-polOnlineWindow:]
+	for ctx, w := range snap.Trust {
+		if validTrust(w) {
+			o.trust[ctx] = w
+		}
 	}
-	o.outcomes = snap.Outcomes
 	o.steps = snap.Steps
-	o.reverts = snap.Reverts
-}
-
-func restoreArmCounts(dst, src map[string]map[int]int) {
-	for ctx, counts := range src {
-		kept := map[int]int{}
-		for arm, n := range counts {
-			if arm >= 0 && arm < polArms && n > 0 {
-				kept[arm] = n
+	for ctx, speed := range snap.Speed {
+		if len(speed) != JointArmCount(saved) {
+			continue
+		}
+		kept := make([]armSpeed, polArms)
+		for arm, s := range speed {
+			if now, ok := JointArmRemap(arm, saved, fingerprint.PresetCount()); ok && now < polArms && armKept(now) && s.N > 0 && !math.IsNaN(s.Mean) {
+				kept[now] = s
 			}
 		}
-		if len(kept) > 0 {
-			dst[ctx] = kept
-		}
+		o.speed[ctx] = kept
 	}
-}
-
-func restoreMutants(dst, src map[string][]*mutantStat) {
-	for ctx, stats := range src {
-		var kept []*mutantStat
-		for _, s := range stats {
-			if s == nil || len(s.Hello) != hex.EncodedLen(mutantHelloBytes) || s.Records < 1 || s.Records > mutantMaxRecords ||
-				s.Alive < 0 || s.Alive > s.Total || s.Streak < 0 {
-				continue
+	if snap.Frozen == polFrozenFingerprint() {
+		for _, p := range snap.Patterns {
+			if len(p.Mean) == polPacketFeat {
+				o.patterns = append(o.patterns, p)
 			}
-			kept = append(kept, s)
 		}
-		if len(kept) > 0 {
-			dst[ctx] = kept
-		}
+		o.lastPattern = snap.LastPattern
 	}
 }
 
-func polValidHistory(seq []int) []int {
-	if len(seq) > polBlock {
-		seq = seq[len(seq)-polBlock:]
+func validTrust(w [polExperts]float64) bool {
+	sum := 0.0
+	for _, v := range w {
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+			return false
+		}
+		sum += v
 	}
-	for _, tok := range seq {
-		if tok < 0 || tok >= polArms*2 {
-			return nil
+	return sum > 0
+}
+
+func polStepsFromHistory(history map[string][]int) map[string][]PolicyStep {
+	out := map[string][]PolicyStep{}
+	for ctx, tokens := range history {
+		steps := make([]PolicyStep, 0, len(tokens))
+		for _, tok := range tokens {
+			outcome := DialAlive
+			if tok%2 == 1 {
+				outcome = DialHandshakeDead
+			}
+			steps = append(steps, PolicyStep{Arm: tok / 2, Outcome: outcome})
+		}
+		out[ctx] = steps
+	}
+	return out
+}
+
+func remapSteps(steps []PolicyStep, saved int) []PolicyStep {
+	if saved == 0 || saved == fingerprint.PresetCount() {
+		return steps
+	}
+	out := make([]PolicyStep, 0, len(steps))
+	for _, s := range steps {
+		if arm, ok := JointArmRemap(s.Arm, saved, fingerprint.PresetCount()); ok {
+			s.Arm = arm
+			out = append(out, s)
 		}
 	}
-	return seq
+	return out
+}
+
+func polValidSteps(steps []PolicyStep, keep func(arm int) bool) []PolicyStep {
+	var kept []PolicyStep
+	for _, s := range polWindow(steps, polBlock) {
+		if s.Arm < 0 || s.Arm >= polArms || s.Outcome < 0 || s.Outcome >= polOutcomes || !s.Wire.valid() ||
+			math.IsNaN(s.Slow) || s.Slow < 0 || s.Slow > 1 || !s.Measure.valid() || !keep(s.Arm) {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	return kept
 }
 
 func polParamsFrom(mats map[string][][]float64) (*polParams, bool) {

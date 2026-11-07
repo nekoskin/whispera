@@ -6,37 +6,30 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nekoskin/whispera/core/protocol"
 )
 
-func writeTrace(t *testing.T, rows int) string {
-	t.Helper()
+func TestCurateDropsJunkAndKeepsNewest(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dials.csv")
 	f, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
 	fmt.Fprintln(f, dialTraceHeader)
-	for i := 0; i < rows; i++ {
-		fmt.Fprintf(f, "%d,origin|frag,%d,0,1,%s,%d\n", 1700000000000+i, i%4, dialStageHandshake, i%900)
+	const firstMs int64 = 1700000000000
+	for i := int64(0); i < 4000; i++ {
+		fmt.Fprintf(f, "%d,origin|net|joint,%d,0,1,%s,0,%s,0\n", firstMs+i, i%4, dialStageHandshake, protocol.SymptomOK)
+		fmt.Fprintf(f, "%d,origin|net|joint,0,%d,0,%s,0,%s,0\n", firstMs+i, dialTraceLocalResult, dialStageHandshake, protocol.SymptomOK)
+		fmt.Fprintf(f, "%d,origin|net|joint,1,1,0,%s,0,%s,0\n", firstMs+i, dialStageConnect, protocol.SymptomTCPReset)
 	}
-	return path
-}
-
-func TestTrimDialTraceKeepsTailAndHeader(t *testing.T) {
-	path := writeTrace(t, 5000)
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lastRow := strings.Split(strings.TrimRight(string(before), "\n"), "\n")
-	want := lastRow[len(lastRow)-1]
+	f.Close()
+	want := fmt.Sprintf("%d,origin|net|joint,%d,0,1,%s,0,%s,0", firstMs+3999, 3999%4, dialStageHandshake, protocol.SymptomOK)
 
 	const keep = 16 << 10
-	if err := trimDialTrace(path, keep); err != nil {
-		t.Fatalf("trim: %v", err)
+	if err := curateDialTrace(path, keep); err != nil {
+		t.Fatalf("curate: %v", err)
 	}
-
 	fi, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -44,54 +37,29 @@ func TestTrimDialTraceKeepsTailAndHeader(t *testing.T) {
 	if fi.Size() > keep+int64(len(dialTraceHeader))+1 {
 		t.Errorf("file is %d bytes, allowance is %d", fi.Size(), keep)
 	}
-
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	if lines[0] != dialTraceHeader {
-		t.Errorf("first line is %q, want the header back", lines[0])
+		t.Errorf("first line is %q, want the header", lines[0])
 	}
-	if lines[len(lines)-1] != want {
-		t.Errorf("last row is %q, want the newest dial %q", lines[len(lines)-1], want)
-	}
-	for i, l := range lines[1:] {
-		if strings.Count(l, ",") != strings.Count(dialTraceHeader, ",") {
-			t.Fatalf("row %d survived the cut broken: %q", i, l)
+	for _, l := range lines[1:] {
+		if !dialTraceTrains(strings.Split(l, ",")) {
+			t.Fatalf("a non-trainable row survived: %q", l)
 		}
 	}
-}
-
-func TestTrimDialTraceLeavesSmallFileAlone(t *testing.T) {
-	path := writeTrace(t, 10)
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := trimDialTrace(path, 1<<20); err != nil {
-		t.Fatalf("trim: %v", err)
-	}
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(before) != string(after) {
-		t.Error("a file inside its allowance was rewritten")
+	if lines[len(lines)-1] != want {
+		t.Errorf("last row is %q, want the newest trainable dial %q", lines[len(lines)-1], want)
 	}
 }
 
-func TestDialTraceKeepBytesDefault(t *testing.T) {
-	t.Setenv("WHISPERA_DIAL_TRACE_MB", "")
-	if got := dialTraceKeepBytes(); got != dialTraceDefaultMB<<20 {
-		t.Errorf("default allowance is %d, want %d", got, dialTraceDefaultMB<<20)
-	}
-	t.Setenv("WHISPERA_DIAL_TRACE_MB", "9")
-	if got := dialTraceKeepBytes(); got != 9<<20 {
-		t.Errorf("allowance is %d, want %d", got, 9<<20)
-	}
-	t.Setenv("WHISPERA_DIAL_TRACE_MB", "nonsense")
-	if got := dialTraceKeepBytes(); got != dialTraceDefaultMB<<20 {
-		t.Errorf("bad value gave %d, want the default %d", got, dialTraceDefaultMB<<20)
+func TestLiveDeathsAreTrainable(t *testing.T) {
+	for _, stage := range []string{dialStageLiveReset, dialStageLiveEnd} {
+		row := strings.Split(fmt.Sprintf("1700000000000,origin|net|joint,1,1,0,%s,0,%s,0", stage, protocol.SymptomLiveReset), ",")
+		if !dialTraceTrains(row) {
+			t.Fatalf("a %s row was dropped, but policyfit reads it as a death after the handshake", stage)
+		}
 	}
 }

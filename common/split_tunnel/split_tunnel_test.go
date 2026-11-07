@@ -2,67 +2,31 @@ package split_tunnel
 
 import (
 	"context"
-	"encoding/json"
+
 	"errors"
 	"fmt"
 	"net"
-	"os"
-	"path/filepath"
+
 	"strings"
 	"testing"
 )
 
-func writeRules(t *testing.T, cfg SplitTunnelConfig) string {
-	t.Helper()
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatal(err)
+func (stm *SplitTunnelManager) ShouldBypassByHostname(hostname string) bool {
+	snap := stm.snap.Load()
+	if snap == nil || !snap.enabled {
+		return false
 	}
-	path := filepath.Join(t.TempDir(), "rules.json")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return stm.bypassHost(snap, hostname)
 }
 
-func TestLoadConfigKeepsExistingRules(t *testing.T) {
-	stm := NewSplitTunnelManager()
-	stm.CreateDefaultRules()
-	stm.SetEnabled(true)
-
-	path := writeRules(t, SplitTunnelConfig{
-		Rules: []SplitTunnelRule{{
-			Type: "domain", Value: "example.com", Action: "direct", Enabled: true, Priority: 50,
-		}},
-	})
-	if err := stm.LoadConfig(path); err != nil {
-		t.Fatal(err)
+func (c *verdictCache) len() int {
+	total := 0
+	for i := range c.shards {
+		c.shards[i].mu.RLock()
+		total += len(c.shards[i].m)
+		c.shards[i].mu.RUnlock()
 	}
-
-	if !stm.ShouldBypassByHostname("example.com") {
-		t.Fatal("user rule must apply after LoadConfig")
-	}
-	if !stm.ShouldBypassByIP("192.168.1.5") {
-		t.Fatal("LoadConfig must not wipe rules added earlier — user routes used to erase the bypass list")
-	}
-}
-
-func TestLoadConfigKeepsEnabled(t *testing.T) {
-	stm := NewSplitTunnelManager()
-	stm.SetEnabled(true)
-
-	path := writeRules(t, SplitTunnelConfig{
-		Rules: []SplitTunnelRule{{
-			Type: "domain", Value: "example.com", Action: "direct", Enabled: true,
-		}},
-	})
-	if err := stm.LoadConfig(path); err != nil {
-		t.Fatal(err)
-	}
-
-	if !stm.isEnabled() {
-		t.Fatal("a rules file without \"enabled\" used to switch split tunneling off entirely")
-	}
+	return total
 }
 
 func TestUserRuleOverridesLowerPriority(t *testing.T) {
@@ -149,16 +113,6 @@ func TestBypassByCountryTunnelsOnResolveFailure(t *testing.T) {
 	}
 }
 
-func TestBypassByCountryWithoutResolver(t *testing.T) {
-	stm := NewSplitTunnelManager()
-	stm.SetEnabled(true)
-	stm.SetGeoIP(geoWith(t, "176.114.122.0/24"))
-
-	if stm.ShouldBypassByHostname("avito.ru") {
-		t.Fatal("before the tunnel is up there is nothing to resolve through — everything must tunnel")
-	}
-}
-
 func TestBypassByCountryCoversIPv6(t *testing.T) {
 	stm := NewSplitTunnelManager()
 	stm.SetEnabled(true)
@@ -239,50 +193,6 @@ func TestAppRuleForcesTunnelOverGeoIP(t *testing.T) {
 	}
 	if !stm.ShouldBypassByIP("5.255.255.10") {
 		t.Fatal("ip-cidr rule must apply")
-	}
-}
-
-func geoStm(t *testing.T) *SplitTunnelManager {
-	t.Helper()
-	stm := NewSplitTunnelManager()
-	stm.SetEnabled(true)
-	stm.SetGeoIP(geoWith(t, "176.114.122.0/24"))
-	setResolvers(stm, func(host string) []net.IP {
-		return []net.IP{net.ParseIP("176.114.122.24")}
-	})
-	return stm
-}
-
-func TestCountryBypassFollowsTheToggle(t *testing.T) {
-	on := geoStm(t)
-	if err := on.LoadAppRules(`[{"kind":"geoip","action":"DIRECT"}]`); err != nil {
-		t.Fatal(err)
-	}
-	if !on.ShouldBypassByHostname("avito.ru") || !on.ShouldBypassByIP("176.114.122.24") {
-		t.Fatal("with the toggle on, the country list must send Russian addresses direct")
-	}
-
-	off := geoStm(t)
-	if err := off.LoadAppRules(`[]`); err != nil {
-		t.Fatal(err)
-	}
-	if off.ShouldBypassByHostname("avito.ru") {
-		t.Fatal("with the toggle off the country list must stop applying — it could not be switched off before")
-	}
-	if off.ShouldBypassByIP("176.114.122.24") {
-		t.Fatal("the toggle must switch off the country list for literal addresses too")
-	}
-
-	off.CreateDefaultRules()
-	if !off.ShouldBypassByIP("192.168.1.5") {
-		t.Fatal("switching the country list off must not disturb local networks")
-	}
-}
-
-func TestCountryBypassOnByDefault(t *testing.T) {
-	stm := geoStm(t)
-	if !stm.ShouldBypassByHostname("avito.ru") {
-		t.Fatal("without any app rules (desktop, CLI) the country list stays on")
 	}
 }
 

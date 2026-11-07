@@ -97,10 +97,6 @@ func (s *SubscriptionManager) Stop() {
 	close(s.stop)
 }
 
-func (s *SubscriptionManager) ForceRefresh() ([]*ConnectionKey, error) {
-	return s.fetch()
-}
-
 func (s *SubscriptionManager) run() {
 	if keys, err := s.fetch(); err == nil {
 		if s.onChange != nil {
