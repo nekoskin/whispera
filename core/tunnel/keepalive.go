@@ -17,6 +17,7 @@ import (
 
 const (
 	drainWait       = 250 * time.Millisecond
+	retireWait      = 2 * time.Second
 	reclaimWait     = 100 * time.Millisecond
 	fillerWriteWait = 500 * time.Millisecond
 	idleMax         = 8
@@ -308,22 +309,31 @@ func (c *keepAliveStream) Close() error {
 		if d, ok := base.(*decoyLeaveConn); ok && d.acct != nil {
 			hot = d.acct.down.Add(down.RxWire()) >= downstreamCapBytes
 		}
-		if quiet {
+		switch {
+		case quiet:
 			base.SetReadDeadline(time.Now().Add(drainWait))
+		case hot:
+			base.SetReadDeadline(time.Now().Add(retireWait))
 		}
 		go func() {
-			if !hot || quiet {
-				done, silent := drainToEnd(base, down)
-				if done && !hot {
-					c.m.idle.put(base)
-					return
-				}
-				if quiet && silent {
-					protocol.NoteStall(base)
-				}
+			done, silent := drainToEnd(base, down)
+			if done && !hot {
+				c.m.idle.put(base)
+				return
 			}
-			base.Close()
+			if quiet && silent {
+				protocol.NoteStall(base)
+			}
+			retire(base)
 		}()
 	})
 	return err
+}
+
+func retire(c net.Conn) {
+	if tc := buf.RawTCP(c); tc != nil && tc.CloseWrite() == nil {
+		_ = c.SetReadDeadline(time.Now().Add(retireWait))
+		_, _ = io.Copy(io.Discard, io.LimitReader(c, drainLimit))
+	}
+	c.Close()
 }
