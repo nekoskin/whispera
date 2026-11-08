@@ -120,7 +120,8 @@ neural/dumps/
 neural/*.npz
 # Generated fingerprint corpus (rebuilt by corpus_gen_test.go, BUILD_CORPUS=1).
 neural/corpus/
-neural/
+neural/*
+!neural/*.py
 core/protocol/fingerprint/corpus_gen_test.go
 
 # Runtime-generated GAN model state
