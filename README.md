@@ -7,7 +7,7 @@
 ### How to install? (Ubuntu/Debian/Arch) ( only root )
 
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/nekoskin/whispera/main/install.sh)
+bash <(curl -sL https://raw.githubusercontent.com/nekoskin/whispera-v2/main/install.sh)
 ```
 
 ### How to update?
